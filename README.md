@@ -93,66 +93,49 @@ cp config.toml ~/.config/oxllm/config.toml
 oxllm serve
 ```
 
----
 
-## 🚀 Quick Start (Local Ollama)
+## 🚀 Quick Start
 
-### Prerequisites
+You can run oxllm with **local models** (Ollama, zero API keys) or **cloud providers** (free tier).
+Choose the path that works for you:
+
+### Option A: Local Ollama (zero API keys)
 
 ```bash
-# Install Ollama and pull a tiny test model
+# Install Ollama
 brew install ollama
 ollama pull granite4:micro
+
+# Start oxllm with the included local config
+oxllm serve --config config-local-test.toml
+
+# Test it
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-### 1. Create a config
-
-```toml
-[server]
-host = "127.0.0.1"
-port = 8080
-upstream_timeout_secs = 30
-
-[[providers]]
-name = "local-ollama"
-enabled = true
-base_url = "http://localhost:11434/v1/"
-api_key = "ollama"
-models = ["granite4:micro"]
-
-[virtual_models]
-default = [
-  { provider = "local-ollama", model = "granite4:micro" },
-]
-```
-
-### 2. Start the proxy
+### Option B: Cloud Providers (free tier)
 
 ```bash
-oxllm serve
-```
+# Set your API keys
+export GROQ_API_KEY="gsk_..."
+export GOOGLE_API_KEY="AIza..."
+export SAMBANOVA_API_KEY="..."
+export OPENROUTER_API_KEY="sk-or-..."
 
-### 3. Test it
+# Start oxllm with the multi-tier config
+oxllm serve --config config.toml
 
-```bash
-# Chat completion
+# Test the smart tier (strongest available model)
 curl -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}]}'
-
-# Embeddings
-curl -X POST http://127.0.0.1:8080/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -d '{"model": "default", "input": "hello world"}'
-
-# Health check
-curl http://127.0.0.1:8080/health
-
-# Local dashboard (no external collector needed)
-curl http://127.0.0.1:8080/status
+  -d '{"model": "smart", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
----
+In either case, the circuit breaker handles failover automatically.
+If a provider returns a 429 or is unreachable, oxllm transparently tries the next
+provider in the chain.
 
 ## 🚀 Quick Start (Multi-Tier Cloud)
 
@@ -265,39 +248,24 @@ Uptime: 1m 18s  |  Total Requests: 2
 
 Virtual Model: smart
 ---------------------------------------------------------------------
-| Provider          | Model                              | Circuit    | Req | Suc |
+| Provider             | Model                                 | Circuit        | Req | Suc |
 ---------------------------------------------------------------------
-| ✓ groq-strong     | llama-3.3-70b-versatile            | Closed     |   1 |   2 |
-| ✓ sambanova-strong| Llama-4-Maverick-17B-128E-Instruct | Closed     |   0 |   0 |
+| ✓ groq-strong        | llama-3.3-70b-versatile               | Closed (Healthy)|   1 |   2 |
+| ✓ sambanova-strong   | Llama-4-Maverick-17B-128E-Instruct    | Closed (Healthy)|   0 |   0 |
 ---------------------------------------------------------------------
 
-Per-Provider Details:
-+------------------+---------------------------+----------+------+-----+
-| Provider Name    | Models                    | Circuit  | Req  | Suc |
-+------------------+---------------------------+----------+------+-----+
-| groq-strong      | llama-3.3-70b-versatile  | Closed   |   1  |   2 |
-| sambanova-strong | Llama-4-Maverick-17B-...  | Closed   |   0  |   0 |
-+------------------+---------------------------+----------+------+-----+
+Virtual Model: basic
+---------------------------------------------------------------------
+| Provider             | Model                                 | Circuit        | Req | Suc |
+---------------------------------------------------------------------
+| ✓ groq-basic         | meta-llama/llama-4-scout-17b-16e-... | Closed (Healthy)|   1 |   2 |
+| ✓ ollama-fallback    | granite4:micro                       | Closed (Healthy)|   0 |   0 |
+---------------------------------------------------------------------
 
 Use 'oxllm provider offline <name>' to take a provider out of rotation.
 Use 'oxllm provider reset <name>' to clear circuit breaker state.
+For full per-provider counters, run 'oxllm status' without piping.
 ```
-
----
-
-## 🔌 API Endpoints
-
-| Method | Path | Description | Auth |
-|--------|------|-------------|------|
-| `GET` | `/health` | Health check | Loopback |
-| `GET` | `/status` | Circuit states + counters + last request time | Loopback |
-| `POST` | `/reload` | Trigger config hot-reload | Loopback |
-| `POST` | `/admin/providers/{name}/offline` | Take provider offline | Loopback |
-| `POST` | `/admin/providers/{name}/online` | Bring provider online | Loopback |
-| `POST` | `/admin/providers/{name}/reset` | Reset circuit breaker state | Loopback |
-| `GET` | `/v1/models` | List available virtual models | None |
-| `POST` | `/v1/chat/completions` | Chat completion (JSON or SSE streaming) | None |
-| `POST` | `/v1/embeddings` | Text embeddings | None |
 
 All admin endpoints (`/health`, `/status`, `/reload`, `/admin/*`) are restricted to localhost — external callers receive `403 Forbidden`.
 
