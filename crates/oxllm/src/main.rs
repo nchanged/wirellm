@@ -21,6 +21,32 @@ use oxllm_core::state::{AppState, CircuitState, ProviderState};
 use oxllm_core::telemetry::{TelemetryClient, TelemetryWorker};
 use reqwest::Url;
 
+/// Resolves the config file path using XDG base directory conventions.
+///
+/// If the given path exists, returns it as-is.
+/// Otherwise, tries the XDG config path: `~/.config/oxllm/config.toml`
+/// (respecting `$XDG_CONFIG_HOME` if set).
+/// If that also doesn't exist, returns the original path so the caller
+/// produces a clear file-not-found error.
+fn resolve_config_path(given: PathBuf) -> PathBuf {
+    if given.exists() {
+        return given;
+    }
+    // Try XDG config path
+    let xdg_config = std::env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".config")
+        })
+        .join("oxllm")
+        .join("config.toml");
+    if xdg_config.exists() {
+        return xdg_config;
+    }
+    given // fall back to original path (will produce a clear file-not-found error)
+}
+
 mod routes;
 
 #[derive(Parser, Debug)]
@@ -40,6 +66,7 @@ enum Commands {
     /// Starts the gateway Axum server and telemetry worker
     Serve {
         /// Path to the configuration TOML file
+        /// (searches: <path>, ~/.config/oxllm/config.toml, ./config.toml)
         #[arg(short, long, default_value = "config.toml", env = "OXLLM_CONFIG")]
         config: PathBuf,
 
@@ -50,6 +77,7 @@ enum Commands {
     /// Parses and validates the configuration syntax and cross-references
     Validate {
         /// Path to the configuration TOML file
+        /// (searches: <path>, ~/.config/oxllm/config.toml, ./config.toml)
         #[arg(short, long, default_value = "config.toml", env = "OXLLM_CONFIG")]
         config: PathBuf,
     },
@@ -70,6 +98,37 @@ enum Commands {
         /// PID of the running oxllm process (optional, reads from /tmp/oxllm.pid by default)
         #[arg(short, long)]
         pid: Option<u32>,
+    },
+    /// Manage providers (offline, online, reset)
+    #[command(subcommand)]
+    Provider(ProviderCommand),
+}
+
+#[derive(Subcommand, Debug)]
+enum ProviderCommand {
+    /// Take a provider offline (circuit breaker + manual disabled)
+    Offline {
+        /// Name of the provider to take offline
+        name: String,
+        /// Port of the running gateway server
+        #[arg(short, long, default_value_t = 8080, env = "OXLLM_PORT")]
+        port: u16,
+    },
+    /// Bring a provider back online
+    Online {
+        /// Name of the provider to bring online
+        name: String,
+        /// Port of the running gateway server
+        #[arg(short, long, default_value_t = 8080, env = "OXLLM_PORT")]
+        port: u16,
+    },
+    /// Reset a provider's circuit breaker, failures, and rate limit
+    Reset {
+        /// Name of the provider to reset
+        name: String,
+        /// Port of the running gateway server
+        #[arg(short, long, default_value_t = 8080, env = "OXLLM_PORT")]
+        port: u16,
     },
 }
 
@@ -314,6 +373,7 @@ async fn handle_sighup(
 }
 
 async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = resolve_config_path(config_path);
     // 1. Load initial config
     let config = Config::load_from_file(&config_path)?;
     config.validate()?;
@@ -443,6 +503,7 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
 }
 
 fn run_validate(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = resolve_config_path(config_path);
     let config = Config::load_from_file(&config_path)?;
     config.validate()?;
     println!("Configuration file at '{:?}' is VALID!", config_path);
@@ -452,7 +513,15 @@ fn run_validate(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> 
 async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{}/status", port);
-    let res = client.get(&url).send().await?;
+    let res = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_connect() => {
+            println!("oxllm is not running on http://127.0.0.1:{}", port);
+            println!("Start it with: oxllm serve");
+            return Ok(());
+        },
+        Err(e) => return Err(e.into()),
+    };
     if !res.status().is_success() {
         return Err(format!("Server returned error status: {}", res.status()).into());
     }
@@ -460,6 +529,7 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     #[derive(serde::Deserialize)]
     struct ProviderStatus {
         name: String,
+        models: String,
         circuit: String,
         failures: u32,
         rate_limited: bool,
@@ -511,19 +581,19 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                 entry.provider, entry.model, entry.circuit, entry.requests, entry.successes
             );
         }
-        println!("{}", "-".repeat(100));
-    }
+        }
 
     // Per-provider table
     println!(
-        "\n+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+"
+        "\n+--------------------+----------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+"
     );
-    println!("| Provider Name      | Circuit Breaker State          | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output | Last Request|");
-    println!("+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+");
+    println!("| Provider Name      | Models                     | Circuit Breaker State          | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output | Last Request|");
+    println!("+--------------------+----------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+");
     for s in &status.providers {
         println!(
-            "| {:<18} | {:<30} | {:<8} | {:<13} | {:<8} | {:<9} | {:<12} | {:<13} | {:<11} |",
+            "| {:<18} | {:<26} | {:<30} | {:<8} | {:<13} | {:<8} | {:<9} | {:<12} | {:<13} | {:<11} |",
             s.name,
+            s.models,
             s.circuit,
             s.failures,
             if s.rate_limited { "Yes" } else { "No" },
@@ -535,22 +605,29 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!(
-        "+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+\n"
+        "+--------------------+----------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+\n"
     );
 
     Ok(())
 }
-
 fn run_reload(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     let pid = match pid_opt {
         Some(p) => p,
         None => {
-            let content = std::fs::read_to_string("/tmp/oxllm.pid")
-                .map_err(|_| "Failed to read PID from /tmp/oxllm.pid. Is the gateway running?")?;
-            content
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| "Invalid PID in /tmp/oxllm.pid")?
+            match std::fs::read_to_string("/tmp/oxllm.pid") {
+                Ok(content) => match content.trim().parse::<u32>() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        println!("Invalid PID in /tmp/oxllm.pid");
+                        return Ok(());
+                    }
+                },
+                Err(_) => {
+                    println!("oxllm is not running (no PID file at /tmp/oxllm.pid)");
+                    println!("Start it with: oxllm serve");
+                    return Ok(());
+                },
+            }
         },
     };
     send_sighup(pid)?;
@@ -561,35 +638,98 @@ fn run_reload(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+
 fn run_stop(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     let pid = match pid_opt {
         Some(p) => p,
         None => {
-            let content = std::fs::read_to_string("/tmp/oxllm.pid")
-                .map_err(|_| "Failed to read PID from /tmp/oxllm.pid. Is the gateway running?")?;
-            content
-                .trim()
-                .parse::<u32>()
-                .map_err(|_| "Invalid PID in /tmp/oxllm.pid")?
+            match std::fs::read_to_string("/tmp/oxllm.pid") {
+                Ok(content) => match content.trim().parse::<u32>() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        println!("Invalid PID in /tmp/oxllm.pid");
+                        return Ok(());
+                    }
+                },
+                Err(_) => {
+                    println!("oxllm is not running (no PID file at /tmp/oxllm.pid)");
+                    println!("Start it with: oxllm serve");
+                    return Ok(());
+                },
+            }
         },
     };
 
-    // Send SIGTERM for graceful shutdown (drains SSE streams before exiting)
-    let status = std::process::Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .status()?;
+    let status = match std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status() {
+        Ok(s) => s,
+        Err(e) => {
+            println!("Failed to send SIGTERM: {}", e);
+            return Ok(());
+        },
+    };
     if status.success() {
         println!(
             "Successfully sent graceful shutdown signal (SIGTERM) to process {}",
             pid
         );
-        Ok(())
     } else {
-        Err(Box::new(std::io::Error::other(format!(
+        println!(
             "kill command failed with exit code: {:?}",
             status.code()
-        ))))
+        );
     }
+    Ok(())
+}
+
+async fn run_provider_offline(name: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/admin/providers/{}/offline", port, name);
+    let res = match client.post(&url).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_connect() => {
+            println!("oxllm is not running on http://127.0.0.1:{}", port);
+            println!("Start it with: oxllm serve");
+            return Ok(());
+        },
+        Err(e) => return Err(e.into()),
+    };
+    let body = res.text().await?;
+    println!("{}", body);
+    Ok(())
+}
+
+async fn run_provider_online(name: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/admin/providers/{}/online", port, name);
+    let res = match client.post(&url).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_connect() => {
+            println!("oxllm is not running on http://127.0.0.1:{}", port);
+            println!("Start it with: oxllm serve");
+            return Ok(());
+        },
+        Err(e) => return Err(e.into()),
+    };
+    let body = res.text().await?;
+    println!("{}", body);
+    Ok(())
+}
+
+async fn run_provider_reset(name: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/admin/providers/{}/reset", port, name);
+    let res = match client.post(&url).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_connect() => {
+            println!("oxllm is not running on http://127.0.0.1:{}", port);
+            println!("Start it with: oxllm serve");
+            return Ok(());
+        },
+        Err(e) => return Err(e.into()),
+    };
+    let body = res.text().await?;
+    println!("{}", body);
+    Ok(())
 }
 
 #[tokio::main]
@@ -627,6 +767,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Commands::Stop { pid } => {
             run_stop(pid)?;
+        },
+        Commands::Provider(cmd) => match cmd {
+            ProviderCommand::Offline { name, port } => {
+                run_provider_offline(&name, port).await?;
+            },
+            ProviderCommand::Online { name, port } => {
+                run_provider_online(&name, port).await?;
+            },
+            ProviderCommand::Reset { name, port } => {
+                run_provider_reset(&name, port).await?;
+            },
         },
     }
 
@@ -1442,6 +1593,125 @@ mod integration_tests {
             .json(&serde_json::json!({"model": "nonexistent", "messages": [{"role":"user","content":"hi"}]}))
             .send().await.unwrap();
         assert_eq!(res.status(), 400);
+    }
+
+    /// Admin online re-enables a manually disabled provider.
+    #[tokio::test]
+    async fn test_integration_admin_online() {
+        use std::sync::atomic::Ordering;
+
+        let ok_response =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}"
+                .to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096]; let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await; let _ = stream.flush().await;
+            }
+        });
+
+        let p = ProviderState {
+            name: "target".into(), base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(), models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(true),  // Start disabled
+            requests: AtomicU64::new(0), successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0), tokens_output: AtomicU64::new(0),
+        };
+
+        let mut vms = std::collections::HashMap::new();
+        vms.insert("test".into(), vec![VirtualModelTarget { provider: "target".into(), model: "model".into() }]);
+        let state = Arc::new(AppState { providers: vec![p], virtual_models: vms,
+            http_client: reqwest::Client::builder().build().unwrap(), upstream_timeout_secs: 5 });
+        let (_ws, wr) = tokio::sync::watch::channel(state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let rs = ReloadableState { app_state: wr, telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(), reloader: Reloader { sender: _ws.clone(), config_path: PathBuf::from(".") } };
+        let router = axum::Router::new()
+            .route("/admin/providers/{name}/online", axum::routing::post(routes::admin_online))
+            .with_state(rs);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+
+        // Verify provider is disabled
+        assert!(state.providers[0].manual_disabled.load(Ordering::Acquire));
+
+        // Call admin online
+        let client = reqwest::Client::new();
+        let res = client.post(format!("http://{}/admin/providers/target/online", proxy_addr))
+            .send().await.unwrap();
+        assert_eq!(res.status(), 200);
+
+        // Verify provider is now enabled
+        assert!(!state.providers[0].manual_disabled.load(Ordering::Acquire));
+    }
+
+    /// Token counts are parsed from upstream JSON and recorded in provider counters.
+    #[tokio::test]
+    async fn test_integration_token_count_parsed() {
+        // Upstream returns a response with usage data
+        let body = r#"{"id":"test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":42,"completion_tokens":7,"total_tokens":49}}"#;
+        let ok_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096]; let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await; let _ = stream.flush().await;
+            }
+        });
+
+        let p = ProviderState {
+            name: "counter".into(), base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(), models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0), successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0), tokens_output: AtomicU64::new(0),
+        };
+
+        let mut vms = std::collections::HashMap::new();
+        vms.insert("test".into(), vec![VirtualModelTarget { provider: "counter".into(), model: "model".into() }]);
+        let state = Arc::new(AppState { providers: vec![p], virtual_models: vms,
+            http_client: reqwest::Client::builder().build().unwrap(), upstream_timeout_secs: 5 });
+        let (_ws, wr) = tokio::sync::watch::channel(state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let rs = ReloadableState { app_state: wr, telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(), reloader: Reloader { sender: _ws, config_path: PathBuf::from(".") } };
+        let router = axum::Router::new()
+            .route("/v1/chat/completions", axum::routing::post(routes::create_chat_completions))
+            .with_state(rs);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+
+        let client = reqwest::Client::new();
+        let res = client.post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .json(&serde_json::json!({"model": "test", "messages": [{"role":"user","content":"hi"}]}))
+            .send().await.unwrap();
+        assert_eq!(res.status(), 200);
+
+        // Verify token counts were parsed
+        let tokens_in = state.providers[0].tokens_input.load(std::sync::atomic::Ordering::Relaxed);
+        let tokens_out = state.providers[0].tokens_output.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(tokens_in > 0, "Expected input tokens > 0, got {}", tokens_in);
+        assert!(tokens_out > 0, "Expected output tokens > 0, got {}", tokens_out);
+        assert_eq!(tokens_in, 42);
+        assert_eq!(tokens_out, 7);
     }
 
 }

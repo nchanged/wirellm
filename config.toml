@@ -3,65 +3,78 @@ host = "127.0.0.1"
 port = 8080
 otel_endpoint = "http://127.0.0.1:4318"
 upstream_timeout_secs = 30
+bind_family = "ipv4"
 
 # ==========================================
 # Provider Definitions
 # ==========================================
-# API keys are loaded from environment variables (dollar-brace-VARNAME-brace syntax)
-# Order within each virtual model defines fallback priority
+# API keys are loaded from environment variables.
+# Order within each virtual model defines fallback priority.
+#
+# Current env vars: GROQ_API_KEY, GOOGLE_API_KEY,
+#                   OPENROUTER_API_KEY, CEREBRAS_API_KEY,
+#                   SAMBANOVA_API_KEY, OPENCODE_API_KEY
+#
+# Model names verified live on 2026-05-30 via each provider's /v1/models endpoint.
+# Provider free-tier status: check provider docs or test with a single request.
 
 # ---- Strong Tier ----
 # Powerful models with tighter rate limits. Use for real work.
-
-[[providers]]
-name = "google-strong"
-enabled = true
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-api_key = "${GOOGLE_AI_KEY}"
-models = ["gemini-2.5-pro"]
+# Note: Gemini 2.5 Pro is paid-only on the free tier (quota = 0).
+# The strong tier uses Groq Llama 3.3 and SambaNova Llama 4 Maverick instead.
 
 [[providers]]
 name = "groq-strong"
 enabled = true
 base_url = "https://api.groq.com/openai/v1/"
-api_key = "${GROQ_KEY}"
-models = ["llama-4-maverick"]
+api_key = "${GROQ_API_KEY}"
+models = ["llama-3.3-70b-versatile"]
 
 [[providers]]
-name = "xai-strong"
+name = "sambanova-strong"
 enabled = true
-base_url = "https://api.x.ai/v1/"
-api_key = "${XAI_KEY}"
-models = ["grok-3"]
+base_url = "https://api.sambanova.ai/v1/"
+api_key = "${SAMBANOVA_API_KEY}"
+models = ["Llama-4-Maverick-17B-128E-Instruct"]
 
 # ---- Basic Tier ----
-# Cheap or free models with generous rate limits.
+# Free/cheap models with generous rate limits.
 # Fire loads of requests without eating into your paid quota.
-
-[[providers]]
-name = "google-basic"
-enabled = true
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-api_key = "${GOOGLE_AI_KEY}"
-models = ["gemini-2.5-flash"]
 
 [[providers]]
 name = "groq-basic"
 enabled = true
 base_url = "https://api.groq.com/openai/v1/"
-api_key = "${GROQ_KEY}"
-models = ["llama-4-scout"]
+api_key = "${GROQ_API_KEY}"
+models = ["meta-llama/llama-4-scout-17b-16e-instruct"]
+
+[[providers]]
+name = "google-basic"
+enabled = true
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+api_key = "${GOOGLE_API_KEY}"
+models = ["gemini-2.5-flash"]
+
+[[providers]]
+name = "sambanova-basic"
+enabled = true
+base_url = "https://api.sambanova.ai/v1/"
+api_key = "${SAMBANOVA_API_KEY}"
+models = ["DeepSeek-V3.1"]
 
 [[providers]]
 name = "openrouter-basic"
 enabled = true
 base_url = "https://openrouter.ai/api/v1/"
-api_key = "${OPENROUTER_KEY}"
-models = ["deepseek-r1-distill"]
+api_key = "${OPENROUTER_API_KEY}"
+# OpenRouter's free models change frequently.
+# Check free models: https://openrouter.ai/models?order=price&direction=asc
+# Current verified free (2026-05-30): ibm-granite/granite-4.1-8b, deepseek/deepseek-v4-flash:free
+models = ["ibm-granite/granite-4.1-8b"]
 
 # ---- Local Fallback ----
 # Local Ollama with a tiny model. Always available, no quota.
-# Last resort if all cloud providers are down.
+# Last resort if all cloud providers are down or rate-limited.
 
 [[providers]]
 name = "ollama-fallback"
@@ -69,6 +82,17 @@ enabled = true
 base_url = "http://localhost:11434/v1/"
 api_key = "ollama"
 models = ["granite4:micro"]
+
+# ---- OpenCode (custom endpoint) ----
+# You have OPENCODE_API_KEY set. If this points to an OpenAI-compatible
+# inference endpoint, configure it here. Update base_url to match.
+# Disabled by default — enable and set base_url when ready.
+#[[providers]]
+#name = "opencode-inference"
+#enabled = true
+#base_url = "https://api.opencode.ai/v1/"
+#api_key = "${OPENCODE_API_KEY}"
+#models = ["opencode-model"]
 
 # ==========================================
 # Virtual Models — Tiered Routing
@@ -78,26 +102,27 @@ models = ["granite4:micro"]
 # it transparently falls through to the next.
 
 [virtual_models]
-# "smart" starts strong for quality, cascades to basic for quota,
-# and falls all the way to local Ollama if everything else is down.
+# "smart" uses the best models available on the free tier,
+# then cascades to basic, and finally to local Ollama.
 smart = [
-  { provider = "google-strong",  model = "gemini-2.5-pro" },
-  { provider = "groq-strong",    model = "llama-4-maverick" },
-  { provider = "xai-strong",     model = "grok-3" },
+  { provider = "groq-strong",     model = "llama-3.3-70b-versatile" },
+  { provider = "sambanova-strong", model = "Llama-4-Maverick-17B-128E-Instruct" },
   # Fallback to basic tier
-  { provider = "google-basic",    model = "gemini-2.5-flash" },
-  { provider = "groq-basic",      model = "llama-4-scout" },
-  { provider = "openrouter-basic", model = "deepseek-r1-distill" },
+  { provider = "groq-basic",       model = "meta-llama/llama-4-scout-17b-16e-instruct" },
+  { provider = "google-basic",     model = "gemini-2.5-flash" },
+  { provider = "sambanova-basic",  model = "DeepSeek-V3.1" },
+  { provider = "openrouter-basic", model = "ibm-granite/granite-4.1-8b" },
   # Last resort
-  { provider = "ollama-fallback", model = "granite4:micro" },
+  { provider = "ollama-fallback",  model = "granite4:micro" },
 ]
 
 # "basic" uses only the cheap/free tier with generous rate limits.
 # Perfect for bulk testing, background tasks, or anything
 # that doesn't need the strongest model.
 basic = [
-  { provider = "groq-basic",       model = "llama-4-scout" },
+  { provider = "groq-basic",       model = "meta-llama/llama-4-scout-17b-16e-instruct" },
   { provider = "google-basic",     model = "gemini-2.5-flash" },
-  { provider = "openrouter-basic", model = "deepseek-r1-distill" },
+  { provider = "sambanova-basic",  model = "DeepSeek-V3.1" },
+  { provider = "openrouter-basic", model = "ibm-granite/granite-4.1-8b" },
   { provider = "ollama-fallback",  model = "granite4:micro" },
 ]

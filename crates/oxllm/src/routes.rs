@@ -97,6 +97,7 @@ pub async fn get_status(
     #[derive(Serialize)]
     struct ProviderStatus {
         name: String,
+        models: String,
         circuit: String,
         failures: u32,
         rate_limited: bool,
@@ -172,6 +173,7 @@ pub async fn get_status(
 
         status_list.push(ProviderStatus {
             name: provider.name.clone(),
+            models: provider.models.join(", "),
             circuit: circuit_str,
             failures,
             rate_limited: is_limited,
