@@ -587,7 +587,7 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                 entry.provider, entry.model, entry.circuit, entry.requests, entry.successes
             );
         }
-        }
+    }
 
     // Per-provider table
     println!(
@@ -619,21 +619,19 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 fn run_reload(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     let pid = match pid_opt {
         Some(p) => p,
-        None => {
-            match std::fs::read_to_string("/tmp/oxllm.pid") {
-                Ok(content) => match content.trim().parse::<u32>() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        println!("Invalid PID in /tmp/oxllm.pid");
-                        return Ok(());
-                    }
-                },
+        None => match std::fs::read_to_string("/tmp/oxllm.pid") {
+            Ok(content) => match content.trim().parse::<u32>() {
+                Ok(p) => p,
                 Err(_) => {
-                    println!("oxllm is not running (no PID file at /tmp/oxllm.pid)");
-                    println!("Start it with: oxllm serve");
+                    println!("Invalid PID in /tmp/oxllm.pid");
                     return Ok(());
                 },
-            }
+            },
+            Err(_) => {
+                println!("oxllm is not running (no PID file at /tmp/oxllm.pid)");
+                println!("Start it with: oxllm serve");
+                return Ok(());
+            },
         },
     };
     send_sighup(pid)?;
@@ -644,29 +642,29 @@ fn run_reload(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-
 fn run_stop(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     let pid = match pid_opt {
         Some(p) => p,
-        None => {
-            match std::fs::read_to_string("/tmp/oxllm.pid") {
-                Ok(content) => match content.trim().parse::<u32>() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        println!("Invalid PID in /tmp/oxllm.pid");
-                        return Ok(());
-                    }
-                },
+        None => match std::fs::read_to_string("/tmp/oxllm.pid") {
+            Ok(content) => match content.trim().parse::<u32>() {
+                Ok(p) => p,
                 Err(_) => {
-                    println!("oxllm is not running (no PID file at /tmp/oxllm.pid)");
-                    println!("Start it with: oxllm serve");
+                    println!("Invalid PID in /tmp/oxllm.pid");
                     return Ok(());
                 },
-            }
+            },
+            Err(_) => {
+                println!("oxllm is not running (no PID file at /tmp/oxllm.pid)");
+                println!("Start it with: oxllm serve");
+                return Ok(());
+            },
         },
     };
 
-    let status = match std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status() {
+    let status = match std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+    {
         Ok(s) => s,
         Err(e) => {
             println!("Failed to send SIGTERM: {}", e);
@@ -679,10 +677,7 @@ fn run_stop(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
             pid
         );
     } else {
-        println!(
-            "kill command failed with exit code: {:?}",
-            status.code()
-        );
+        println!("kill command failed with exit code: {:?}", status.code());
     }
     Ok(())
 }
@@ -1635,39 +1630,66 @@ mod integration_tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
-                let mut buf = [0u8; 4096]; let _ = stream.read(&mut buf).await;
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
                 let _ = stream.write_all(ok_response.as_bytes()).await;
                 let _ = stream.flush().await;
             }
         });
 
         let p = ProviderState {
-            name: "prov".into(), base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
-            api_key: "key".into(), models: vec!["real-model".into()],
+            name: "prov".into(),
+            base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["real-model".into()],
             circuit: Arc::new(RwLock::new(CircuitState::Closed)),
             consecutive_failures: Arc::new(RwLock::new(0)),
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
             manual_disabled: AtomicBool::new(false),
-            requests: AtomicU64::new(0), successes: AtomicU64::new(0),
-            tokens_input: AtomicU64::new(0), tokens_output: AtomicU64::new(0),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
         };
         let mut vm = std::collections::HashMap::new();
-        vm.insert("known-model".into(), vec![VirtualModelTarget { provider: "prov".into(), model: "real-model".into() }]);
+        vm.insert(
+            "known-model".into(),
+            vec![VirtualModelTarget {
+                provider: "prov".into(),
+                model: "real-model".into(),
+            }],
+        );
 
-        let state = Arc::new(AppState { providers: vec![p], virtual_models: vm,
-            http_client: reqwest::Client::builder().build().unwrap(), upstream_timeout_secs: 5 });
+        let state = Arc::new(AppState {
+            providers: vec![p],
+            virtual_models: vm,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+        });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
-        let rs = ReloadableState { app_state: wr, telemetry: TelemetryClient::new(ttx),
-            start_time: Instant::now(), reloader: Reloader { sender: _ws, config_path: PathBuf::from(".") } };
+        let rs = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws,
+                config_path: PathBuf::from("."),
+            },
+        };
         let router = axum::Router::new()
-            .route("/v1/chat/completions", axum::routing::post(routes::create_chat_completions))
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(routes::create_chat_completions),
+            )
             .with_state(rs);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
 
         let client = reqwest::Client::new();
         let res = client.post(format!("http://{}/v1/chat/completions", addr))
@@ -1688,46 +1710,80 @@ mod integration_tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
-                let mut buf = [0u8; 4096]; let _ = stream.read(&mut buf).await;
-                let _ = stream.write_all(ok_response.as_bytes()).await; let _ = stream.flush().await;
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
             }
         });
 
         let p = ProviderState {
-            name: "target".into(), base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
-            api_key: "key".into(), models: vec!["model".into()],
+            name: "target".into(),
+            base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
             circuit: Arc::new(RwLock::new(CircuitState::Closed)),
             consecutive_failures: Arc::new(RwLock::new(0)),
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
-            manual_disabled: AtomicBool::new(true),  // Start disabled
-            requests: AtomicU64::new(0), successes: AtomicU64::new(0),
-            tokens_input: AtomicU64::new(0), tokens_output: AtomicU64::new(0),
+            manual_disabled: AtomicBool::new(true), // Start disabled
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
         };
 
         let mut vms = std::collections::HashMap::new();
-        vms.insert("test".into(), vec![VirtualModelTarget { provider: "target".into(), model: "model".into() }]);
-        let state = Arc::new(AppState { providers: vec![p], virtual_models: vms,
-            http_client: reqwest::Client::builder().build().unwrap(), upstream_timeout_secs: 5 });
+        vms.insert(
+            "test".into(),
+            vec![VirtualModelTarget {
+                provider: "target".into(),
+                model: "model".into(),
+            }],
+        );
+        let state = Arc::new(AppState {
+            providers: vec![p],
+            virtual_models: vms,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+        });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
-        let rs = ReloadableState { app_state: wr, telemetry: TelemetryClient::new(ttx),
-            start_time: Instant::now(), reloader: Reloader { sender: _ws.clone(), config_path: PathBuf::from(".") } };
+        let rs = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws.clone(),
+                config_path: PathBuf::from("."),
+            },
+        };
         let router = axum::Router::new()
-            .route("/admin/providers/{name}/online", axum::routing::post(routes::admin_online))
+            .route(
+                "/admin/providers/{name}/online",
+                axum::routing::post(routes::admin_online),
+            )
             .with_state(rs);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
 
         // Verify provider is disabled
         assert!(state.providers[0].manual_disabled.load(Ordering::Acquire));
 
         // Call admin online
         let client = reqwest::Client::new();
-        let res = client.post(format!("http://{}/admin/providers/target/online", proxy_addr))
-            .send().await.unwrap();
+        let res = client
+            .post(format!(
+                "http://{}/admin/providers/target/online",
+                proxy_addr
+            ))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(res.status(), 200);
 
         // Verify provider is now enabled
@@ -1741,58 +1797,103 @@ mod integration_tests {
         let body = r#"{"id":"test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":42,"completion_tokens":7,"total_tokens":49}}"#;
         let ok_response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(), body
+            body.len(),
+            body
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
-                let mut buf = [0u8; 4096]; let _ = stream.read(&mut buf).await;
-                let _ = stream.write_all(ok_response.as_bytes()).await; let _ = stream.flush().await;
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
             }
         });
 
         let p = ProviderState {
-            name: "counter".into(), base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
-            api_key: "key".into(), models: vec!["model".into()],
+            name: "counter".into(),
+            base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
             circuit: Arc::new(RwLock::new(CircuitState::Closed)),
             consecutive_failures: Arc::new(RwLock::new(0)),
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
             manual_disabled: AtomicBool::new(false),
-            requests: AtomicU64::new(0), successes: AtomicU64::new(0),
-            tokens_input: AtomicU64::new(0), tokens_output: AtomicU64::new(0),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
         };
 
         let mut vms = std::collections::HashMap::new();
-        vms.insert("test".into(), vec![VirtualModelTarget { provider: "counter".into(), model: "model".into() }]);
-        let state = Arc::new(AppState { providers: vec![p], virtual_models: vms,
-            http_client: reqwest::Client::builder().build().unwrap(), upstream_timeout_secs: 5 });
+        vms.insert(
+            "test".into(),
+            vec![VirtualModelTarget {
+                provider: "counter".into(),
+                model: "model".into(),
+            }],
+        );
+        let state = Arc::new(AppState {
+            providers: vec![p],
+            virtual_models: vms,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+        });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
-        let rs = ReloadableState { app_state: wr, telemetry: TelemetryClient::new(ttx),
-            start_time: Instant::now(), reloader: Reloader { sender: _ws, config_path: PathBuf::from(".") } };
+        let rs = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws,
+                config_path: PathBuf::from("."),
+            },
+        };
         let router = axum::Router::new()
-            .route("/v1/chat/completions", axum::routing::post(routes::create_chat_completions))
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(routes::create_chat_completions),
+            )
             .with_state(rs);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
 
         let client = reqwest::Client::new();
-        let res = client.post(format!("http://{}/v1/chat/completions", proxy_addr))
-            .json(&serde_json::json!({"model": "test", "messages": [{"role":"user","content":"hi"}]}))
-            .send().await.unwrap();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .json(
+                &serde_json::json!({"model": "test", "messages": [{"role":"user","content":"hi"}]}),
+            )
+            .send()
+            .await
+            .unwrap();
         assert_eq!(res.status(), 200);
 
         // Verify token counts were parsed
-        let tokens_in = state.providers[0].tokens_input.load(std::sync::atomic::Ordering::Relaxed);
-        let tokens_out = state.providers[0].tokens_output.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(tokens_in > 0, "Expected input tokens > 0, got {}", tokens_in);
-        assert!(tokens_out > 0, "Expected output tokens > 0, got {}", tokens_out);
+        let tokens_in = state.providers[0]
+            .tokens_input
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let tokens_out = state.providers[0]
+            .tokens_output
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            tokens_in > 0,
+            "Expected input tokens > 0, got {}",
+            tokens_in
+        );
+        assert!(
+            tokens_out > 0,
+            "Expected output tokens > 0, got {}",
+            tokens_out
+        );
         assert_eq!(tokens_in, 42);
         assert_eq!(tokens_out, 7);
     }
-
 }
