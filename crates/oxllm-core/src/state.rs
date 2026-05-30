@@ -29,6 +29,9 @@ pub struct ProviderState {
     // Lock-free thundering-herd permit
     pub probe_in_flight: Arc<AtomicBool>,
 
+    // Manual admin override — skips provider in routing regardless of circuit state
+    pub manual_disabled: AtomicBool,
+
     // Local request/token counters (visible via /status without otel collector)
     pub requests: AtomicU64,
     pub successes: AtomicU64,

@@ -45,7 +45,8 @@
 1.  `POST /v1/chat/completions` – Supports both standard JSON payloads and Server-Sent Events (SSE) streaming (`stream: true`).
 2.  `POST /v1/embeddings` – Standard non-streaming batch vectors.
 3.  `GET /v1/models` – Returns a consolidated virtual array of all models exposed by currently active and healthy upstream providers.
-4.  `GET /status` – Administrative endpoint displaying concurrent provider states (localhost-restricted).
+4.  `GET /status` – Administrative endpoint displaying per-provider circuit state, request counters, token volumes, and last request time. Localhost-restricted.
+5.  `POST /reload` – Administrative endpoint triggering config hot-reload via HTTP. Same effect as SIGHUP. Localhost-restricted.
 
 ---
 
@@ -64,13 +65,18 @@ pub enum CircuitState {
 
 pub struct ProviderState {
     pub name: String,
-    pub base_url: String,
+    pub base_url: Url,
     pub api_key: String,
     pub models: Vec<String>,
     pub circuit: Arc<RwLock<CircuitState>>,
     pub rate_limited_until: Arc<RwLock<Option<Instant>>>,
     pub consecutive_failures: Arc<RwLock<u32>>,
-    pub probe_in_flight: Arc<std::sync::atomic::AtomicBool>, // Lock-free thundering-herd permit
+    pub last_attempt_time: Arc<RwLock<Option<Instant>>>,
+    pub probe_in_flight: Arc<AtomicBool>,
+    pub requests: AtomicU64,
+    pub successes: AtomicU64,
+    pub tokens_input: AtomicU64,
+    pub tokens_output: AtomicU64,
 }
 ```
 
@@ -137,8 +143,9 @@ complex-free = [
 
 #### Reloading Mechanism
 To keep the binary free of intensive filesystem polling threads:
-* **POSIX Signal Handling:** The application must listen for a `SIGHUP` signal.
-* **Action:** Upon intercepting `SIGHUP`, the configuration file is re-parsed. New keys or target providers are mapped into a fresh `Vec<ProviderState>`, and the pointer is safely updated using a `tokio::sync::watch` channel or an atomic pointer swap, maintaining current uptime for connected clients.
+* **POSIX Signal Handling:** The application listens for a `SIGHUP` signal.
+* **HTTP Reload Endpoint:** A `POST /reload` endpoint (localhost-restricted) triggers the same logic.
+* **Action:** Upon intercepting either trigger, the configuration file is re-parsed. New keys or target providers are mapped into a fresh `Vec<ProviderState>`, and the pointer is safely updated using a `tokio::sync::watch` channel, maintaining current uptime for connected clients.
 
 ---
 
@@ -190,10 +197,11 @@ Every routed transaction generates an OpenTelemetry Span containing the official
 
 ### 5.1. Command Line Interface (CLI)
 The binary supports clean POSIX subcommands for daemon management and operational debugging:
-* `oxllm serve --config /path/to/config.toml` (Starts processing in the foreground/background)
+* `oxllm serve --config /path/to/config.toml` (Starts the proxy. Use `-v` for per-request routing info, `-vv` for full trace.)
 * `oxllm validate --config /path/to/config.toml` (Parses configuration syntax, resolves environment variables, checks upstream network paths, then exits)
-* `oxllm status` (Queries the running daemon locally over loopback and prints a beautiful, colored terminal status table of active providers)
-* `oxllm reload` (Finds the running `oxllm` daemon process and triggers SIGHUP immediately)
+* `oxllm status` (Queries the running daemon locally over loopback and prints the virtual model routing table plus per-provider counters)
+* `oxllm stop` (Gracefully stops the daemon via SIGTERM — drains in-flight SSE streams before exiting)
+* `oxllm reload` (Finds the running `oxllm` daemon process and triggers SIGHUP immediately, or use `POST /reload` HTTP endpoint)
 
 ### 5.2. Admin Route Protection
 To prevent external network actors from auditing provider credentials or configurations, all administrative endpoints (like `/status` and `/health`) are **localhost-restricted (127.0.0.1)**. External callers receive an immediate `403 Forbidden`.

@@ -21,6 +21,7 @@ async fn test_routing_loop_latency_performance() {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
             requests: AtomicU64::new(0),
             successes: AtomicU64::new(0),
             tokens_input: AtomicU64::new(0),

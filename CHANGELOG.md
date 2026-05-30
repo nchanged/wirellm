@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `oxllm stop` subcommand — gracefully stops the daemon via SIGTERM.
+- `oxllm serve -v` / `-vv` — verbosity flags for per-request routing info or full trace.
+- `POST /reload` HTTP endpoint — trigger config reload without shell access.
+- `bind_family` config option (`"ipv4"`, `"ipv6"`, `"dual"`) — dual-stack IPv4/IPv6 binding.
+- Last request time per provider — shown in `/status` and `oxllm status` ("Just now", "5m ago", etc.).
+- Virtual model routing table in `/status` — shows each virtual model's fallback chain with per-hop health and counters.
+- Circuit transition logging at `info!` level — see when circuits open, close, or rate-limit.
+
+### Changed
+- Per-request routing logs demoted from `info!` to `debug!` — default output is now quiet (errors and circuit transitions only). Use `-v` to see routing decisions.
+- PID file cleaned up on graceful shutdown.
+
+### Documentation
+- Installation section restructured: Homebrew first (easiest), then `cargo install`, then source build.
+- Full `oxllm status` output sample in README showing virtual model routing table.
+
 ## [0.1.4] - 2026-05-30
 
 ### Added

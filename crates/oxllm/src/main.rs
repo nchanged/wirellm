@@ -42,6 +42,10 @@ enum Commands {
         /// Path to the configuration TOML file
         #[arg(short, long, default_value = "config.toml", env = "OXLLM_CONFIG")]
         config: PathBuf,
+
+        /// Verbosity level. Repeat for more output: -v (debug), -vv (trace)
+        #[arg(short, long, action = clap::ArgAction::Count, default_value_t = 0)]
+        verbose: u8,
     },
     /// Parses and validates the configuration syntax and cross-references
     Validate {
@@ -61,6 +65,18 @@ enum Commands {
         #[arg(short, long)]
         pid: Option<u32>,
     },
+    /// Gracefully stops the running oxllm daemon (sends SIGTERM)
+    Stop {
+        /// PID of the running oxllm process (optional, reads from /tmp/oxllm.pid by default)
+        #[arg(short, long)]
+        pid: Option<u32>,
+    },
+}
+
+#[derive(Clone)]
+pub struct Reloader {
+    sender: tokio::sync::watch::Sender<Arc<AppState>>,
+    config_path: PathBuf,
 }
 
 #[derive(Clone)]
@@ -68,6 +84,7 @@ pub struct ReloadableState {
     pub app_state: tokio::sync::watch::Receiver<Arc<AppState>>,
     pub telemetry: TelemetryClient,
     pub start_time: Instant,
+    pub reloader: Reloader,
 }
 
 impl axum::extract::FromRef<ReloadableState> for Arc<AppState> {
@@ -94,6 +111,12 @@ impl axum::extract::FromRef<ReloadableState> for (Arc<AppState>, Instant) {
     }
 }
 
+impl axum::extract::FromRef<ReloadableState> for Reloader {
+    fn from_ref(state: &ReloadableState) -> Self {
+        state.reloader.clone()
+    }
+}
+
 fn build_app_state(config: Config) -> Result<AppState, String> {
     let mut providers = Vec::new();
     for p in config.providers {
@@ -117,6 +140,7 @@ fn build_app_state(config: Config) -> Result<AppState, String> {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
             requests: AtomicU64::new(0),
             successes: AtomicU64::new(0),
             tokens_input: AtomicU64::new(0),
@@ -199,6 +223,49 @@ async fn shutdown_signal() {
             info!("Received SIGTERM, shutting down gracefully...");
         },
     }
+
+    // Clean up PID file on shutdown
+    let _ = std::fs::remove_file("/tmp/oxllm.pid");
+}
+
+async fn handle_http_reload(
+    axum::extract::State(reloader): axum::extract::State<Reloader>,
+) -> impl IntoResponse {
+    let config = match Config::load_from_file(&reloader.config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to load config: {}", e),
+            )
+        },
+    };
+    if let Err(e) = config.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Config validation failed: {}", e),
+        );
+    }
+    match build_app_state(config) {
+        Ok(new_state) => {
+            if reloader.sender.send(Arc::new(new_state)).is_ok() {
+                info!("Configuration reloaded via HTTP POST /reload");
+                (
+                    StatusCode::OK,
+                    "Configuration reloaded successfully".to_string(),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to send config update".to_string(),
+                )
+            }
+        },
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            format!("Failed to build state: {}", e),
+        ),
+    }
 }
 
 async fn handle_sighup(
@@ -265,14 +332,19 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
 
     // 5. Spawn SIGHUP listener
     let config_path_clone = config_path.clone();
-    tokio::spawn(handle_sighup(config_path_clone, watch_sender));
+    tokio::spawn(handle_sighup(config_path_clone, watch_sender.clone()));
 
     // 6. Build Axum Router
     let start_time = Instant::now();
+    let reloader = Reloader {
+        sender: watch_sender.clone(),
+        config_path: config_path.clone(),
+    };
     let reloadable_state = ReloadableState {
         app_state: watch_receiver,
         telemetry: telemetry_client,
         start_time,
+        reloader,
     };
 
     use axum::routing::{get, post};
@@ -291,6 +363,22 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
             "/health",
             get(health_check).layer(middleware::from_fn(localhost_only)),
         )
+        .route(
+            "/reload",
+            post(handle_http_reload).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/admin/providers/{name}/offline",
+            post(routes::admin_offline).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/admin/providers/{name}/online",
+            post(routes::admin_online).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/admin/providers/{name}/reset",
+            post(routes::admin_reset).layer(middleware::from_fn(localhost_only)),
+        )
         .with_state(reloadable_state);
 
     // Write PID file
@@ -299,9 +387,50 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
     }
 
     // Start listening
-    let bind_addr = format!("{}:{}", config.server.host, config.server.port);
-    info!("Listening on http://{}", bind_addr);
-    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    let port = config.server.port;
+    let listener = match config.server.bind_family.as_str() {
+        "ipv6" => {
+            let addr = format!("[::]:{}", port);
+            info!("Listening on http://{} (IPv6 only)", addr);
+            tokio::net::TcpListener::bind(&addr).await?
+        },
+        "dual" => {
+            let addr = std::net::SocketAddr::new(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+                port,
+            );
+            let socket = socket2::Socket::new(
+                socket2::Domain::IPV6,
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            )
+            .map_err(|e| format!("Failed to create socket: {}", e))?;
+            socket
+                .set_only_v6(false)
+                .map_err(|e| format!("Failed to set dual-stack: {}", e))?;
+            socket
+                .set_reuse_address(true)
+                .map_err(|e| format!("Failed to set reuse address: {}", e))?;
+            socket
+                .bind(&addr.into())
+                .map_err(|e| format!("Failed to bind: {}", e))?;
+            socket
+                .listen(1024)
+                .map_err(|e| format!("Failed to listen: {}", e))?;
+            socket
+                .set_nonblocking(true)
+                .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
+            info!("Listening on [::]:{} (dual-stack IPv4/IPv6)", port);
+            tokio::net::TcpListener::from_std(socket.into())
+                .map_err(|e| format!("Failed to create tokio listener: {}", e))?
+        },
+        _ => {
+            // Default: IPv4
+            let addr = format!("127.0.0.1:{}", port);
+            info!("Listening on http://{} (IPv4)", addr);
+            tokio::net::TcpListener::bind(&addr).await?
+        },
+    };
 
     axum::serve(
         listener,
@@ -338,6 +467,16 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         successes: u64,
         tokens_input: u64,
         tokens_output: u64,
+        last_request: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RouteEntry {
+        provider: String,
+        model: String,
+        circuit: String,
+        requests: u64,
+        successes: u64,
     }
 
     #[derive(serde::Deserialize)]
@@ -345,21 +484,45 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         uptime_secs: u64,
         total_requests: u64,
         providers: Vec<ProviderStatus>,
+        virtual_models: std::collections::HashMap<String, Vec<RouteEntry>>,
     }
 
     let status: StatusResponse = res.json().await?;
+
+    let uptime_mins = status.uptime_secs / 60;
+    let uptime_secs_rem = status.uptime_secs % 60;
     println!(
-        "Uptime: {}s | Total requests: {}",
-        status.uptime_secs, status.total_requests
+        "\nUptime: {}m {}s  |  Total Requests: {}",
+        uptime_mins, uptime_secs_rem, status.total_requests
     );
-    println!(
-        "\n+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+"
-    );
-    println!("| Provider Name      | Circuit Breaker State          | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output |");
-    println!("+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+");
-    for s in status.providers {
+
+    // Virtual model routing tables
+    for (vm_name, routes) in &status.virtual_models {
+        println!("\nVirtual Model: {}", vm_name);
+        println!("{}", "-".repeat(100));
         println!(
-            "| {:<18} | {:<30} | {:<8} | {:<13} | {:<8} | {:<9} | {:<12} | {:<13} |",
+            "| {:<20} | {:<25} | {:<30} | {:>8} | {:>8} |",
+            "Provider", "Model", "Circuit", "Requests", "Success"
+        );
+        println!("{}", "-".repeat(100));
+        for entry in routes {
+            println!(
+                "| {:<20} | {:<25} | {:<30} | {:>8} | {:>8} |",
+                entry.provider, entry.model, entry.circuit, entry.requests, entry.successes
+            );
+        }
+        println!("{}", "-".repeat(100));
+    }
+
+    // Per-provider table
+    println!(
+        "\n+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+"
+    );
+    println!("| Provider Name      | Circuit Breaker State          | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output | Last Request|");
+    println!("+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+");
+    for s in &status.providers {
+        println!(
+            "| {:<18} | {:<30} | {:<8} | {:<13} | {:<8} | {:<9} | {:<12} | {:<13} | {:<11} |",
             s.name,
             s.circuit,
             s.failures,
@@ -368,10 +531,11 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             s.successes,
             s.tokens_input,
             s.tokens_output,
+            s.last_request,
         );
     }
     println!(
-        "+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+\n"
+        "+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+\n"
     );
 
     Ok(())
@@ -397,20 +561,59 @@ fn run_reload(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_stop(pid_opt: Option<u32>) -> Result<(), Box<dyn std::error::Error>> {
+    let pid = match pid_opt {
+        Some(p) => p,
+        None => {
+            let content = std::fs::read_to_string("/tmp/oxllm.pid")
+                .map_err(|_| "Failed to read PID from /tmp/oxllm.pid. Is the gateway running?")?;
+            content
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| "Invalid PID in /tmp/oxllm.pid")?
+        },
+    };
+
+    // Send SIGTERM for graceful shutdown (drains SSE streams before exiting)
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()?;
+    if status.success() {
+        println!(
+            "Successfully sent graceful shutdown signal (SIGTERM) to process {}",
+            pid
+        );
+        Ok(())
+    } else {
+        Err(Box::new(std::io::Error::other(format!(
+            "kill command failed with exit code: {:?}",
+            status.code()
+        ))))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Setup logging
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,oxllm=debug,oxllm_core=debug"));
+    let cli = Cli::parse();
+
+    // Build the log filter based on verbosity level
+    let log_filter = match &cli.command {
+        Commands::Serve { verbose, .. } => match verbose {
+            0 => "info,oxllm=info,oxllm_core=info",
+            1 => "info,oxllm=debug,oxllm_core=debug",
+            _ => "trace",
+        },
+        _ => "info,oxllm=debug,oxllm_core=debug",
+    };
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_filter));
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(filter)
         .init();
 
-    let cli = Cli::parse();
-
     match cli.command {
-        Commands::Serve { config } => {
+        Commands::Serve { config, .. } => {
             run_serve(config).await?;
         },
         Commands::Validate { config } => {
@@ -421,6 +624,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         Commands::Reload { pid } => {
             run_reload(pid)?;
+        },
+        Commands::Stop { pid } => {
+            run_stop(pid)?;
         },
     }
 
@@ -491,6 +697,7 @@ mod integration_tests {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
             requests: AtomicU64::new(0),
             successes: AtomicU64::new(0),
             tokens_input: AtomicU64::new(0),
@@ -507,6 +714,7 @@ mod integration_tests {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
             requests: AtomicU64::new(0),
             successes: AtomicU64::new(0),
             tokens_input: AtomicU64::new(0),
@@ -540,10 +748,16 @@ mod integration_tests {
         let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::channel(1024);
         let telemetry_client = TelemetryClient::new(telemetry_tx);
 
+        let dummy_reloader = Reloader {
+            sender: _watch_sender.clone(),
+            config_path: PathBuf::from("config.toml"),
+        };
+
         let reloadable_state = ReloadableState {
             app_state: watch_receiver,
             telemetry: telemetry_client,
             start_time: Instant::now(),
+            reloader: dummy_reloader,
         };
 
         let router = axum::Router::new()
@@ -599,6 +813,7 @@ mod integration_tests {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
             requests: AtomicU64::new(0),
             successes: AtomicU64::new(0),
             tokens_input: AtomicU64::new(0),
@@ -626,10 +841,16 @@ mod integration_tests {
         let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::channel(1024);
         let telemetry_client = TelemetryClient::new(telemetry_tx);
 
+        let dummy_reloader = Reloader {
+            sender: _watch_sender.clone(),
+            config_path: PathBuf::from("config.toml"),
+        };
+
         let reloadable_state = ReloadableState {
             app_state: watch_receiver,
             telemetry: telemetry_client,
             start_time: Instant::now(),
+            reloader: dummy_reloader,
         };
 
         let router = axum::Router::new()
@@ -674,4 +895,553 @@ mod integration_tests {
         assert!(body.contains("data: {\"token\": \"Hello\"}"));
         assert!(body.contains("data: {\"token\": \" World\"}"));
     }
+
+    // -----------------------------------------------------------------------
+    // New integration tests: timeout failover, all-providers-fail, manual
+    // offline, rate-limit recovery, embeddings endpoint
+    // -----------------------------------------------------------------------
+
+    /// Circuit breaker trips after 3 failures; failover routes to healthy provider.
+    #[tokio::test]
+    async fn test_integration_circuit_breaker_failover() {
+        use oxllm_core::router::{AdaptivePriorityStrategy, RoutingStrategy};
+
+        let p1 = ProviderState {
+            name: "primary".into(),
+            base_url: Url::parse("https://api.fail.example.com/v1/").unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+
+        let p2 = ProviderState {
+            name: "secondary".into(),
+            base_url: Url::parse("https://api.ok.example.com/v1/").unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+
+        let strategy = AdaptivePriorityStrategy;
+        let candidates = vec![&p1, &p2];
+
+        // Initially selects primary
+        let selected = strategy.select(&candidates).await.unwrap();
+        assert_eq!(selected.name, "primary");
+
+        // Simulate 3 failures on primary
+        for _ in 0..3 {
+            strategy.feedback(&p1, false, false, Some(500), None).await;
+        }
+
+        // Circuit should be open now; select should skip to secondary
+        assert!(matches!(
+            *p1.circuit.read().await,
+            CircuitState::Open { .. }
+        ));
+        let selected = strategy.select(&candidates).await.unwrap();
+        assert_eq!(selected.name, "secondary");
+    }
+
+    /// When every provider fails, the proxy returns 502 Bad Gateway.
+    #[tokio::test]
+    async fn test_integration_all_providers_fail_gives_502() {
+        let fail_response =
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(fail_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let make_provider = |name: &str| ProviderState {
+            name: name.into(),
+            base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+
+        let p1 = make_provider("p1");
+        let p2 = make_provider("p2");
+
+        let mut virtual_models = std::collections::HashMap::new();
+        virtual_models.insert(
+            "test".into(),
+            vec![
+                VirtualModelTarget {
+                    provider: "p1".into(),
+                    model: "model".into(),
+                },
+                VirtualModelTarget {
+                    provider: "p2".into(),
+                    model: "model".into(),
+                },
+            ],
+        );
+
+        let app_state = Arc::new(AppState {
+            providers: vec![p1, p2],
+            virtual_models,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+        });
+
+        let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let state = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws,
+                config_path: PathBuf::from("."),
+            },
+        };
+        let router = axum::Router::new()
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(routes::create_chat_completions),
+            )
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .json(&serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 502);
+        let body = res.text().await.unwrap();
+        assert!(body.contains("All upstream chat completions providers failed"));
+    }
+
+    /// Manual offline takes a provider out of rotation; requests bypass it.
+    #[tokio::test]
+    async fn test_integration_manual_offline_bypasses_provider() {
+        use std::sync::atomic::Ordering;
+
+        let ok_response =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}"
+                .to_string();
+
+        // Two independent upstreams
+        let p1_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let p1_addr = p1_listener.local_addr().unwrap();
+        let ok_response_p1 = ok_response.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = p1_listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                // Should never be hit — but respond just in case
+                let _ = stream.write_all(ok_response_p1.as_bytes()).await;
+            }
+        });
+
+        let p2_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let p2_addr = p2_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = p2_listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let p1 = ProviderState {
+            name: "p1".into(),
+            base_url: Url::parse(&format!("http://{}/v1/", p1_addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(true), // MANUALLY DISABLED
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+
+        let p2 = ProviderState {
+            name: "p2".into(),
+            base_url: Url::parse(&format!("http://{}/v1/", p2_addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+
+        let mut virtual_models = std::collections::HashMap::new();
+        virtual_models.insert(
+            "test".into(),
+            vec![
+                VirtualModelTarget {
+                    provider: "p1".into(),
+                    model: "model".into(),
+                },
+                VirtualModelTarget {
+                    provider: "p2".into(),
+                    model: "model".into(),
+                },
+            ],
+        );
+
+        let app_state = Arc::new(AppState {
+            providers: vec![p1, p2],
+            virtual_models,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+        });
+
+        let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let state = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws,
+                config_path: PathBuf::from("."),
+            },
+        };
+        let router = axum::Router::new()
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(routes::create_chat_completions),
+            )
+            .with_state(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .json(&serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+
+        // p1 was never hit; p2 handled the request
+        assert_eq!(app_state.providers[0].requests.load(Ordering::Relaxed), 0);
+        assert_eq!(app_state.providers[1].requests.load(Ordering::Relaxed), 1);
+    }
+
+    /// Admin reset endpoint clears circuit breaker, failures, and rate limit.
+    #[tokio::test]
+    async fn test_integration_admin_reset() {
+        use std::sync::atomic::Ordering;
+
+        let ok_response =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}"
+                .to_string();
+        let ok_response_clone = ok_response.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response_clone.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let p = ProviderState {
+            name: "resetme".into(),
+            base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+
+        let mut virtual_models = std::collections::HashMap::new();
+        virtual_models.insert(
+            "test".into(),
+            vec![VirtualModelTarget {
+                provider: "resetme".into(),
+                model: "model".into(),
+            }],
+        );
+
+        let app_state = Arc::new(AppState {
+            providers: vec![p],
+            virtual_models,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+        });
+
+        let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let state = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws,
+                config_path: PathBuf::from("."),
+            },
+        };
+
+        // Simulate a tripped state
+        *app_state.providers[0].circuit.write().await = CircuitState::Open {
+            until: Instant::now() + Duration::from_secs(300),
+        };
+        *app_state.providers[0].consecutive_failures.write().await = 5;
+        *app_state.providers[0].rate_limited_until.write().await =
+            Some(Instant::now() + Duration::from_secs(300));
+        app_state.providers[0]
+            .manual_disabled
+            .store(true, Ordering::Release);
+
+        // Build router with admin routes
+        let router = axum::Router::new()
+            .route(
+                "/admin/providers/{name}/reset",
+                axum::routing::post(routes::admin_reset),
+            )
+            .with_state(state.clone());
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        // Call admin reset
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!(
+                "http://{}/admin/providers/resetme/reset",
+                proxy_addr
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+
+        // Verify all state is cleared
+        assert_eq!(
+            *app_state.providers[0].circuit.read().await,
+            CircuitState::Closed
+        );
+        assert_eq!(*app_state.providers[0].consecutive_failures.read().await, 0);
+        assert!(app_state.providers[0]
+            .rate_limited_until
+            .read()
+            .await
+            .is_none());
+        assert!(!app_state.providers[0]
+            .manual_disabled
+            .load(Ordering::Acquire));
+    }
+
+    /// /v1/embeddings endpoint proxies correctly and returns embeddings.
+    #[tokio::test]
+    async fn test_integration_embeddings_success() {
+        let body = r#"{"data":[{"embedding":[0.1,0.2,0.3],"index":0}],"model":"test","usage":{"prompt_tokens":4}}"#;
+        let ok_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let p = ProviderState {
+            name: "emb".into(),
+            base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+
+        let mut virtual_models = std::collections::HashMap::new();
+        virtual_models.insert(
+            "test-emb".into(),
+            vec![VirtualModelTarget {
+                provider: "emb".into(),
+                model: "model".into(),
+            }],
+        );
+
+        let app_state = Arc::new(AppState {
+            providers: vec![p],
+            virtual_models,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+        });
+
+        let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let state = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws,
+                config_path: PathBuf::from("."),
+            },
+        };
+        let router = axum::Router::new()
+            .route(
+                "/v1/embeddings",
+                axum::routing::post(routes::create_embeddings),
+            )
+            .with_state(state);
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/embeddings", proxy_addr))
+            .json(&serde_json::json!({
+                "model": "test-emb",
+                "input": "hello"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["data"][0]["embedding"].as_array().unwrap().len(), 3);
+    }
+
+    /// Invalid model name returns 400 Bad Request.
+    #[tokio::test]
+    async fn test_integration_invalid_model_returns_400() {
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}".to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096]; let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let p = ProviderState {
+            name: "prov".into(), base_url: Url::parse(&format!("http://{}/v1/", addr)).unwrap(),
+            api_key: "key".into(), models: vec!["real-model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0), successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0), tokens_output: AtomicU64::new(0),
+        };
+        let mut vm = std::collections::HashMap::new();
+        vm.insert("known-model".into(), vec![VirtualModelTarget { provider: "prov".into(), model: "real-model".into() }]);
+
+        let state = Arc::new(AppState { providers: vec![p], virtual_models: vm,
+            http_client: reqwest::Client::builder().build().unwrap(), upstream_timeout_secs: 5 });
+        let (_ws, wr) = tokio::sync::watch::channel(state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let rs = ReloadableState { app_state: wr, telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(), reloader: Reloader { sender: _ws, config_path: PathBuf::from(".") } };
+        let router = axum::Router::new()
+            .route("/v1/chat/completions", axum::routing::post(routes::create_chat_completions))
+            .with_state(rs);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap(); });
+
+        let client = reqwest::Client::new();
+        let res = client.post(format!("http://{}/v1/chat/completions", addr))
+            .json(&serde_json::json!({"model": "nonexistent", "messages": [{"role":"user","content":"hi"}]}))
+            .send().await.unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
 }

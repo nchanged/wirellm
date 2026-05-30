@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, warn};
 
 use oxllm_core::router::{AdaptivePriorityStrategy, RoutingStrategy};
 use oxllm_core::state::{AppState, CircuitState, ProviderState};
@@ -81,6 +81,15 @@ pub async fn list_models(State(app_state): State<Arc<AppState>>) -> impl IntoRes
     })
 }
 
+#[derive(Serialize)]
+struct RouteEntry {
+    provider: String,
+    model: String,
+    circuit: String,
+    requests: u64,
+    successes: u64,
+}
+
 /// GET /status (localhost restricted in main.rs routing)
 pub async fn get_status(
     State((app_state, start_time)): State<(Arc<AppState>, Instant)>,
@@ -95,6 +104,7 @@ pub async fn get_status(
         successes: u64,
         tokens_input: u64,
         tokens_output: u64,
+        last_request: String,
     }
 
     #[derive(Serialize)]
@@ -102,6 +112,7 @@ pub async fn get_status(
         uptime_secs: u64,
         total_requests: u64,
         providers: Vec<ProviderStatus>,
+        virtual_models: std::collections::HashMap<String, Vec<RouteEntry>>,
     }
 
     let mut status_list = Vec::new();
@@ -138,6 +149,25 @@ pub async fn get_status(
             .tokens_output
             .load(std::sync::atomic::Ordering::Relaxed);
 
+        let last_request = {
+            let last = provider.last_attempt_time.read().await;
+            match *last {
+                Some(instant) => {
+                    let elapsed = now.saturating_duration_since(instant);
+                    if elapsed.as_secs() < 60 {
+                        "Just now".to_string()
+                    } else if elapsed.as_secs() < 3600 {
+                        format!("{}m ago", elapsed.as_secs() / 60)
+                    } else if elapsed.as_secs() < 86400 {
+                        format!("{}h ago", elapsed.as_secs() / 3600)
+                    } else {
+                        format!("{}d ago", elapsed.as_secs() / 86400)
+                    }
+                },
+                None => "Never".to_string(),
+            }
+        };
+
         total_requests += requests;
 
         status_list.push(ProviderStatus {
@@ -149,13 +179,57 @@ pub async fn get_status(
             successes,
             tokens_input,
             tokens_output,
+            last_request,
         });
+    }
+
+    // Build virtual model routing table
+    let mut virtual_models: std::collections::HashMap<String, Vec<RouteEntry>> =
+        std::collections::HashMap::new();
+
+    for (vm_name, targets) in &app_state.virtual_models {
+        let mut entries = Vec::new();
+        for target in targets {
+            let provider_state = app_state
+                .providers
+                .iter()
+                .find(|p| p.name == target.provider);
+            let (circuit_str, requests, successes) = match provider_state {
+                Some(provider) => {
+                    let circ = *provider.circuit.read().await;
+                    let now = std::time::Instant::now();
+                    let circuit_str = match circ {
+                        CircuitState::Closed => "Closed (Healthy)".to_string(),
+                        CircuitState::HalfOpen => "Half-Open (Probing)".to_string(),
+                        CircuitState::Open { until } => {
+                            let left = until.saturating_duration_since(now).as_secs();
+                            format!("Open ({}s cooldown)", left)
+                        },
+                    };
+                    let requests = provider.requests.load(std::sync::atomic::Ordering::Relaxed);
+                    let successes = provider
+                        .successes
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    (circuit_str, requests, successes)
+                },
+                None => ("Unknown".to_string(), 0, 0),
+            };
+            entries.push(RouteEntry {
+                provider: target.provider.clone(),
+                model: target.model.clone(),
+                circuit: circuit_str,
+                requests,
+                successes,
+            });
+        }
+        virtual_models.insert(vm_name.clone(), entries);
     }
 
     Json(StatusResponse {
         uptime_secs: start_time.elapsed().as_secs(),
         total_requests,
         providers: status_list,
+        virtual_models,
     })
 }
 
@@ -235,7 +309,7 @@ pub async fn create_embeddings(
             req = req.header("traceparent", traceparent);
         }
 
-        info!(
+        debug!(
             "Embedding request routing to {} (attempt {})",
             selected.name, attempts
         );
@@ -464,7 +538,7 @@ pub async fn create_chat_completions(
             req = req.header("traceparent", traceparent);
         }
 
-        info!(
+        debug!(
             "Chat request routing to {} (attempt {})",
             selected.name, attempts
         );
@@ -601,10 +675,6 @@ pub async fn create_chat_completions(
             },
             Ok(res) => {
                 let status_code = res.status().as_u16();
-                println!(
-                    "Chat completions upstream {} failed with status {}",
-                    selected.name, status_code
-                );
                 warn!(
                     "Chat completions upstream {} failed with status {}",
                     selected.name, status_code
@@ -688,4 +758,79 @@ fn extract_retry_after(headers: &HeaderMap) -> Option<Duration> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Admin handlers — must be mounted behind localhost_only middleware
+// ---------------------------------------------------------------------------
+
+/// POST /admin/providers/{name}/offline
+pub async fn admin_offline(
+    State(app_state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match app_state.providers.iter().find(|p| p.name == name) {
+        Some(provider) => {
+            provider
+                .manual_disabled
+                .store(true, std::sync::atomic::Ordering::Release);
+            (StatusCode::OK, format!("Provider '{}' taken offline", name))
+        },
+        None => (
+            StatusCode::NOT_FOUND,
+            format!("Provider '{}' not found", name),
+        ),
+    }
+}
+
+/// POST /admin/providers/{name}/online
+pub async fn admin_online(
+    State(app_state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match app_state.providers.iter().find(|p| p.name == name) {
+        Some(provider) => {
+            provider
+                .manual_disabled
+                .store(false, std::sync::atomic::Ordering::Release);
+            (
+                StatusCode::OK,
+                format!("Provider '{}' brought online", name),
+            )
+        },
+        None => (
+            StatusCode::NOT_FOUND,
+            format!("Provider '{}' not found", name),
+        ),
+    }
+}
+
+/// POST /admin/providers/{name}/reset — resets circuit breaker to Closed,
+/// failures to 0, rate limit cleared, manual disabled cleared.
+pub async fn admin_reset(
+    State(app_state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match app_state.providers.iter().find(|p| p.name == name) {
+        Some(provider) => {
+            // Reset circuit state
+            *provider.circuit.write().await = CircuitState::Closed;
+            // Reset consecutive failures
+            *provider.consecutive_failures.write().await = 0;
+            // Clear rate limit
+            *provider.rate_limited_until.write().await = None;
+            // Clear manual disabled
+            provider
+                .manual_disabled
+                .store(false, std::sync::atomic::Ordering::Release);
+            (
+                StatusCode::OK,
+                format!("Provider '{}' reset to healthy", name),
+            )
+        },
+        None => (
+            StatusCode::NOT_FOUND,
+            format!("Provider '{}' not found", name),
+        ),
+    }
 }

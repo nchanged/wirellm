@@ -1,6 +1,7 @@
 use crate::state::{CircuitState, ProviderState, SelectedProvider};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use tracing::info;
 
 /// Modular strategy trait for selecting providers and updating their health state.
 #[allow(async_fn_in_trait)]
@@ -29,6 +30,11 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
         let now = Instant::now();
 
         for provider in candidates {
+            // Check for manual admin override
+            if provider.manual_disabled.load(Ordering::Acquire) {
+                continue;
+            }
+
             // 1. Dynamic Idle Penalty Decay (Aging)
             {
                 let mut failures = provider.consecutive_failures.write().await;
@@ -152,6 +158,17 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
 
             if is_probe {
                 provider.probe_in_flight.store(false, Ordering::SeqCst);
+                info!(
+                    target: "oxllm_core::router",
+                    "HalfOpen probe succeeded for {} — circuit closed",
+                    provider.name
+                );
+            } else {
+                info!(
+                    target: "oxllm_core::router",
+                    "Circuit closed for {} after successful request",
+                    provider.name
+                );
             }
         } else {
             let mut failures = provider.consecutive_failures.write().await;
@@ -166,6 +183,11 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                 let cooldown = retry_after.unwrap_or_else(|| Duration::from_secs(30)); // 30s default fallback
                 let mut rl = provider.rate_limited_until.write().await;
                 *rl = Some(now + cooldown);
+                info!(
+                    target: "oxllm_core::router",
+                    "Rate-limited {} for {}s",
+                    provider.name, cooldown.as_secs()
+                );
             } else if *failures >= 3 || is_probe {
                 // Tripped or failed probe: trigger exponential circuit cooldown
                 let exponent = failures.saturating_sub(3) as u32;
@@ -176,6 +198,11 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                 *state = CircuitState::Open {
                     until: now + cooldown,
                 };
+                info!(
+                    target: "oxllm_core::router",
+                    "Circuit opened for {} for {}s ({} consecutive failures)",
+                    provider.name, cooldown.as_secs(), *failures
+                );
             }
 
             if is_probe {
@@ -204,6 +231,7 @@ mod tests {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
             requests: AtomicU64::new(0),
             successes: AtomicU64::new(0),
             tokens_input: AtomicU64::new(0),

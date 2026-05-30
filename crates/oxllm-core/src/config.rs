@@ -11,6 +11,8 @@ pub struct ServerConfig {
     pub otel_endpoint: String,
     #[serde(default = "default_upstream_timeout")]
     pub upstream_timeout_secs: u64,
+    #[serde(default = "default_bind_family")]
+    pub bind_family: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +96,10 @@ impl Config {
 
 fn default_upstream_timeout() -> u64 {
     5
+}
+
+fn default_bind_family() -> String {
+    "ipv4".to_string()
 }
 
 /// Helper function to perform Unix shell-style `${VAR_NAME}` environment variable expansions.
