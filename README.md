@@ -55,6 +55,11 @@ cargo install oxllm
 ### Configuration (`config.toml`)
 Define your upstream providers and priority virtual model mappings in a single local config file:
 
+> **`base_url` convention**: the value must end with a trailing slash and include the full API path prefix (e.g. `/v1/`). `oxllm` appends `chat/completions` and `embeddings` relative to this base. If your provider already exposes `/v1/`, set `base_url = "https://api.example.com/v1/"`.
+
+> **Telemetry is optional**: if `otel_endpoint` is unreachable (e.g. no local collector running), `oxllm` logs a warning and starts normally without exporting telemetry.
+
+**Cloud providers (OpenAI-compatible):**
 ```toml
 [server]
 host = "127.0.0.1"
@@ -65,14 +70,14 @@ upstream_timeout_secs = 5
 [[providers]]
 name = "google-ai-studio"
 enabled = true
-base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
 api_key = "${AI_STUDIO_KEY}"
 models = ["gemini-2.5-flash"]
 
 [[providers]]
 name = "groq"
 enabled = true
-base_url = "https://api.groq.com/openai/v1"
+base_url = "https://api.groq.com/openai/v1/"
 api_key = "${GROQ_KEY}"
 models = ["llama-4-scout", "deepseek-r1-distill"]
 
@@ -80,6 +85,35 @@ models = ["llama-4-scout", "deepseek-r1-distill"]
 complex-free = [
   { provider = "groq", model = "deepseek-r1-distill" },
   { provider = "google-ai-studio", model = "gemini-2.5-flash" }
+]
+```
+
+**Local Ollama (fully self-contained, no API keys needed):**
+```toml
+[server]
+host = "127.0.0.1"
+port = 8080
+otel_endpoint = "http://127.0.0.1:4318"
+upstream_timeout_secs = 60
+
+[[providers]]
+name = "ollama-primary"
+enabled = true
+base_url = "http://localhost:11434/v1/"
+api_key = "ollama"
+models = ["granite4:micro"]
+
+[[providers]]
+name = "ollama-fallback"
+enabled = true
+base_url = "http://localhost:11434/v1/"
+api_key = "ollama"
+models = ["granite4.1:3b"]
+
+[virtual_models]
+default = [
+  { provider = "ollama-primary",  model = "granite4:micro" },
+  { provider = "ollama-fallback", model = "granite4.1:3b"  },
 ]
 ```
 

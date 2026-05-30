@@ -64,6 +64,9 @@ pub struct TelemetryWorker {
 
 impl TelemetryWorker {
     /// Spawns the worker thread alongside the runtime initialization.
+    /// If the OTLP exporter cannot be initialised (e.g. collector offline or
+    /// feature mismatch), the worker degrades gracefully to a no-op drain
+    /// so the proxy still starts and serves requests. Telemetry is best-effort.
     pub fn spawn(
         otel_endpoint: &str,
         rx: mpsc::Receiver<TelemetryEvent>,
@@ -74,62 +77,84 @@ impl TelemetryWorker {
             .with_attributes(vec![KeyValue::new("service.version", "0.1.0")])
             .build();
 
-        let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
+        let span_exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_http()
             .with_endpoint(otel_endpoint)
-            .build()
-            .map_err(|e| crate::error::OxllmError::TelemetryInit(e.to_string()))?;
-
-        // 1. Initialize OTLP Trace Pipeline (HTTP/JSON + rustls)
-        let tracer_provider = SdkTracerProvider::builder()
-            .with_resource(resource.clone())
-            .with_id_generator(RandomIdGenerator::default())
-            .with_batch_exporter(otlp_exporter)
             .build();
-        global::set_tracer_provider(tracer_provider);
 
         let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()
             .with_endpoint(otel_endpoint)
-            .build()
-            .map_err(|e| crate::error::OxllmError::TelemetryInit(e.to_string()))?;
-
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(metric_exporter).build();
-
-        // 2. Initialize OTLP Metrics Pipeline
-        let meter_provider = SdkMeterProvider::builder()
-            .with_resource(resource)
-            .with_reader(reader)
-            .build();
-        global::set_meter_provider(meter_provider);
-
-        // 3. Construct Metric Instruments from the Global Meter
-        let meter = global::meter("oxllm-metrics");
-        let provider_status_gauge = meter
-            .u64_gauge("llm_proxy.provider.status")
-            .with_description("0=Healthy, 1=Cooldown, 2=Tripped")
-            .build();
-        let request_duration_histogram = meter
-            .f64_histogram("llm_proxy.request.duration")
-            .with_description("Total transaction lifecycle duration")
-            .with_unit("ms")
-            .build();
-        let tokens_consumed_counter = meter
-            .u64_counter("llm_proxy.tokens.consumed")
-            .with_description("Cumulative count of tokens processed")
             .build();
 
-        let mut worker = Self {
-            rx,
-            provider_status_gauge,
-            request_duration_histogram,
-            tokens_consumed_counter,
-        };
+        match (span_exporter, metric_exporter) {
+            (Ok(se), Ok(me)) => {
+                // 1. Full OTLP pipeline
+                let tracer_provider = SdkTracerProvider::builder()
+                    .with_resource(resource.clone())
+                    .with_id_generator(RandomIdGenerator::default())
+                    .with_batch_exporter(se)
+                    .build();
+                global::set_tracer_provider(tracer_provider);
 
-        // Spawn async processing loop
-        Ok(tokio::spawn(async move {
-            worker.run_loop().await;
-        }))
+                let reader =
+                    opentelemetry_sdk::metrics::PeriodicReader::builder(me).build();
+                let meter_provider = SdkMeterProvider::builder()
+                    .with_resource(resource)
+                    .with_reader(reader)
+                    .build();
+                global::set_meter_provider(meter_provider);
+
+                let meter = global::meter("oxllm-metrics");
+                let provider_status_gauge = meter
+                    .u64_gauge("llm_proxy.provider.status")
+                    .with_description("0=Healthy, 1=Cooldown, 2=Tripped")
+                    .build();
+                let request_duration_histogram = meter
+                    .f64_histogram("llm_proxy.request.duration")
+                    .with_description("Total transaction lifecycle duration")
+                    .with_unit("ms")
+                    .build();
+                let tokens_consumed_counter = meter
+                    .u64_counter("llm_proxy.tokens.consumed")
+                    .with_description("Cumulative count of tokens processed")
+                    .build();
+
+                let mut worker = Self {
+                    rx,
+                    provider_status_gauge,
+                    request_duration_histogram,
+                    tokens_consumed_counter,
+                };
+                Ok(tokio::spawn(async move {
+                    worker.run_loop().await;
+                }))
+            },
+            (se_result, me_result) => {
+                // Degraded mode: log the error(s) and drain the channel silently
+                if let Err(e) = se_result {
+                    warn!(
+                        target: "oxllm::telemetry",
+                        "OTLP span exporter failed to initialise (endpoint: {}): {}. \
+                         Running without telemetry export.",
+                        otel_endpoint, e
+                    );
+                }
+                if let Err(e) = me_result {
+                    warn!(
+                        target: "oxllm::telemetry",
+                        "OTLP metric exporter failed to initialise (endpoint: {}): {}. \
+                         Running without telemetry export.",
+                        otel_endpoint, e
+                    );
+                }
+                // Drain the channel so senders never block
+                Ok(tokio::spawn(async move {
+                    let mut rx = rx;
+                    while rx.recv().await.is_some() {} // silently discard
+                }))
+            },
+        }
     }
 
     async fn run_loop(&mut self) {
