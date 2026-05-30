@@ -19,6 +19,23 @@ It exposes a single OpenAI-compatible HTTP interface (`POST /v1/chat/completions
 - **POSIX Signal Hot-Reloading**: Spawns a background Unix `SIGHUP` listener utilizing `tokio::sync::watch` to hot-swap active `AppState` memory pools on the fly without dropping connections.
 - **Ultra-low Memory Footprint**: Less than **25 MB RAM** at idle and less than **40 MB RAM** under peak concurrency.
 
+## 📦 Installation
+
+You can install the `oxllm` binary using either **Homebrew** (recommended for pre-compiled speed) or **Cargo**:
+
+### 1. Via Homebrew (Pre-compiled)
+Install the pre-compiled binary instantly using your Homebrew formula tap:
+```bash
+brew tap planetf1/homebrew-tap
+brew install oxllm
+```
+
+### 2. Via Cargo (Compiled from source)
+Install the binary directly from crates.io by compiling it on your machine:
+```bash
+cargo install oxllm
+```
+
 ---
 
 ## 🛠️ CLI Subcommands

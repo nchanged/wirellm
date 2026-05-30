@@ -35,6 +35,23 @@ Built to operate entirely in memory with zero local disk persistence, `oxllm` is
 
 ## 🛠️ Installation & Usage
 
+### Installation Options
+
+You can install `oxllm` using either **Homebrew** (recommended for pre-compiled speed) or **Cargo**:
+
+#### 1. Via Homebrew (Pre-compiled)
+Install the pre-compiled binary instantly using your Homebrew formula tap:
+```bash
+brew tap planetf1/homebrew-tap
+brew install oxllm
+```
+
+#### 2. Via Cargo (Compiled from source)
+Install the binary directly from crates.io by compiling it on your machine:
+```bash
+cargo install oxllm
+```
+
 ### Configuration (`config.toml`)
 Define your upstream providers and priority virtual model mappings in a single local config file:
 
