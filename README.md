@@ -7,14 +7,14 @@
 
 `oxllm` (Oxide LLM Proxy) is an ultra-minimalist, high-resilience adaptive routing LLM gateway written in Rust. It exposes an OpenAI-compatible interface, proxying requests to a tiered fallback pool of LLM providers with automatic rate-limit detection, circuit breakers, and failover.
 
-Built to operate entirely in memory with zero local disk persistence, `oxllm` is optimized for resource-constrained edge devices (like OpenWrt routers), developer workstations, and background daemons.
+Built to operate entirely in memory with zero local disk persistence, `oxllm` is optimized for resource-constrained edge devices (like OpenWrt routers), developer workstations, and background daemons. The **stripped release binary is ~2.6 MB** and idle RAM usage is **~14 MB**.
 
 ---
 
 ## 🚀 Key Features
 
 * **Zero-Disk Dependency**: No SQLite, local caching, or file write operations during routing. State is strictly in memory.
-* **Under &lt;2ms Routing Overhead**: Lock-free concurrency across routing loop, counters, and probe permits.
+* **&lt;2ms Routing Overhead**: Lock-free concurrency across routing loop, counters, and probe permits. Verified by CI benchmark.
 * **Adaptive Circuit Breaker**: Strict `HalfOpen` state machine with lock-free `probe_in_flight` atomic check-and-set. Rate limits and server errors trip per-provider circuits with exponential backoff. Idle-based penalty decay automatically rehabilitates providers.
 * **Tiered Failover**: Configure fallback chains across multiple providers. If the primary returns 429 or 5xx, the proxy transparently cascades to the next.
 * **Hot Config Reloading**: `SIGHUP` signal or `POST /reload` HTTP endpoint — parses updated `config.toml` and hot-swaps the provider pool via `tokio::sync::watch` without dropping connections.
@@ -32,9 +32,20 @@ Built to operate entirely in memory with zero local disk persistence, `oxllm` is
 ```
 oxllm/
 ├── Cargo.toml              # Workspace root
-├── config.toml             # Multi-tier cloud provider config
+├── config.toml             # Multi-tier cloud provider config (6 providers)
 ├── config-local-test.toml  # Local-only Ollama config for testing
 ├── crates/
+│   ├── oxllm-core/         # Core: config parsing, circuit breaker, router, telemetry
+│   └── oxllm/              # CLI: Axum server, routes, signal handling, admin API
+├── docs/
+│   ├── architecture.md     # Concurrency model, circuit breaker rules, telemetry
+│   └── providers.md        # Free-tier provider guide (snapshot: 2026-05-30)
+├── .github/workflows/      # CI, security, release, crates.io publish
+└── dist-workspace.toml     # cargo-dist release config
+```
+
+---
+
 ## 🛠️ Installation
 
 ### 1. Homebrew (easiest — pre-compiled binary)
@@ -44,7 +55,7 @@ brew tap planetf1/homebrew-tap
 brew install oxllm
 ```
 
-No Rust toolchain needed. Pre-compiled for macOS and Linux (aarch64 + x86_64).
+Pre-compiled for macOS and Linux (aarch64 + x86_64). No Rust toolchain needed. Binary size: ~2.6 MB stripped.
 
 ### 2. Cargo (compiled from source)
 
@@ -52,7 +63,7 @@ No Rust toolchain needed. Pre-compiled for macOS and Linux (aarch64 + x86_64).
 cargo install oxllm
 ```
 
-Builds from crates.io. Requires Rust 1.85.1+.
+Builds from [crates.io](https://crates.io/crates/oxllm). Requires Rust 1.85.1+.
 
 ### 3. From source (latest main)
 
@@ -60,44 +71,39 @@ Builds from crates.io. Requires Rust 1.85.1+.
 git clone https://github.com/planetf1/oxllm.git
 cd oxllm
 cargo build --release
-cp config-local-test.toml my-config.toml
-./target/release/oxllm serve --config my-config.toml
+./target/release/oxllm serve --config config-local-test.toml
 ```
 
 ### Default Config Location
 
 `oxllm serve` looks for config in this order:
-1. `--config` path if provided
+1. `--config <path>` if provided
 2. `~/.config/oxllm/config.toml` (XDG base directory)
 3. `./config.toml` (current directory, for development)
 
-Copy the example config to get started:
 ```bash
+# Quick start with local Ollama (no API keys needed):
+cp config-local-test.toml ~/.config/oxllm/config.toml
+oxllm serve
+
+# Or with cloud providers (set env vars first):
+export GROQ_API_KEY="gsk_..."
+export GOOGLE_API_KEY="AIza..."
 cp config.toml ~/.config/oxllm/config.toml
-```
-cargo install oxllm
-```
-
-Builds from crates.io. Requires Rust 1.85.1+.
-
-### 3. From source (latest main)
-
-```bash
-git clone https://github.com/planetf1/oxllm.git
-cd oxllm
-cargo build --release
-cp config-local-test.toml my-config.toml
-./target/release/oxllm serve --config my-config.toml
+oxllm serve
 ```
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Local Ollama)
 
 ### Prerequisites
 
-- Either a local [Ollama](https://ollama.com) instance (free, zero API keys), or cloud provider keys.
-- If using Ollama: `ollama pull granite4:micro` for a tiny test model.
+```bash
+# Install Ollama and pull a tiny test model
+brew install ollama
+ollama pull granite4:micro
+```
 
 ### 1. Create a config
 
@@ -105,7 +111,6 @@ cp config-local-test.toml my-config.toml
 [server]
 host = "127.0.0.1"
 port = 8080
-otel_endpoint = "http://127.0.0.1:4318"
 upstream_timeout_secs = 30
 
 [[providers]]
@@ -124,13 +129,13 @@ default = [
 ### 2. Start the proxy
 
 ```bash
-oxllm serve --config my-config.toml
+oxllm serve
 ```
 
 ### 3. Test it
 
 ```bash
-# Chat
+# Chat completion
 curl -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}]}'
@@ -140,10 +145,41 @@ curl -X POST http://127.0.0.1:8080/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"model": "default", "input": "hello world"}'
 
-# Models, health, status
-curl http://127.0.0.1:8080/v1/models
+# Health check
 curl http://127.0.0.1:8080/health
+
+# Local dashboard (no external collector needed)
 curl http://127.0.0.1:8080/status
+```
+
+---
+
+## 🚀 Quick Start (Multi-Tier Cloud)
+
+The repo's `config.toml` uses **6 free-tier providers** with **2 tiers** of virtual models:
+
+- **`smart`** — Groq Llama 3.3 70B & SambaNova Llama 4 Maverick, cascading to basic
+- **`basic`** — Groq Llama 4 Scout, Google Gemini Flash, SambaNova DeepSeek, OpenRouter
+
+```bash
+# Set your API keys (full list in docs/providers.md)
+export GROQ_API_KEY="gsk_..."
+export GOOGLE_API_KEY="AIza..."
+export SAMBANOVA_API_KEY="..."
+export OPENROUTER_API_KEY="sk-or-..."
+
+# Start with cloud providers
+oxllm serve --config config.toml
+
+# Use the smart model (strongest available)
+curl -X POST http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "smart", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Use the basic model (fast, cheap, high rate limits)
+curl -X POST http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "basic", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ---
@@ -154,115 +190,119 @@ curl http://127.0.0.1:8080/status
 
 | Field | Default | Description |
 |---|---|---|
-| `host` | `127.0.0.1` | Bind address (not used when `bind_family` is `ipv6`/`dual`) |
+| `host` | `"127.0.0.1"` | Bind address (not used when `bind_family` is `ipv6`/`dual`) |
 | `port` | `8080` | Listen port |
 | `otel_endpoint` | — | OTLP HTTP endpoint (e.g. `http://127.0.0.1:4318`). If unreachable, proxy starts without telemetry. |
-| `upstream_timeout_secs` | `5` | Upstream request timeout |
-| `bind_family` | `"ipv4"` | Address family: `"ipv4"`, `"ipv6"`, or `"dual"` (both families) |
+| `upstream_timeout_secs` | `5` | Upstream request timeout in seconds |
+| `bind_family` | `"ipv4"` | Address family: `"ipv4"`, `"ipv6"`, or `"dual"` (both) |
 
 ### Provider Definition
 
-Each provider requires a `name`, `enabled`, `base_url` (with trailing `/v1/`), `api_key` (or `${VAR}` env reference), and `models` list.
+Each provider requires `name`, `enabled`, `base_url` (with trailing `/v1/`), `api_key` (or `${VAR}` env reference), and `models` list.
 
-### Virtual Models
+### Virtual Models (Fallback Chains)
 
-Virtual models define fallback chains. List providers in priority order — if one returns 429 or 5xx, the proxy tries the next:
+Virtual models define the routing order. If a provider returns 429 or 5xx, the proxy transparently tries the next:
 
 ```toml
 [virtual_models]
 smart = [
-  { provider = "google-strong", model = "gemini-2.5-pro" },
-  { provider = "groq-strong",   model = "llama-4-maverick" },
-  { provider = "groq-basic",    model = "llama-4-scout" },
+  { provider = "groq-strong",  model = "llama-3.3-70b-versatile" },
+  { provider = "groq-basic",   model = "meta-llama/llama-4-scout-17b-16e-instruct" },
+  { provider = "ollama-fallback", model = "granite4:micro" },
 ]
 ```
 
+### How the Routing Algorithm Works
+
+1. When a request arrives, the proxy iterates the virtual model's provider list in order.
+2. For each provider, it checks: **circuit breaker state** (Closed? Open? HalfOpen?), **rate-limit window** (cooling down?), **manual override** (admin-disabled?).
+3. The first healthy provider is selected for the request.
+4. On success: circuit resets to Closed, failure count drops to 0.
+5. On 429 (rate limit): sets a cooldown timer based on `retry-after` header (default 30s). After 3 failures, circuit opens.
+6. On 5xx: increments failure counter. After 3 failures, circuit opens for **60 × 2^(failures-3)** seconds.
+7. **HalfOpen probes**: After cooldown expires, a single probe request is allowed. Only one concurrent probe — others bypass via atomic `compare_exchange`.
+8. **Idle decay**: Every 5 minutes without a request, failure count decreases by 1. Below 3 failures, Open circuits automatically rehabilitate to Closed.
+
 ### Example Configs
 
-- `config.toml` — multi-tier cloud config with 7 providers and 3 virtual models
-- `config-local-test.toml` — local-only Ollama, zero API keys needed
+- `config.toml` — 6 cloud providers across 2 tiers (smart + basic)
+- `config-local-test.toml` — local Ollama only, zero API keys
 
 ---
 
 ## 📟 CLI Subcommands
 
 ```bash
-# Start the proxy (use -v for per-request routing, -vv for trace)
-oxllm serve --config config.toml
-oxllm serve --config config.toml -v
-oxllm serve --config config.toml -vv
+# Start the proxy
+oxllm serve                          # default: ~/.config/oxllm/config.toml
+oxllm serve -v                       # verbose: per-request routing info
+oxllm serve -vv                      # trace: full request/response dump
 
-# Validate config syntax and provider cross-references
-oxllm validate --config config.toml
+# Validate config syntax
+oxllm validate                       # checks env vars, provider cross-refs
 
-# Query provider status, counters, and virtual model routing table
-oxllm status
+# Live dashboard (no external collector needed)
+oxllm status                         # virtual model routing table + per-provider counters
 
-# Gracefully stop the running daemon (sends SIGTERM)
-oxllm stop
-# Trigger config hot-reload via SIGHUP
+# Manage providers at runtime
+oxllm provider list                  # condensed provider status table
+oxllm provider offline <name>        # take a provider out of rotation
+oxllm provider online <name>         # re-enable a disabled provider
+oxllm provider reset <name>          # clear circuit breaker, failures, rate limit
+
+# Config hot-reload (SIGHUP)
 oxllm reload
 
-# Take a provider offline/online or reset its circuit breaker
-oxllm provider offline <name>
-oxllm provider online <name>
-oxllm provider reset <name>
+# Graceful stop (drains in-flight SSE streams)
+oxllm stop
+```
 
-### `oxllm status` output
+### Example `oxllm status` Output
 
 ```
-Uptime: 12m 34s  |  Total Requests: 47
+Uptime: 1m 18s  |  Total Requests: 2
 
 Virtual Model: smart
-+----------------------+--------------------------+-------------------------------+----------+----------+
-| Provider             | Model                    | Circuit                       | Requests | Success  |
-+----------------------+--------------------------+-------------------------------+----------+----------+
-| google-strong        | gemini-2.5-pro           | Closed (Healthy)              |       45 |       43 |
-| groq-strong          | llama-4-maverick         | Open (30s cooldown)           |        2 |        0 |
-| google-basic         | gemini-2.5-flash         | Closed (Healthy)              |        2 |        2 |
-+----------------------+--------------------------+-------------------------------+----------+----------+
-
-Virtual Model: basic
-+----------------------+--------------------------+-------------------------------+----------+----------+
-| Provider             | Model                    | Circuit                       | Requests | Success  |
-+----------------------+--------------------------+-------------------------------+----------+----------+
-| groq-basic           | llama-4-scout            | Closed (Healthy)              |       12 |       12 |
-| google-basic         | gemini-2.5-flash         | Closed (Healthy)              |        0 |        0 |
-+----------------------+--------------------------+-------------------------------+----------+----------+
+---------------------------------------------------------------------
+| Provider          | Model                              | Circuit    | Req | Suc |
+---------------------------------------------------------------------
+| ✓ groq-strong     | llama-3.3-70b-versatile            | Closed     |   1 |   2 |
+| ✓ sambanova-strong| Llama-4-Maverick-17B-128E-Instruct | Closed     |   0 |   0 |
+---------------------------------------------------------------------
 
 Per-Provider Details:
-+------------------+-----------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+
-| Provider Name    | Circuit               | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output | Last Req    |
-+------------------+-----------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+
-| google-strong    | Closed (Healthy)      |        0 | No            |       45 |        43 |      14200   |         3200  | Just now    |
-| groq-strong      | Open (30s cooldown)   |        3 | No            |        2 |         0 |        850   |          0   | 5m ago      |
-| google-basic     | Closed (Healthy)      |        0 | No            |        2 |        2 |        600   |          150  | 3m ago      |
-| groq-basic       | Closed (Healthy)      |        0 | No            |       12 |        12 |       3600   |          900  | 1m ago      |
-+------------------+-----------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+
++------------------+---------------------------+----------+------+-----+
+| Provider Name    | Models                    | Circuit  | Req  | Suc |
++------------------+---------------------------+----------+------+-----+
+| groq-strong      | llama-3.3-70b-versatile  | Closed   |   1  |   2 |
+| sambanova-strong | Llama-4-Maverick-17B-...  | Closed   |   0  |   0 |
++------------------+---------------------------+----------+------+-----+
+
+Use 'oxllm provider offline <name>' to take a provider out of rotation.
+Use 'oxllm provider reset <name>' to clear circuit breaker state.
 ```
 
 ---
 
-## 🔬 API Endpoints
+## 🔌 API Endpoints
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
 | `GET` | `/health` | Health check | Loopback |
-| `GET` | `/status` | Provider + virtual model stats (counters, circuit state, last request time) | Loopback |
+| `GET` | `/status` | Circuit states + counters + last request time | Loopback |
 | `POST` | `/reload` | Trigger config hot-reload | Loopback |
+| `POST` | `/admin/providers/{name}/offline` | Take provider offline | Loopback |
+| `POST` | `/admin/providers/{name}/online` | Bring provider online | Loopback |
+| `POST` | `/admin/providers/{name}/reset` | Reset circuit breaker state | Loopback |
 | `GET` | `/v1/models` | List available virtual models | None |
 | `POST` | `/v1/chat/completions` | Chat completion (JSON or SSE streaming) | None |
 | `POST` | `/v1/embeddings` | Text embeddings | None |
 
-All admin endpoints (`/health`, `/status`, `/reload`) are restricted to localhost (127.0.0.1) — external callers receive `403 Forbidden`.
+All admin endpoints (`/health`, `/status`, `/reload`, `/admin/*`) are restricted to localhost — external callers receive `403 Forbidden`.
 
 ---
 
-## 🔬 Developer Guides
-
-* **[Architecture & Design](docs/architecture.md)** — concurrency model, circuit breaker rules, telemetry pipeline
-* **[Provider Guide](docs/providers.md)** — free-tier services, model names, API keys, rate limits (snapshot 2026-05-30)
-* **[Implementation Plan](implementation_plan.md)** — development roadmap and phase breakdown
 ## 📄 License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
