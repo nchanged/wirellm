@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oxllm",
+    "crates/oxllm-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.1"
+authors = ["Nigel Jones"]
+license = "Apache-2.0"
+repository = "https://github.com/planetf1/oxllm"
+homepage = "https://github.com/planetf1/oxllm"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+bytes = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+clap = { version = "4", features = ["derive", "env"] }
+axum = { version = "0.8", features = ["http1", "json", "matched-path"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
+hex = "0.4"
+opentelemetry = { version = "0.28", features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.28", features = ["trace", "metrics", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-json", "reqwest-rustls"] }
+opentelemetry-semantic-conventions = "0.28"
+
+[profile.release]
+opt-level = "z"      # Optimize specifically for binary size
+lto = "fat"          # Enable Fat Link-Time Optimization
+codegen-units = 1    # Maximize compiler optimizations
+panic = "abort"      # Strip stack unwinding code
+strip = true         # Automatically strip symbols and debug info
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

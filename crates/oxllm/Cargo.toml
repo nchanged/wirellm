@@ -1,0 +1,26 @@
+[package]
+name = "oxllm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Minimalist adaptive routing LLM proxy in Rust"
+
+[dependencies]
+oxllm-core = { path = "../oxllm-core", version = "0.1.0" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1"
