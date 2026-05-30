@@ -1,7 +1,7 @@
 use crate::config::VirtualModelTarget;
 use reqwest::Url;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -28,6 +28,12 @@ pub struct ProviderState {
 
     // Lock-free thundering-herd permit
     pub probe_in_flight: Arc<AtomicBool>,
+
+    // Local request/token counters (visible via /status without otel collector)
+    pub requests: AtomicU64,
+    pub successes: AtomicU64,
+    pub tokens_input: AtomicU64,
+    pub tokens_output: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -42,6 +48,7 @@ pub struct AppState {
     pub providers: Vec<ProviderState>,
     pub virtual_models: HashMap<String, Vec<VirtualModelTarget>>,
     pub http_client: reqwest::Client,
+    pub upstream_timeout_secs: u64,
 }
 
 impl AppState {

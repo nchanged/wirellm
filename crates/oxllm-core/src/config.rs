@@ -9,6 +9,8 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub otel_endpoint: String,
+    #[serde(default = "default_upstream_timeout")]
+    pub upstream_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +90,10 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn default_upstream_timeout() -> u64 {
+    5
 }
 
 /// Helper function to perform Unix shell-style `${VAR_NAME}` environment variable expansions.

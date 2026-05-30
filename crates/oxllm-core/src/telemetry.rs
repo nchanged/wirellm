@@ -97,8 +97,7 @@ impl TelemetryWorker {
                     .build();
                 global::set_tracer_provider(tracer_provider);
 
-                let reader =
-                    opentelemetry_sdk::metrics::PeriodicReader::builder(me).build();
+                let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(me).build();
                 let meter_provider = SdkMeterProvider::builder()
                     .with_resource(resource)
                     .with_reader(reader)

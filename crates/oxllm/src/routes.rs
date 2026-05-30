@@ -82,16 +82,30 @@ pub async fn list_models(State(app_state): State<Arc<AppState>>) -> impl IntoRes
 }
 
 /// GET /status (localhost restricted in main.rs routing)
-pub async fn get_status(State(app_state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn get_status(
+    State((app_state, start_time)): State<(Arc<AppState>, Instant)>,
+) -> impl IntoResponse {
     #[derive(Serialize)]
     struct ProviderStatus {
         name: String,
         circuit: String,
         failures: u32,
         rate_limited: bool,
+        requests: u64,
+        successes: u64,
+        tokens_input: u64,
+        tokens_output: u64,
+    }
+
+    #[derive(Serialize)]
+    struct StatusResponse {
+        uptime_secs: u64,
+        total_requests: u64,
+        providers: Vec<ProviderStatus>,
     }
 
     let mut status_list = Vec::new();
+    let mut total_requests: u64 = 0;
     let now = Instant::now();
 
     for provider in &app_state.providers {
@@ -113,15 +127,36 @@ pub async fn get_status(State(app_state): State<Arc<AppState>>) -> impl IntoResp
 
         let failures = *provider.consecutive_failures.read().await;
 
+        let requests = provider.requests.load(std::sync::atomic::Ordering::Relaxed);
+        let successes = provider
+            .successes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let tokens_input = provider
+            .tokens_input
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let tokens_output = provider
+            .tokens_output
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        total_requests += requests;
+
         status_list.push(ProviderStatus {
             name: provider.name.clone(),
             circuit: circuit_str,
             failures,
             rate_limited: is_limited,
+            requests,
+            successes,
+            tokens_input,
+            tokens_output,
         });
     }
 
-    Json(status_list)
+    Json(StatusResponse {
+        uptime_secs: start_time.elapsed().as_secs(),
+        total_requests,
+        providers: status_list,
+    })
 }
 
 /// POST /v1/embeddings
@@ -191,7 +226,7 @@ pub async fn create_embeddings(
             .http_client
             .post(endpoint_url.as_str())
             .body(rewritten_body)
-            .timeout(Duration::from_secs(5)) // Strict 5-second handshake/connection timeout
+            .timeout(Duration::from_secs(app_state.upstream_timeout_secs))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", selected.api_key));
 
@@ -204,6 +239,14 @@ pub async fn create_embeddings(
             "Embedding request routing to {} (attempt {})",
             selected.name, attempts
         );
+
+        // Increment request counter
+        if let Some(target) = app_state.providers.iter().find(|p| p.name == selected.name) {
+            target
+                .requests
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
         let res = req.send().await;
 
         match res {
@@ -235,6 +278,22 @@ pub async fn create_embeddings(
                     },
                 };
 
+                // Parse token counts from upstream response
+                let (input_tokens, output_tokens) = serde_json::from_slice::<Value>(&res_body)
+                    .map(|v| {
+                        let usage = v.get("usage");
+                        let input = usage
+                            .and_then(|u| u.get("prompt_tokens"))
+                            .and_then(|t| t.as_u64())
+                            .unwrap_or(0);
+                        let output = usage
+                            .and_then(|u| u.get("completion_tokens"))
+                            .and_then(|t| t.as_u64())
+                            .unwrap_or(0);
+                        (input, output)
+                    })
+                    .unwrap_or((0, 0));
+
                 // Report Success feedback
                 let target_provider_state = app_state
                     .providers
@@ -251,13 +310,24 @@ pub async fn create_embeddings(
                     )
                     .await;
 
+                // Increment local counters
+                target_provider_state
+                    .successes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                target_provider_state
+                    .tokens_input
+                    .fetch_add(input_tokens, std::sync::atomic::Ordering::Relaxed);
+                target_provider_state
+                    .tokens_output
+                    .fetch_add(output_tokens, std::sync::atomic::Ordering::Relaxed);
+
                 // Push Telemetry Metrics
                 telemetry.emit(TelemetryEvent::RecordTransaction {
                     operation: "embeddings".to_string(),
                     provider: selected.name.clone(),
                     model: target_model,
-                    input_tokens: 0, // In embeddings we might not parse token counts strictly to preserve footprint
-                    output_tokens: 0,
+                    input_tokens,
+                    output_tokens,
                     duration: start_time.elapsed(),
                     attempts,
                     failure_reason: None,
@@ -297,10 +367,6 @@ pub async fn create_embeddings(
                     .await;
             },
             Err(e) => {
-                println!(
-                    "Embedding request upstream {} connection failed: {:?}",
-                    selected.name, e
-                );
                 warn!(
                     "Embedding request upstream {} connection failed: {}",
                     selected.name, e
@@ -390,7 +456,7 @@ pub async fn create_chat_completions(
             .http_client
             .post(endpoint_url.as_str())
             .body(rewritten_body)
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(app_state.upstream_timeout_secs))
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", selected.api_key));
 
@@ -402,6 +468,14 @@ pub async fn create_chat_completions(
             "Chat request routing to {} (attempt {})",
             selected.name, attempts
         );
+
+        // Increment request counter
+        if let Some(target) = app_state.providers.iter().find(|p| p.name == selected.name) {
+            target
+                .requests
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+
         let res = req.send().await;
 
         match res {
@@ -425,6 +499,11 @@ pub async fn create_chat_completions(
                     )
                     .await;
 
+                // Increment local counters (streaming: token counts deferred)
+                target_provider_state
+                    .successes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
                 if is_streaming {
                     // SSE chunk-streaming via bytes_stream() mapped to Boxed Error
                     let reqwest_stream = res.bytes_stream();
@@ -434,6 +513,7 @@ pub async fn create_chat_completions(
                     });
 
                     // Push Telemetry Metrics
+                    // Token counts deferred — parsing requires buffering the full stream
                     telemetry.emit(TelemetryEvent::RecordTransaction {
                         operation: "chat".to_string(),
                         provider: selected.name.clone(),
@@ -472,13 +552,40 @@ pub async fn create_chat_completions(
                         },
                     };
 
+                    // Parse token counts from upstream response
+                    let (input_tokens, output_tokens) = serde_json::from_slice::<Value>(&res_body)
+                        .map(|v| {
+                            let usage = v.get("usage");
+                            let input = usage
+                                .and_then(|u| u.get("prompt_tokens"))
+                                .and_then(|t| t.as_u64())
+                                .unwrap_or(0);
+                            let output = usage
+                                .and_then(|u| u.get("completion_tokens"))
+                                .and_then(|t| t.as_u64())
+                                .unwrap_or(0);
+                            (input, output)
+                        })
+                        .unwrap_or((0, 0));
+
+                    // Increment local counters
+                    target_provider_state
+                        .successes
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    target_provider_state
+                        .tokens_input
+                        .fetch_add(input_tokens, std::sync::atomic::Ordering::Relaxed);
+                    target_provider_state
+                        .tokens_output
+                        .fetch_add(output_tokens, std::sync::atomic::Ordering::Relaxed);
+
                     // Push Telemetry Metrics
                     telemetry.emit(TelemetryEvent::RecordTransaction {
                         operation: "chat".to_string(),
                         provider: selected.name.clone(),
                         model: target_model,
-                        input_tokens: 0,
-                        output_tokens: 0,
+                        input_tokens,
+                        output_tokens,
                         duration: start_time.elapsed(),
                         attempts,
                         failure_reason: None,
@@ -520,10 +627,6 @@ pub async fn create_chat_completions(
                     .await;
             },
             Err(e) => {
-                println!(
-                    "Chat completions upstream {} connection failed: {:?}",
-                    selected.name, e
-                );
                 warn!(
                     "Chat completions upstream {} connection failed: {}",
                     selected.name, e

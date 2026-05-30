@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -67,6 +67,7 @@ enum Commands {
 pub struct ReloadableState {
     pub app_state: tokio::sync::watch::Receiver<Arc<AppState>>,
     pub telemetry: TelemetryClient,
+    pub start_time: Instant,
 }
 
 impl axum::extract::FromRef<ReloadableState> for Arc<AppState> {
@@ -78,6 +79,18 @@ impl axum::extract::FromRef<ReloadableState> for Arc<AppState> {
 impl axum::extract::FromRef<ReloadableState> for (Arc<AppState>, TelemetryClient) {
     fn from_ref(state: &ReloadableState) -> Self {
         (state.app_state.borrow().clone(), state.telemetry.clone())
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for Instant {
+    fn from_ref(state: &ReloadableState) -> Self {
+        state.start_time
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for (Arc<AppState>, Instant) {
+    fn from_ref(state: &ReloadableState) -> Self {
+        (state.app_state.borrow().clone(), state.start_time)
     }
 }
 
@@ -104,6 +117,10 @@ fn build_app_state(config: Config) -> Result<AppState, String> {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
         });
     }
 
@@ -116,6 +133,7 @@ fn build_app_state(config: Config) -> Result<AppState, String> {
         providers,
         virtual_models: config.virtual_models,
         http_client,
+        upstream_timeout_secs: config.server.upstream_timeout_secs,
     })
 }
 
@@ -250,9 +268,11 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
     tokio::spawn(handle_sighup(config_path_clone, watch_sender));
 
     // 6. Build Axum Router
+    let start_time = Instant::now();
     let reloadable_state = ReloadableState {
         app_state: watch_receiver,
         telemetry: telemetry_client,
+        start_time,
     };
 
     use axum::routing::{get, post};
@@ -314,25 +334,44 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         circuit: String,
         failures: u32,
         rate_limited: bool,
+        requests: u64,
+        successes: u64,
+        tokens_input: u64,
+        tokens_output: u64,
     }
 
-    let status_list: Vec<ProviderStatus> = res.json().await?;
+    #[derive(serde::Deserialize)]
+    struct StatusResponse {
+        uptime_secs: u64,
+        total_requests: u64,
+        providers: Vec<ProviderStatus>,
+    }
+
+    let status: StatusResponse = res.json().await?;
     println!(
-        "\n+--------------------+--------------------------------+----------+---------------+"
+        "Uptime: {}s | Total requests: {}",
+        status.uptime_secs, status.total_requests
     );
-    println!("| Provider Name      | Circuit Breaker State          | Failures | Rate Limited? |");
-    println!("+--------------------+--------------------------------+----------+---------------+");
-    for s in status_list {
+    println!(
+        "\n+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+"
+    );
+    println!("| Provider Name      | Circuit Breaker State          | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output |");
+    println!("+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+");
+    for s in status.providers {
         println!(
-            "| {:<18} | {:<30} | {:<8} | {:<13} |",
+            "| {:<18} | {:<30} | {:<8} | {:<13} | {:<8} | {:<9} | {:<12} | {:<13} |",
             s.name,
             s.circuit,
             s.failures,
-            if s.rate_limited { "Yes" } else { "No" }
+            if s.rate_limited { "Yes" } else { "No" },
+            s.requests,
+            s.successes,
+            s.tokens_input,
+            s.tokens_output,
         );
     }
     println!(
-        "+--------------------+--------------------------------+----------+---------------+\n"
+        "+--------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+\n"
     );
 
     Ok(())
@@ -452,6 +491,10 @@ mod integration_tests {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
         };
 
         let p2 = ProviderState {
@@ -464,6 +507,10 @@ mod integration_tests {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
         };
 
         let mut virtual_models = std::collections::HashMap::new();
@@ -486,6 +533,7 @@ mod integration_tests {
             providers: vec![p1, p2],
             virtual_models,
             http_client,
+            upstream_timeout_secs: 5,
         });
 
         let (_watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -495,6 +543,7 @@ mod integration_tests {
         let reloadable_state = ReloadableState {
             app_state: watch_receiver,
             telemetry: telemetry_client,
+            start_time: Instant::now(),
         };
 
         let router = axum::Router::new()
@@ -550,6 +599,10 @@ mod integration_tests {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
         };
 
         let mut virtual_models = std::collections::HashMap::new();
@@ -566,6 +619,7 @@ mod integration_tests {
             providers: vec![p],
             virtual_models,
             http_client,
+            upstream_timeout_secs: 5,
         });
 
         let (_watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -575,6 +629,7 @@ mod integration_tests {
         let reloadable_state = ReloadableState {
             app_state: watch_receiver,
             telemetry: telemetry_client,
+            start_time: Instant::now(),
         };
 
         let router = axum::Router::new()

@@ -1,0 +1,103 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+otel_endpoint = "http://127.0.0.1:4318"
+upstream_timeout_secs = 30
+
+# ==========================================
+# Provider Definitions
+# ==========================================
+# API keys are loaded from environment variables (dollar-brace-VARNAME-brace syntax)
+# Order within each virtual model defines fallback priority
+
+# ---- Strong Tier ----
+# Powerful models with tighter rate limits. Use for real work.
+
+[[providers]]
+name = "google-strong"
+enabled = true
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+api_key = "${GOOGLE_AI_KEY}"
+models = ["gemini-2.5-pro"]
+
+[[providers]]
+name = "groq-strong"
+enabled = true
+base_url = "https://api.groq.com/openai/v1/"
+api_key = "${GROQ_KEY}"
+models = ["llama-4-maverick"]
+
+[[providers]]
+name = "xai-strong"
+enabled = true
+base_url = "https://api.x.ai/v1/"
+api_key = "${XAI_KEY}"
+models = ["grok-3"]
+
+# ---- Basic Tier ----
+# Cheap or free models with generous rate limits.
+# Fire loads of requests without eating into your paid quota.
+
+[[providers]]
+name = "google-basic"
+enabled = true
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+api_key = "${GOOGLE_AI_KEY}"
+models = ["gemini-2.5-flash"]
+
+[[providers]]
+name = "groq-basic"
+enabled = true
+base_url = "https://api.groq.com/openai/v1/"
+api_key = "${GROQ_KEY}"
+models = ["llama-4-scout"]
+
+[[providers]]
+name = "openrouter-basic"
+enabled = true
+base_url = "https://openrouter.ai/api/v1/"
+api_key = "${OPENROUTER_KEY}"
+models = ["deepseek-r1-distill"]
+
+# ---- Local Fallback ----
+# Local Ollama with a tiny model. Always available, no quota.
+# Last resort if all cloud providers are down.
+
+[[providers]]
+name = "ollama-fallback"
+enabled = true
+base_url = "http://localhost:11434/v1/"
+api_key = "ollama"
+models = ["granite4:micro"]
+
+# ==========================================
+# Virtual Models — Tiered Routing
+# ==========================================
+# The proxy iterates through the list in order.
+# If a provider is rate-limited or circuit-broken,
+# it transparently falls through to the next.
+
+[virtual_models]
+# "smart" starts strong for quality, cascades to basic for quota,
+# and falls all the way to local Ollama if everything else is down.
+smart = [
+  { provider = "google-strong",  model = "gemini-2.5-pro" },
+  { provider = "groq-strong",    model = "llama-4-maverick" },
+  { provider = "xai-strong",     model = "grok-3" },
+  # Fallback to basic tier
+  { provider = "google-basic",    model = "gemini-2.5-flash" },
+  { provider = "groq-basic",      model = "llama-4-scout" },
+  { provider = "openrouter-basic", model = "deepseek-r1-distill" },
+  # Last resort
+  { provider = "ollama-fallback", model = "granite4:micro" },
+]
+
+# "basic" uses only the cheap/free tier with generous rate limits.
+# Perfect for bulk testing, background tasks, or anything
+# that doesn't need the strongest model.
+basic = [
+  { provider = "groq-basic",       model = "llama-4-scout" },
+  { provider = "google-basic",     model = "gemini-2.5-flash" },
+  { provider = "openrouter-basic", model = "deepseek-r1-distill" },
+  { provider = "ollama-fallback",  model = "granite4:micro" },
+]

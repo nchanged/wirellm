@@ -189,7 +189,7 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
 mod tests {
     use super::*;
     use reqwest::Url;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -204,6 +204,10 @@ mod tests {
             rate_limited_until: Arc::new(RwLock::new(None)),
             last_attempt_time: Arc::new(RwLock::new(None)),
             probe_in_flight: Arc::new(AtomicBool::new(false)),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
         }
     }
 
