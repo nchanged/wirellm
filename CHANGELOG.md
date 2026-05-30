@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Proxy no longer crashes at startup when the OTLP collector is unreachable — telemetry exporter failure now logs a `WARN` and falls back to a silent no-op drain loop.
+- `base_url` must end with a trailing `/v1/` path so relative URL joins produce correct endpoints (e.g. `http://localhost:11434/v1/` for Ollama).
+
+### Documentation
+- Added Ollama local-only example config to README with full self-contained setup instructions.
+- Documented `base_url` trailing-slash convention and optional telemetry behaviour.
+
+
 ## [0.1.2] - 2026-05-30
 
 ### Fixed
