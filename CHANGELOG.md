@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-05-30
+
 ### Added
 - `oxllm stop` subcommand — gracefully stops the daemon via SIGTERM.
 - `oxllm serve -v` / `-vv` — verbosity flags for per-request routing info or full trace.
