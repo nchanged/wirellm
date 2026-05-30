@@ -35,15 +35,6 @@ oxllm/
 ├── config.toml             # Multi-tier cloud provider config
 ├── config-local-test.toml  # Local-only Ollama config for testing
 ├── crates/
-│   ├── oxllm-core/         # Core: config, circuit breaker, router, telemetry
-│   └── oxllm/              # CLI: Axum server, routes, signal handling
-├── docs/                   # Architecture & design docs
-├── .github/workflows/      # CI, security, release, publish workflows
-└── dist-workspace.toml     # cargo-dist release config
-```
-
----
-
 ## 🛠️ Installation
 
 ### 1. Homebrew (easiest — pre-compiled binary)
@@ -58,6 +49,32 @@ No Rust toolchain needed. Pre-compiled for macOS and Linux (aarch64 + x86_64).
 ### 2. Cargo (compiled from source)
 
 ```bash
+cargo install oxllm
+```
+
+Builds from crates.io. Requires Rust 1.85.1+.
+
+### 3. From source (latest main)
+
+```bash
+git clone https://github.com/planetf1/oxllm.git
+cd oxllm
+cargo build --release
+cp config-local-test.toml my-config.toml
+./target/release/oxllm serve --config my-config.toml
+```
+
+### Default Config Location
+
+`oxllm serve` looks for config in this order:
+1. `--config` path if provided
+2. `~/.config/oxllm/config.toml` (XDG base directory)
+3. `./config.toml` (current directory, for development)
+
+Copy the example config to get started:
+```bash
+cp config.toml ~/.config/oxllm/config.toml
+```
 cargo install oxllm
 ```
 
@@ -183,10 +200,13 @@ oxllm status
 
 # Gracefully stop the running daemon (sends SIGTERM)
 oxllm stop
-
 # Trigger config hot-reload via SIGHUP
 oxllm reload
-```
+
+# Take a provider offline/online or reset its circuit breaker
+oxllm provider offline <name>
+oxllm provider online <name>
+oxllm provider reset <name>
 
 ### `oxllm status` output
 
@@ -241,8 +261,8 @@ All admin endpoints (`/health`, `/status`, `/reload`) are restricted to localhos
 ## 🔬 Developer Guides
 
 * **[Architecture & Design](docs/architecture.md)** — concurrency model, circuit breaker rules, telemetry pipeline
+* **[Provider Guide](docs/providers.md)** — free-tier services, model names, API keys, rate limits (snapshot 2026-05-30)
 * **[Implementation Plan](implementation_plan.md)** — development roadmap and phase breakdown
-
 ## 📄 License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
