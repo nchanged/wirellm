@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-05-30
+
+### Added
+- Admin API: `POST /admin/providers/{name}/offline|online|reset` — runtime provider management.
+- CLI: `oxllm provider list|offline|online|reset` subcommands — manage providers without curl.
+- `oxllm provider list` — condensed provider status table.
+- Friendly error messages when server not running (all CLI commands).
+- XDG config path support (`~/.config/oxllm/config.toml` with `./config.toml` fallback).
+- Provider guide: `docs/providers.md` — free-tier services, model names verified live (2026-05-30).
+- Token counting from upstream JSON responses (non-streaming).
+
+### Fixed
+- Corrected model names for all 6 providers (verified via each provider's `/v1/models` endpoint).
+- Gemini 2.5 Pro excluded (paid-only on free tier, quota = 0).
+- Table column widths widened to fit 45-character model names.
+- Last Request column width fixed (12 chars).
+- Cleaned up debug `println!` statements from error paths.
+
+### Changed
+- Model names: updated to verified values (e.g. `llama-4-scout` → `meta-llama/llama-4-scout-17b-16e-instruct`).
+- Ollama defaults: `granite4:micro` → `granite4.1:3b`.
+- Default config searches XDG path before current directory.
+
+### Documentation
+- Full README overhaul: binary size, routing algorithm, CLI examples, telemetry section.
+- Provider guide with snapshot date and research methodology.
+- API endpoint table includes admin routes.
+
 ## [0.1.5] - 2026-05-30
 
 ### Added
