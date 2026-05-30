@@ -106,6 +106,12 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum ProviderCommand {
+    /// List all providers and their circuit state
+    List {
+        /// Port of the running gateway server
+        #[arg(short, long, default_value_t = 8080, env = "OXLLM_PORT")]
+        port: u16,
+    },
     /// Take a provider offline (circuit breaker + manual disabled)
     Offline {
         /// Name of the provider to take offline
@@ -569,15 +575,15 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     // Virtual model routing tables
     for (vm_name, routes) in &status.virtual_models {
         println!("\nVirtual Model: {}", vm_name);
-        println!("{}", "-".repeat(100));
+        println!("{}", "-".repeat(127));
         println!(
-            "| {:<20} | {:<25} | {:<30} | {:>8} | {:>8} |",
+            "| {:<20} | {:<45} | {:<30} | {:>8} | {:>8} |",
             "Provider", "Model", "Circuit", "Requests", "Success"
         );
-        println!("{}", "-".repeat(100));
+        println!("{}", "-".repeat(127));
         for entry in routes {
             println!(
-                "| {:<20} | {:<25} | {:<30} | {:>8} | {:>8} |",
+                "| {:<20} | {:<45} | {:<30} | {:>8} | {:>8} |",
                 entry.provider, entry.model, entry.circuit, entry.requests, entry.successes
             );
         }
@@ -585,13 +591,12 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     // Per-provider table
     println!(
-        "\n+--------------------+----------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+"
-    );
-    println!("| Provider Name      | Models                     | Circuit Breaker State          | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output | Last Request|");
-    println!("+--------------------+----------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+");
+"\n+--------------------+-----------------------------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+"    );
+    println!("| Provider Name      | Models                                                | Circuit Breaker State          | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output | Last Request|");
+    println!("+--------------------+-----------------------------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+");
     for s in &status.providers {
         println!(
-            "| {:<18} | {:<26} | {:<30} | {:<8} | {:<13} | {:<8} | {:<9} | {:<12} | {:<13} | {:<11} |",
+            "| {:<18} | {:<45} | {:<30} | {:<8} | {:<13} | {:<8} | {:<9} | {:<12} | {:<13} | {:<11} |",
             s.name,
             s.models,
             s.circuit,
@@ -605,7 +610,7 @@ async fn run_status(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!(
-        "+--------------------+----------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+\n"
+        "+--------------------+-----------------------------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+-------------+\n"
     );
 
     Ok(())
@@ -732,6 +737,78 @@ async fn run_provider_reset(name: &str, port: u16) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+async fn run_provider_list(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/status", port);
+    let res = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_connect() => {
+            println!("oxllm is not running on http://127.0.0.1:{}", port);
+            println!("Start it with: oxllm serve");
+            return Ok(());
+        },
+        Err(e) => return Err(e.into()),
+    };
+
+    #[derive(serde::Deserialize)]
+    struct RouteEntry {
+        provider: String,
+        model: String,
+        circuit: String,
+        requests: u64,
+        successes: u64,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct StatusResponse {
+        virtual_models: std::collections::HashMap<String, Vec<RouteEntry>>,
+    }
+
+    let status: StatusResponse = res.json().await?;
+
+    // Deduplicate providers across virtual models, keeping the first occurrence
+    // to show each provider once with its model and circuit state
+    let mut seen = std::collections::HashSet::new();
+    let mut providers: Vec<&RouteEntry> = Vec::new();
+
+    for routes in status.virtual_models.values() {
+        for entry in routes {
+            if seen.insert(&entry.provider) {
+                providers.push(entry);
+            }
+        }
+    }
+
+    println!();
+    println!("+----------------------+-----------------------------------------------+--------------------------------+----------+----------+");
+    println!("| Provider             | Model                                         | Circuit                        | Requests | Success  |");
+    println!("+----------------------+-----------------------------------------------+--------------------------------+----------+----------+");
+    for entry in &providers {
+        let icon = if entry.circuit.starts_with("Closed") {
+            '✓'
+        } else if entry.circuit.starts_with("Half") {
+            '⧖'
+        } else {
+            '✗'
+        };
+        println!(
+            "| {:<20} | {:<45} | {:<30} | {:>8} | {:>8} |",
+            format!("{} {}", icon, entry.provider),
+            entry.model,
+            entry.circuit,
+            entry.requests,
+            entry.successes,
+        );
+    }
+    println!("+----------------------+-----------------------------------------------+--------------------------------+----------+----------+");
+    println!();
+    println!("Use 'oxllm provider offline <name>' to take a provider out of rotation.");
+    println!("Use 'oxllm provider reset <name>' to clear circuit breaker state.");
+    println!();
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -769,6 +846,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_stop(pid)?;
         },
         Commands::Provider(cmd) => match cmd {
+            ProviderCommand::List { port } => {
+                run_provider_list(port).await?;
+            },
             ProviderCommand::Offline { name, port } => {
                 run_provider_offline(&name, port).await?;
             },
