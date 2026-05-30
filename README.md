@@ -96,76 +96,57 @@ oxllm serve
 
 ## 🚀 Quick Start
 
-You can run oxllm with **local models** (Ollama, zero API keys) or **cloud providers** (free tier).
-Choose the path that works for you:
+The primary use case is routing across **multiple free-tier cloud providers** with automatic failover.
+Ollama can be added as a local fallback for testing or as a last resort.
 
-### Option A: Local Ollama (zero API keys)
+### 1. Set up providers
 
-```bash
-# Install Ollama
-brew install ollama
-ollama pull granite4:micro
+The repo includes two ready-to-use configs:
 
-# Start oxllm with the included local config
-oxllm serve --config config-local-test.toml
+- **`config.toml`** — 6 free-tier cloud providers with 2 virtual model tiers
+- **`config-local-test.toml`** — local Ollama only (for testing)
 
-# Test it
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -X POST -H "Content-Type: application/json" \
-  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}]}'
-```
-
-### Option B: Cloud Providers (free tier)
+For the cloud config, set your API keys (see [Provider Guide](docs/providers.md) for sign-up links):
 
 ```bash
-# Set your API keys
 export GROQ_API_KEY="gsk_..."
 export GOOGLE_API_KEY="AIza..."
 export SAMBANOVA_API_KEY="..."
 export OPENROUTER_API_KEY="sk-or-..."
-
-# Start oxllm with the multi-tier config
-oxllm serve --config config.toml
-
-# Test the smart tier (strongest available model)
-curl -X POST http://127.0.0.1:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "smart", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-In either case, the circuit breaker handles failover automatically.
-If a provider returns a 429 or is unreachable, oxllm transparently tries the next
-provider in the chain.
-
-## 🚀 Quick Start (Multi-Tier Cloud)
-
-The repo's `config.toml` uses **6 free-tier providers** with **2 tiers** of virtual models:
-
-- **`smart`** — Groq Llama 3.3 70B & SambaNova Llama 4 Maverick, cascading to basic
-- **`basic`** — Groq Llama 4 Scout, Google Gemini Flash, SambaNova DeepSeek, OpenRouter
+### 2. Start the proxy
 
 ```bash
-# Set your API keys (full list in docs/providers.md)
-export GROQ_API_KEY="gsk_..."
-export GOOGLE_API_KEY="AIza..."
-export SAMBANOVA_API_KEY="..."
-export OPENROUTER_API_KEY="sk-or-..."
-
-# Start with cloud providers
 oxllm serve --config config.toml
+```
 
-# Use the smart model (strongest available)
+### 3. Test it
+
+```bash
+# Smart model (strongest available — cascades through providers on failure)
 curl -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "smart", "messages": [{"role": "user", "content": "Hello"}]}'
 
-# Use the basic model (fast, cheap, high rate limits)
+# Basic model (fast, cheap, high rate limits)
 curl -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "basic", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Embeddings
+curl -X POST http://127.0.0.1:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model": "basic", "input": "hello world"}'
+
+# Live dashboard (no external collector needed)
+curl http://127.0.0.1:8080/status
 ```
 
----
+For local testing with Ollama instead of cloud providers:
+```bash
+oxllm serve --config config-local-test.toml
+```
 
 ## ⚙️ Configuration
 
@@ -192,7 +173,7 @@ Virtual models define the routing order. If a provider returns 429 or 5xx, the p
 smart = [
   { provider = "groq-strong",  model = "llama-3.3-70b-versatile" },
   { provider = "groq-basic",   model = "meta-llama/llama-4-scout-17b-16e-instruct" },
-  { provider = "ollama-fallback", model = "granite4:micro" },
+  { provider = "ollama-fallback", model = "granite4.1:3b" },
 ]
 ```
 
@@ -259,7 +240,7 @@ Virtual Model: basic
 | Provider             | Model                                 | Circuit        | Req | Suc |
 ---------------------------------------------------------------------
 | ✓ groq-basic         | meta-llama/llama-4-scout-17b-16e-... | Closed (Healthy)|   1 |   2 |
-| ✓ ollama-fallback    | granite4:micro                       | Closed (Healthy)|   0 |   0 |
+| ✓ ollama-fallback    | granite4.1:3b                       | Closed (Healthy)|   0 |   0 |
 ---------------------------------------------------------------------
 
 Use 'oxllm provider offline <name>' to take a provider out of rotation.

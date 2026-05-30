@@ -81,7 +81,7 @@ name = "ollama-fallback"
 enabled = true
 base_url = "http://localhost:11434/v1/"
 api_key = "ollama"
-models = ["granite4:micro"]
+models = ["granite4.1:3b"]
 
 # ---- OpenCode (custom endpoint) ----
 # You have OPENCODE_API_KEY set. If this points to an OpenAI-compatible
@@ -113,7 +113,7 @@ smart = [
   { provider = "sambanova-basic",  model = "DeepSeek-V3.1" },
   { provider = "openrouter-basic", model = "ibm-granite/granite-4.1-8b" },
   # Last resort
-  { provider = "ollama-fallback",  model = "granite4:micro" },
+  { provider = "ollama-fallback",  model = "granite4.1:3b" },
 ]
 
 # "basic" uses only the cheap/free tier with generous rate limits.
@@ -124,5 +124,5 @@ basic = [
   { provider = "google-basic",     model = "gemini-2.5-flash" },
   { provider = "sambanova-basic",  model = "DeepSeek-V3.1" },
   { provider = "openrouter-basic", model = "ibm-granite/granite-4.1-8b" },
-  { provider = "ollama-fallback",  model = "granite4:micro" },
+  { provider = "ollama-fallback",  model = "granite4.1:3b" },
 ]

@@ -143,7 +143,7 @@ Ollama runs models entirely on your machine. No API key, no rate limits, no netw
 
 | Model | Notes |
 |---|---|
-| `granite4:micro` | 1.9 GB, ~1B params, fast on any hardware |
+| `granite4.1:3b` | 2.1 GB, ~3B params, fast on any hardware |
 
 **Setup:**
 ```bash
@@ -151,7 +151,7 @@ Ollama runs models entirely on your machine. No API key, no rate limits, no netw
 brew install ollama
 
 # Pull the fallback model used in config.toml
-ollama pull granite4:micro
+ollama pull granite4.1:3b
 ```
 
 **Base URL:** `http://localhost:11434/v1/`
