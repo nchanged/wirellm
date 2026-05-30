@@ -252,6 +252,61 @@ All admin endpoints (`/health`, `/status`, `/reload`, `/admin/*`) are restricted
 
 ---
 
+## 📊 Telemetry
+
+oxllm exports OpenTelemetry (OTel) traces and metrics via OTLP/HTTP JSON to a collector like [otelite](https://github.com/planetf1/otelite).
+
+### Configuration
+
+Set `otel_endpoint` in `[server]` to point at your OTLP HTTP collector:
+
+```toml
+[server]
+otel_endpoint = "http://127.0.0.1:4318"
+```
+
+If the endpoint is unreachable or not configured, oxllm logs a warning and starts
+degraded — telemetry events are silently discarded. The proxy always works
+without a collector.
+
+### Span Attributes (Traces)
+
+Every routed transaction generates a span with GenAI semantic conventions:
+
+| Attribute | Example | Description |
+|---|---|---|
+| `gen_ai.operation.name` | `chat` / `embeddings` | Operation type |
+| `gen_ai.provider.name` | `groq-strong` | Provider selected |
+| `gen_ai.request.model` | `llama-3.3-70b-versatile` | Model used |
+| `gen_ai.usage.input_tokens` | `1420` | Input token count |
+| `gen_ai.usage.output_tokens` | `312` | Output token count |
+| `proxy.attempts_required` | `2` | How many providers were tried |
+| `proxy.initial_failure_reason` | `429_too_many_requests` | First failure cause (if any) |
+
+Spans are linked to incoming W3C `traceparent` headers when present.
+
+### Metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `llm_proxy.provider.status` | Gauge | `0` = healthy, `1` = rate-limited, `2` = circuit tripped |
+| `llm_proxy.request.duration` | Histogram | Request lifecycle duration (ms) |
+| `llm_proxy.tokens.consumed` | Counter | Cumulative tokens by provider, model, type |
+
+### Logging
+
+Logs are emitted via `tracing` to stdout with `EnvFilter` support:
+
+- **Default**: `info` — server start/stop, circuit transitions, errors
+- **`-v`**: `debug` — adds per-request routing info
+- **`-vv`**: `trace` — full request/response details
+
+Override via `RUST_LOG` env var:
+```bash
+export RUST_LOG=oxllm=debug,oxllm_core=info
+oxllm serve
+```
+
 ## 📄 License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
