@@ -1,8 +1,8 @@
+use crate::error::{OxllmError, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
-use crate::error::{OxllmError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -38,7 +38,7 @@ impl Config {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)
             .map_err(|e| OxllmError::ConfigLoad(format!("Failed to read config file: {}", e)))?;
-        
+
         let expanded = expand_env_vars(&content)?;
         let config: Config = toml::from_str(&expanded)?;
         Ok(config)
@@ -54,7 +54,9 @@ impl Config {
 
         // 1. Validate that at least one provider is configured
         if self.providers.is_empty() {
-            return Err(OxllmError::ConfigLoad("At least one provider must be defined".into()));
+            return Err(OxllmError::ConfigLoad(
+                "At least one provider must be defined".into(),
+            ));
         }
 
         // 2. Validate that virtual models target existing, enabled providers
@@ -70,16 +72,16 @@ impl Config {
                 match provider_map.get(target.provider.as_str()) {
                     Some(provider) => {
                         if !provider.enabled {
-                            // Warn or skip: we allow referencing disabled providers, 
+                            // Warn or skip: we allow referencing disabled providers,
                             // but the virtual model resolution loop will bypass them.
                         }
-                    }
+                    },
                     None => {
                         return Err(OxllmError::ConfigLoad(format!(
                             "Virtual model '{}' targets undefined provider '{}'",
                             vm_name, target.provider
                         )));
-                    }
+                    },
                 }
             }
         }
@@ -89,6 +91,7 @@ impl Config {
 }
 
 /// Helper function to perform Unix shell-style `${VAR_NAME}` environment variable expansions.
+#[allow(clippy::while_let_on_iterator)]
 pub fn expand_env_vars(raw_content: &str) -> Result<String> {
     let mut expanded = String::new();
     let mut chars = raw_content.char_indices().peekable();
@@ -156,7 +159,9 @@ mod tests {
         std::env::remove_var("MISSING_VAR_XYZ");
         let input = r#"api_key = "${MISSING_VAR_XYZ}""#;
         let result = expand_env_vars(input);
-        assert!(matches!(result, Err(OxllmError::EnvVarMissing(ref name)) if name == "MISSING_VAR_XYZ"));
+        assert!(
+            matches!(result, Err(OxllmError::EnvVarMissing(ref name)) if name == "MISSING_VAR_XYZ")
+        );
     }
 
     #[test]

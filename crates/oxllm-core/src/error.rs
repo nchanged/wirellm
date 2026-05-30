@@ -25,6 +25,9 @@ pub enum OxllmError {
 
     #[error("Internal proxy routing error: {0}")]
     Routing(String),
+
+    #[error("Telemetry subsystem initialization failed: {0}")]
+    TelemetryInit(String),
 }
 
 pub type Result<T> = std::result::Result<T, OxllmError>;

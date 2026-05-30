@@ -897,6 +897,7 @@ dependencies = [
  "futures-util",
  "oxllm-core",
  "pretty_assertions",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
