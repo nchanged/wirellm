@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "oxllm"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "axum",
  "bytes",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "oxllm-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "hex",
  "opentelemetry",

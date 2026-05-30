@@ -35,9 +35,17 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - run: cargo publish -p oxllm-core
+      - name: Publish oxllm-core (idempotent)
+        run: |
+          output=$(cargo publish -p oxllm-core 2>&1) && echo "$output" || {
+            if echo "$output" | grep -qE "already uploaded|already exists"; then
+              echo "oxllm-core version already published — skipping"
+            else
+              echo "$output" >&2; exit 1
+            fi
+          }
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   publish-oxllm:
     name: oxllm
@@ -52,6 +60,14 @@ jobs:
           toolchain: stable
       - name: Wait for crates.io index
         run: sleep 120
-      - run: cargo publish -p oxllm
+      - name: Publish oxllm (idempotent)
+        run: |
+          output=$(cargo publish -p oxllm 2>&1) && echo "$output" || {
+            if echo "$output" | grep -qE "already uploaded|already exists"; then
+              echo "oxllm version already published — skipping"
+            else
+              echo "$output" >&2; exit 1
+            fi
+          }
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

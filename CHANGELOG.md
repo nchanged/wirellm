@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-05-30
+
+### Added
+- Local per-provider request/success/token counters visible via `GET /status` and `oxllm status` — no external collector needed.
+- `upstream_timeout_secs` config field in `[server]` section (default 5 seconds).
+- Multi-tier `config.toml` with `smart`/`basic` virtual models and local Ollama fallback.
+- Token counting from upstream JSON responses (non-streaming).
+- crates.io publish workflow (tag-triggered, idempotent).
+
+### Fixed
+- Removed `println!` debug statements from error paths.
+- Removed invalid `crates-io` value from `dist-workspace.toml`.
+
+### Documentation
+- Overhauled README with endpoint table, status output example, and quick start guide.
+
 ## [0.1.3] - 2026-05-30
 
 ### Fixed
