@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
@@ -250,7 +250,14 @@ async fn localhost_only(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if addr.ip().is_loopback() {
+    let is_local = match addr.ip() {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        // Dual-stack bindings present IPv4 connections as IPv4-mapped IPv6
+        // addresses like ::ffff:127.0.0.1. to_canonical() converts these to
+        // their IPv4 representation so is_loopback() works correctly.
+        IpAddr::V6(v6) => v6.is_loopback() || v6.to_canonical().is_loopback(),
+    };
+    if is_local {
         Ok(next.run(req).await)
     } else {
         warn!(target: "oxllm::security", "Blocked external attempt to access administrative route from IP: {}", addr.ip());
