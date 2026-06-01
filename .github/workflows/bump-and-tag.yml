@@ -108,6 +108,8 @@ jobs:
 
       - name: Trigger binary release workflow
         if: steps.preflight.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run release.yml \
             --ref "v${{ steps.bump.outputs.new }}" \
