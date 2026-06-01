@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- Updated `docs/providers.md` to match the actual config.toml — removed Cerebras
+  (not in config), updated Groq/SambaNova/OpenRouter model names to verified IDs,
+  excluded Gemini 2.5 Pro (paid-only), added second SambaNova tier.
+- Updated `docs/architecture.md` with missing endpoints (`/admin/providers/*`,
+  `/health`), corrected rate-limit header parsing claim (only `Retry-After`),
+  documented v0.1.9 mid-stream feedback deferral, marked root-context-synthesis
+  as planned-not-implemented, added `manual_disabled` field to struct diagram,
+  and updated admin-route protection to mention dual-stack IPv6 support.
+
 ## [0.1.9] - 2026-06-01
 
 ### Fixed
@@ -24,14 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.8] - 2026-06-01
 
 ### Fixed
+- `oxllm serve` now uses the `host` config field for IPv4 binding instead of
+  hardcoding `127.0.0.1`. Set `host = "0.0.0.0"` to accept connections from
+  other machines. Admin and status routes remain protected by `localhost_only`
   middleware regardless of bind address.
 - `localhost_only` middleware now correctly recognizes IPv4-mapped IPv6
   loopback addresses (`::ffff:127.0.0.0/104`). This fixes CLI `oxllm status`
   failures when the server is bound to a dual-stack `[::]` socket.
-
-
-  middleware regardless of bind address.
-
 
 ## [0.1.7] - 2026-06-01
 
@@ -41,9 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Uses `env!("CARGO_PKG_VERSION")` via clap derive.
 
 ### Added
-- Router-ready config with all API keys inlined (no shell variables) and
-  Ollama fallback removed — written to `/etc/oxllm/config.toml`.
-- systemd service file, update script (`/usr/local/bin/oxllm-update`).
+- Admin CLI commands now include `oxllm provider list|offline|online|reset`
+  for runtime provider management without curl.
+- `localhost_only` middleware protects admin/status/health/reload endpoints
+  from non-loopback callers (403 Forbidden).
 
 
 ## [0.1.6] - 2026-05-30

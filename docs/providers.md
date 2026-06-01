@@ -13,9 +13,8 @@
 | Provider | Env Var | Sign Up | Free Tier? | Best For |
 |---|---|---|---|---|
 | **Groq** | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) | ✅ Yes | Fast inference, Llama models |
-| **Google AI Studio** | `GOOGLE_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | ✅ Yes | Gemini Flash/Pro, massive context window |
-| **Cerebras** | `CEREBRAS_API_KEY` | [cloud.cerebras.ai](https://cloud.cerebras.ai) | ✅ Yes | Fastest inference latency |
-| **SambaNova** | `SAMBANOVA_API_KEY` | [sambanova.ai](https://sambanova.ai) | ✅ Yes | Llama models, generous free tier |
+| **Google AI Studio** | `GOOGLE_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | ✅ Yes | Gemini Flash, massive context window |
+| **SambaNova** | `SAMBANOVA_API_KEY` | [sambanova.ai](https://sambanova.ai) | ✅ Yes | Llama 4 Maverick, DeepSeek V3.1 |
 | **OpenRouter** | `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) | ⚠️ Some free | Aggregator (check current free list) |
 | **Ollama** (local) | None | [ollama.com](https://ollama.com) | ✅ Always free | Zero-cost local fallback |
 
@@ -30,7 +29,7 @@ The providers and models in `config.toml` were chosen using this methodology:
 2. **Verify OpenAI API compatibility** — each provider must expose an OpenAI-compatible
    endpoint so the proxy can forward requests without protocol translation.
 3. **Check model quality-to-speed ratio** — free models vary widely. The config balances
-   powerful models (Gemini Pro, Llama Maverick) for quality with fast models (Llama Scout,
+   powerful models (SambaNova Llama 4 Maverick, Groq Llama 3.3 70B) for quality with fast models (Llama 4 Scout,
    Gemini Flash) for volume.
 4. **Confirm rate limits are documented** — providers with opaque or undocumented rate
    limits are avoided to ensure predictable behavior.
@@ -56,8 +55,8 @@ Groq provides extremely fast inference using custom LPU hardware. Their free tie
 
 | Model | Tier in config | Notes |
 |---|---|---|
-| `llama-4-maverick` | `smart` (strong) | 128K context, competitive with GPT-4 class |
-| `llama-4-scout` | `basic` (fast) | 1M context, excellent for bulk work |
+| `llama-3.3-70b-versatile` | `groq-strong` (strong) | 70B params, competitive with GPT-4 class |
+| `meta-llama/llama-4-scout-17b-16e-instruct` | `groq-basic` (basic) | 17B MoE, excellent for bulk work |
 
 **Free tier limits** (approximate): 30 requests/min, 15,000 tokens per day. Rate limits may change — check [Groq's console](https://console.groq.com).
 
@@ -73,10 +72,11 @@ Google's Gemini API via AI Studio has one of the most generous free tiers availa
 
 | Model | Tier in config | Notes |
 |---|---|---|
-| `gemini-2.5-pro` | `smart` (strong) | Powerful reasoning, 1M context window |
-| `gemini-2.5-flash` | `basic` (fast) | Fast, cheap, 1M context |
+| `gemini-2.5-flash` | `google-basic` (basic) | Fast, cheap, 1M context |
 
-**Free tier limits** (approximate): Gemini Flash — 1,500 requests/min, 1M tokens/min. Pro — lower but still generous. Check [AI Studio quotas](https://aistudio.google.com).
+> **Note:** Gemini 2.5 Pro is excluded from the default config — it is paid-only on the free tier (quota = 0).
+
+**Free tier limits** (approximate): 1,500 requests/min, 1M tokens/min. Check [AI Studio quotas](https://aistudio.google.com).
 
 **Env var:** `GOOGLE_API_KEY` — get yours at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
 
@@ -86,29 +86,14 @@ Google's Gemini API via AI Studio has one of the most generous free tiers availa
 
 ---
 
-### Cerebras
-
-Cerebras uses wafer-scale chips for the lowest-latency inference available. Their free tier is genuinely free (no expiry).
-
-| Model | Tier in config | Notes |
-|---|---|---|
-| `llama-3.3-70b` | `basic` (fast) | Very fast, competitive quality |
-
-**Free tier limits**: Typically generous. Sign up at [cloud.cerebras.ai](https://cloud.cerebras.ai).
-
-**Env var:** `CEREBRAS_API_KEY`
-
-**Base URL:** `https://api.cerebras.ai/v1/`
-
----
-
 ### SambaNova
 
-SambaNova provides fast Llama inference with a generous free tier.
+SambaNova provides fast Llama and DeepSeek inference with a generous free tier, configured as two separate providers in `config.toml`.
 
-| Model | Tier in config | Notes |
-|---|---|---|
-| `llama-3.3-70b` | `basic` (fast) | Good quality-to-speed ratio |
+| Provider | Model | Tier in config | Notes |
+|---|---|---|---|
+| `sambanova-strong` | `Llama-4-Maverick-17B-128E-Instruct` | strong | MoE model, strong reasoning |
+| `sambanova-basic` | `DeepSeek-V3.1` | basic | High-throughput, cost-effective |
 
 **Free tier limits**: Generous free tier. Sign up at [sambanova.ai](https://sambanova.ai).
 
@@ -124,9 +109,11 @@ OpenRouter aggregates many providers. Some models are free (community-hosted), w
 
 **Current free models** (check [openrouter.ai/models](https://openrouter.ai/models?order=price&direction=asc) for the latest):
 
-Common free community models include:
-- `mistral-7b-instruct` (free tier)
-- `google/gemma-2-2b-it` (free tier)
+The default config uses:
+- `ibm-granite/granite-4.1-8b` (verified free 2026-05-30)
+
+Other models that have been free include:
+- `deepseek/deepseek-v4-flash:free`
 - Various community-hosted fine-tunes
 
 **Env var:** `OPENROUTER_API_KEY` — get yours at [openrouter.ai/keys](https://openrouter.ai/keys)
@@ -164,26 +151,24 @@ The default `config.toml` defines two virtual models with automatic failover:
 
 ### `smart` — Maximum Quality
 ```
-google-strong (gemini-2.5-pro)
-  → groq-strong (llama-4-maverick)
-    → google-basic (gemini-2.5-flash)     ← fallback
-      → groq-basic (llama-4-scout)        ← fallback
-        → cerebras-basic (llama-3.3-70b)  ← fallback
-          → sambanova-basic (llama-3.3-70b) ← fallback
-            → openrouter-basic             ← fallback
-              → ollama-fallback            ← last resort
+groq-strong (llama-3.3-70b-versatile)
+  → sambanova-strong (Llama-4-Maverick-17B-128E-Instruct)
+    → groq-basic (meta-llama/llama-4-scout-17b-16e-instruct)   ← fallback
+      → google-basic (gemini-2.5-flash)                         ← fallback
+        → sambanova-basic (DeepSeek-V3.1)                       ← fallback
+          → openrouter-basic (ibm-granite/granite-4.1-8b)       ← fallback
+            → ollama-fallback (granite4.1:3b)                   ← last resort
 ```
 
 If every cloud provider is rate-limited or down, requests cascade all the way to your local Ollama instance. You always get an answer — it just might be from a very small model.
 
 ### `basic` — Fast & Cheap
 ```
-groq-basic (llama-4-scout)
+groq-basic (meta-llama/llama-4-scout-17b-16e-instruct)
   → google-basic (gemini-2.5-flash)
-    → cerebras-basic (llama-3.3-70b)
-      → sambanova-basic (llama-3.3-70b)
-        → openrouter-basic
-          → ollama-fallback
+    → sambanova-basic (DeepSeek-V3.1)
+      → openrouter-basic (ibm-granite/granite-4.1-8b)
+        → ollama-fallback (granite4.1:3b)
 ```
 
 Bypasses the expensive strong models entirely. Use for high-volume bulk work.
@@ -197,7 +182,6 @@ Bypasses the expensive strong models entirely. Use for high-volume bulk work.
    ```bash
    export GROQ_API_KEY="gsk_..."
    export GOOGLE_API_KEY="AIza..."
-   export CEREBRAS_API_KEY="..."
    export SAMBANOVA_API_KEY="..."
    # Optional:
    export OPENROUTER_API_KEY="sk-or-..."

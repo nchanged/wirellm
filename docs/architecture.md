@@ -46,7 +46,11 @@
 2.  `POST /v1/embeddings` – Standard non-streaming batch vectors.
 3.  `GET /v1/models` – Returns a consolidated virtual array of all models exposed by currently active and healthy upstream providers.
 4.  `GET /status` – Administrative endpoint displaying per-provider circuit state, request counters, token volumes, and last request time. Localhost-restricted.
-5.  `POST /reload` – Administrative endpoint triggering config hot-reload via HTTP. Same effect as SIGHUP. Localhost-restricted.
+5. `POST /reload` – Administrative endpoint triggering config hot-reload via HTTP. Same effect as SIGHUP. Localhost-restricted.
+6. `GET /health` – Lightweight health-check endpoint. Localhost-restricted.
+7. `POST /admin/providers/{name}/offline` – Manually mark a provider as disabled. Localhost-restricted.
+8. `POST /admin/providers/{name}/online` – Re-enable a manually disabled provider. Localhost-restricted.
+9. `POST /admin/providers/{name}/reset` – Reset a provider's circuit-breaker state and failure counters. Localhost-restricted.
 
 ---
 
@@ -77,6 +81,7 @@ pub struct ProviderState {
     pub successes: AtomicU64,
     pub tokens_input: AtomicU64,
     pub tokens_output: AtomicU64,
+    pub manual_disabled: AtomicBool, // v0.1.6: set via admin endpoints to manually disable a provider
 }
 ```
 
@@ -90,11 +95,11 @@ pub struct ProviderState {
     * If the probe fails: increment `consecutive_failures`, trip `circuit = CircuitState::Open { until: Instant::now() + longer_cooldown }`, and reset `probe_in_flight = false`.
 3.  **Connection & Handshake Timeouts**: A strict upstream timeout (defaulting to 5 seconds) is established. If a provider takes longer than this to complete its initial connection or headers handshake, it is treated as a `5xx` connection failure, triggering immediate failover.
 4.  **Initial Failure Handling (Reactive)**: If the initial connection handshake or headers return a `429 Too Many Requests` or `5xx Server Error`:
-    * Parse the upstream response headers for `retry-after`, `x-ratelimit-reset-tokens`, or `x-ratelimit-reset-requests`.
+    * Parse the upstream response headers for `retry-after`.
     * Set `rate_limited_until = Instant::now() + extracted_duration`.
     * Increment `consecutive_failures`. If failures >= 3, set `circuit = CircuitState::Open { until: Instant::now() + Duration::from_secs(60) }`.
     * Immediately drop the connection to this upstream, advance the loop index, and dispatch to the next available provider.
-5.  **Mid-Stream Fallback Exemption**: If an upstream accepts the connection with a `200 OK` and fails mid-stream during an SSE event transfer, the proxy will transparently forward the disconnect to the downstream agent. It will penalize the provider state in memory (incrementing `consecutive_failures` by 1), but will not attempt to hot-swap upstreams mid-flight to avoid corrupted JSON token streams.
+5. **Mid-Stream Fallback**: If an upstream accepts the connection with a `200 OK` and fails mid-stream during an SSE event transfer, the proxy will transparently forward the disconnect to the downstream agent. As of v0.1.9, streaming success feedback is deferred until stream completion, and mid-stream failures ARE counted as failures (incrementing `consecutive_failures`). The proxy does not attempt to hot-swap upstreams mid-flight to avoid corrupted JSON token streams.
 
 ### 3.2. Configuration Schema & Hot Reloading
 Configuration is declared in a single `config.toml` file (avoiding deprecated YAML dependencies).
@@ -156,7 +161,7 @@ To keep the binary free of intensive filesystem polling threads:
 ### 4.1. W3C Trace Context Propagation
 To enable seamless end-to-end trace auditing, `oxllm` participates in trace propagation:
 * Extracts the incoming `traceparent` and `tracestate` HTTP headers from downstream client requests.
-* **Root Context Synthesis**: If the incoming request has no active `traceparent`, `oxllm` generates a valid root trace context before forwarding to `otelite` to maintain absolute continuous tracking.
+* **Root Context Synthesis** *(planned, not yet implemented)*: If the incoming request has no active `traceparent`, `oxllm` should generate a valid root trace context before forwarding to `otelite` to maintain absolute continuous tracking.
 * Safely parses trace metadata via hex-decoding trace IDs (`[u8; 16]`) and span IDs (`[u8; 8]`), attaching context using `with_parent_context()`.
 * Inject W3C Trace Context headers into upstream requests to the selected provider.
 * Pushes standard parented spans to `otelite` so developers get continuous trace chains.
@@ -204,7 +209,7 @@ The binary supports clean POSIX subcommands for daemon management and operationa
 * `oxllm reload` (Finds the running `oxllm` daemon process and triggers SIGHUP immediately, or use `POST /reload` HTTP endpoint)
 
 ### 5.2. Admin Route Protection
-To prevent external network actors from auditing provider credentials or configurations, all administrative endpoints (like `/status` and `/health`) are **localhost-restricted (127.0.0.1)**. External callers receive an immediate `403 Forbidden`.
+To prevent external network actors from auditing provider credentials or configurations, all administrative endpoints (like `/status`, `/health`, `/reload`, and `/admin/providers/*`) are **localhost-restricted**. The `localhost_only` middleware accepts both IPv4 loopback (`127.0.0.1`) and IPv6-mapped IPv4 addresses (e.g., `::ffff:127.0.0.1`, added in v0.1.8). External callers receive an immediate `403 Forbidden`.
 
 ### 5.3. Daemon Configuration (Service Mode)
 
