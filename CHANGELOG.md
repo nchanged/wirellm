@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-01
+
 ### Fixed
 - `oxllm --version` now reports the actual crate version from Cargo.toml
   instead of a hardcoded `0.1.0` string (broken since v0.1.5).
