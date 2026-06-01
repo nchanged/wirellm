@@ -52,7 +52,7 @@ mod routes;
 #[derive(Parser, Debug)]
 #[command(
     name = "oxllm",
-    version = "0.1.0",
+    version = env!("CARGO_PKG_VERSION"),
     author = "Nigel Jones",
     about = "Minimalist adaptive routing LLM proxy"
 )]
