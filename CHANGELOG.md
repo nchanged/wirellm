@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `oxllm --version` now reports the actual crate version from Cargo.toml
+  instead of a hardcoded `0.1.0` string (broken since v0.1.5).
+  Uses `env!("CARGO_PKG_VERSION")` via clap derive.
+
+### Added
+- Router-ready config with all API keys inlined (no shell variables) and
+  Ollama fallback removed — written to `/etc/oxllm/config.toml`.
+- systemd service file, update script (`/usr/local/bin/oxllm-update`).
+
+
 ## [0.1.6] - 2026-05-30
 
 ### Added
