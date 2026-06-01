@@ -222,31 +222,60 @@ oxllm reload
 oxllm stop
 ```
 
-### Example `oxllm status` Output
+### Example `oxllm status` Output (after ~5 hours of real use)
 
 ```
-Uptime: 1m 18s  |  Total Requests: 2
+Uptime: 311m 3s  |  Total Requests: 150
 
 Virtual Model: smart
----------------------------------------------------------------------
-| Provider             | Model                                 | Circuit        | Req | Suc |
----------------------------------------------------------------------
-| ✓ groq-strong        | llama-3.3-70b-versatile               | Closed (Healthy)|   1 |   2 |
-| ✓ sambanova-strong   | Llama-4-Maverick-17B-128E-Instruct    | Closed (Healthy)|   0 |   0 |
----------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------------
+| Provider             | Model                                         | Circuit                        | Requests |  Success |
+-------------------------------------------------------------------------------------------------------------------------------
+| groq-strong          | llama-3.3-70b-versatile                       | Open (197s cooldown)           |       16 |        0 |
+| sambanova-strong     | Llama-4-Maverick-17B-128E-Instruct            | Closed (Healthy)               |       30 |        8 |
+| groq-basic           | meta-llama/llama-4-scout-17b-16e-instruct     | Open (225s cooldown)           |       30 |       17 |
+| google-basic         | gemini-2.5-flash                              | Closed (Healthy)               |       32 |       22 |
+| sambanova-basic      | DeepSeek-V3.1                                 | Closed (Healthy)               |       15 |       10 |
+| openrouter-basic     | ibm-granite/granite-4.1-8b                    | Closed (Healthy)               |       27 |       27 |
+| ollama-fallback      | granite4.1:3b                                 | Closed (Healthy)               |        0 |        0 |
 
 Virtual Model: basic
----------------------------------------------------------------------
-| Provider             | Model                                 | Circuit        | Req | Suc |
----------------------------------------------------------------------
-| ✓ groq-basic         | meta-llama/llama-4-scout-17b-16e-... | Closed (Healthy)|   1 |   2 |
-| ✓ ollama-fallback    | granite4.1:3b                       | Closed (Healthy)|   0 |   0 |
----------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------------
+| Provider             | Model                                         | Circuit                        | Requests |  Success |
+-------------------------------------------------------------------------------------------------------------------------------
+| groq-basic           | meta-llama/llama-4-scout-17b-16e-instruct     | Open (225s cooldown)           |       30 |       17 |
+| google-basic         | gemini-2.5-flash                              | Closed (Healthy)               |       32 |       22 |
+| sambanova-basic      | DeepSeek-V3.1                                 | Closed (Healthy)               |       15 |       10 |
+| openrouter-basic     | ibm-granite/granite-4.1-8b                    | Closed (Healthy)               |       27 |       27 |
+| ollama-fallback      | granite4.1:3b                                 | Closed (Healthy)               |        0 |        0 |
 
 Use 'oxllm provider offline <name>' to take a provider out of rotation.
 Use 'oxllm provider reset <name>' to clear circuit breaker state.
-For full per-provider counters, run 'oxllm status' without piping.
 ```
+
+Piping through `cat` or a pager adds the full per-provider counter table with failure counts, token volumes, and last-request timestamps:
+
+```
++--------------------+-----------------------------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+--------------+
+| Provider Name      | Models                                                | Circuit Breaker State          | Failures | Rate Limited? | Requests | Successes | Tokens Input | Tokens Output | Last Request|
++--------------------+-----------------------------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+--------------+
+| groq-strong        | llama-3.3-70b-versatile                       | Open (Cooldown: 197s left)     | 5        | No            | 16       | 0         | 0            | 0             | Just now     |
+| sambanova-strong   | Llama-4-Maverick-17B-128E-Instruct            | Closed (Healthy)               | 13       | No            | 30       | 8         | 94           | 4             | Just now     |
+| groq-basic         | meta-llama/llama-4-scout-17b-16e-instruct     | Open (Cooldown: 225s left)     | 5        | No            | 30       | 17        | 232          | 10            | Just now     |
+| google-basic       | gemini-2.5-flash                              | Closed (Healthy)               | 8        | No            | 32       | 22        | 0            | 0             | Just now     |
+| sambanova-basic    | DeepSeek-V3.1                                 | Closed (Healthy)               | 1        | Yes           | 15       | 10        | 0            | 0             | Just now     |
+| openrouter-basic   | ibm-granite/granite-4.1-8b                    | Closed (Healthy)               | 0        | No            | 27       | 27        | 0            | 0             | Just now     |
+| ollama-fallback    | granite4.1:3b                                 | Closed (Healthy)               | 0        | No            | 0        | 0         | 0            | 0             | Never        |
++--------------------+-----------------------------------------------+--------------------------------+----------+---------------+----------+-----------+--------------+---------------+--------------+
+```
+
+This example — captured after 5 hours of real use — shows:
+- **groq-strong**: Circuit is *Open* (197s cooldown remaining) after 5 failures with 0 successes across 16 requests, meaning all attempts hit rate limits or errors.
+- **groq-basic**: Also *Open* (225s cooldown) after 5 failures, but 17 of 30 requests succeeded before the circuit tripped.
+- **sambanova-strong**: *Closed* and healthy but with 13 failures — it's been reliable enough to stay open despite a high error rate.
+- **openrouter-basic**: Perfect record — 27/27 requests succeeded, 0 failures, circuit Closed.
+- **sambanova-basic**: Currently *rate-limited* (1 failure, marked "Yes"), but the circuit remains Closed.
+- **ollama-fallback**: Never used (0 requests), sitting idle as the last-resort local model.
 
 All admin endpoints (`/health`, `/status`, `/reload`, `/admin/*`) are restricted to localhost — external callers receive `403 Forbidden`.
 
