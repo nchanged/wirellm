@@ -10,10 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.12] - 2026-06-01
 
 ### Fixed
-- Fixed Homebrew formula publish: `publish-homebrew-formula` job now depends on
-  `build-global-artifacts` where cargo-dist generates the `.rb` formula file.
-  Was incorrectly depending only on `build-local-artifacts` after the decoupling
-  fix in v0.1.11.
+- **x-request-id correlation fixed**: Request ID is now generated once in the
+  middleware and propagated to route handlers via Axum extensions. The response
+  header, log lines, and OTel span attribute now carry the same ID, enabling
+  end-to-end request tracing.
+- **502 fallback returns JSON error format**: The "all providers failed"
+  response now uses `json_error_response()` with `{"error": ...}` shape,
+  matching the OpenAI error format for the 502 case. Previously it returned
+  plain text.
+- **`json_error_response` no longer panics**: Changed signature to accept
+  `StatusCode` directly instead of `u16`, and handles serialization failure
+  gracefully with a plain-text fallback. Eliminates `.expect()` and `.unwrap()`
+  in user-facing error paths.
+- **Homebrew formula publish fixed**: `publish-homebrew-formula` job now depends
+  on `build-global-artifacts` where cargo-dist generates the `.rb` formula file.
 
 ## [0.1.11] - 2026-06-01
 

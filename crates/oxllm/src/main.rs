@@ -252,15 +252,20 @@ fn generate_request_id() -> String {
 }
 
 /// Middleware that adds an `x-request-id` header to every response.
-/// Does not override an existing `x-request-id` forwarded from upstream.
-async fn add_request_id(req: Request<Body>, next: Next) -> Response {
+/// Generates the ID before calling the handler, stores it in request
+/// extensions so route handlers can read the same ID for logs/telemetry,
+/// and inserts it into the response header (without overriding an existing
+/// `x-request-id` forwarded from upstream).
+async fn add_request_id(mut req: Request<Body>, next: Next) -> Response {
+    let request_id = generate_request_id();
+    req.extensions_mut().insert(request_id.clone());
     let mut response = next.run(req).await;
     if !response.headers().contains_key("x-request-id") {
-        let id = generate_request_id();
         // SAFETY: generate_request_id produces only ASCII hex chars and "oxllm-" prefix.
         response.headers_mut().insert(
             "x-request-id",
-            HeaderValue::from_str(&id).expect("generated request ID contains invalid characters"),
+            HeaderValue::from_str(&request_id)
+                .expect("generated request ID contains invalid characters"),
         );
     }
     response
@@ -1098,6 +1103,7 @@ mod integration_tests {
                 "/v1/chat/completions",
                 axum::routing::post(routes::create_chat_completions),
             )
+            .layer(middleware::from_fn(add_request_id))
             .with_state(reloadable_state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1191,6 +1197,7 @@ mod integration_tests {
                 "/v1/chat/completions",
                 axum::routing::post(routes::create_chat_completions),
             )
+            .layer(middleware::from_fn(add_request_id))
             .with_state(reloadable_state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1368,6 +1375,7 @@ mod integration_tests {
                 "/v1/chat/completions",
                 axum::routing::post(routes::create_chat_completions),
             )
+            .layer(middleware::from_fn(add_request_id))
             .with_state(state);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = listener.local_addr().unwrap();
@@ -1495,6 +1503,7 @@ mod integration_tests {
                 "/v1/chat/completions",
                 axum::routing::post(routes::create_chat_completions),
             )
+            .layer(middleware::from_fn(add_request_id))
             .with_state(state);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = listener.local_addr().unwrap();
@@ -1703,14 +1712,19 @@ mod integration_tests {
         };
         let router = axum::Router::new()
             .route(
+                "/v1/chat/completions",
+                axum::routing::post(routes::create_chat_completions),
+            )
+            .route(
                 "/v1/embeddings",
                 axum::routing::post(routes::create_embeddings),
             )
+            .layer(middleware::from_fn(add_request_id))
             .with_state(state);
-        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let proxy_addr = proxy_listener.local_addr().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            axum::serve(proxy_listener, router).await.unwrap();
+            axum::serve(listener, router).await.unwrap();
         });
 
         let client = reqwest::Client::new();
@@ -1790,6 +1804,7 @@ mod integration_tests {
                 "/v1/chat/completions",
                 axum::routing::post(routes::create_chat_completions),
             )
+            .layer(middleware::from_fn(add_request_id))
             .with_state(rs);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1964,6 +1979,7 @@ mod integration_tests {
                 "/v1/chat/completions",
                 axum::routing::post(routes::create_chat_completions),
             )
+            .layer(middleware::from_fn(add_request_id))
             .with_state(rs);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let proxy_addr = listener.local_addr().unwrap();

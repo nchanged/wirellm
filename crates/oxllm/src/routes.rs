@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Extension, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -238,6 +238,7 @@ pub async fn get_status(
 /// POST /v1/embeddings
 pub async fn create_embeddings(
     State((app_state, telemetry)): State<(Arc<AppState>, TelemetryClient)>,
+    Extension(request_id): Extension<String>,
     headers: HeaderMap,
     body: Bytes, // Bounded ref-counted bytes for zero-cost routing retries
 ) -> impl IntoResponse {
@@ -247,7 +248,7 @@ pub async fn create_embeddings(
             return json_error_response(
                 &format!("Invalid JSON payload: {}", e),
                 "invalid_request_error",
-                400,
+                StatusCode::BAD_REQUEST,
             )
         },
     };
@@ -258,7 +259,7 @@ pub async fn create_embeddings(
             return json_error_response(
                 "Missing required 'model' field",
                 "invalid_request_error",
-                400,
+                StatusCode::BAD_REQUEST,
             )
         },
     };
@@ -268,13 +269,12 @@ pub async fn create_embeddings(
         return json_error_response(
             &format!("Invalid or unmapped virtual model: {}", requested_model),
             "invalid_request_error",
-            400,
+            StatusCode::BAD_REQUEST,
         );
     }
 
     // Extract W3C traceparent headers if present for tracing
     let (trace_id, parent_span_id) = extract_traceparent(&headers);
-    let request_id = format!("oxllm-{:016x}", rand::random::<u64>());
 
     let strategy = AdaptivePriorityStrategy;
     let mut attempts = 0;
@@ -534,12 +534,13 @@ pub async fn create_embeddings(
     } else {
         "All upstream embeddings providers failed or are rate-limited".to_string()
     };
-    (StatusCode::BAD_GATEWAY, message).into_response()
+    json_error_response(&message, "server_error", StatusCode::BAD_GATEWAY)
 }
 
 /// POST /v1/chat/completions
 pub async fn create_chat_completions(
     State((app_state, telemetry)): State<(Arc<AppState>, TelemetryClient)>,
+    Extension(request_id): Extension<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
@@ -549,7 +550,7 @@ pub async fn create_chat_completions(
             return json_error_response(
                 &format!("Invalid JSON payload: {}", e),
                 "invalid_request_error",
-                400,
+                StatusCode::BAD_REQUEST,
             )
         },
     };
@@ -560,7 +561,7 @@ pub async fn create_chat_completions(
             return json_error_response(
                 "Missing required 'model' field",
                 "invalid_request_error",
-                400,
+                StatusCode::BAD_REQUEST,
             )
         },
     };
@@ -570,7 +571,7 @@ pub async fn create_chat_completions(
         return json_error_response(
             &format!("Invalid or unmapped virtual model: {}", requested_model),
             "invalid_request_error",
-            400,
+            StatusCode::BAD_REQUEST,
         );
     }
 
@@ -579,7 +580,6 @@ pub async fn create_chat_completions(
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
     let (trace_id, parent_span_id) = extract_traceparent(&headers);
-    let request_id = format!("oxllm-{:016x}", rand::random::<u64>());
 
     let strategy = AdaptivePriorityStrategy;
     let mut attempts = 0;
@@ -934,7 +934,7 @@ pub async fn create_chat_completions(
     } else {
         "All upstream chat completions providers failed or are rate-limited".to_string()
     };
-    (StatusCode::BAD_GATEWAY, message).into_response()
+    json_error_response(&message, "server_error", StatusCode::BAD_GATEWAY)
 }
 
 /// Reads the current circuit and rate-limit state to produce a status code
@@ -1003,17 +1003,20 @@ fn extract_retry_after(headers: &HeaderMap) -> Option<Duration> {
 }
 
 /// Returns a structured JSON error response matching the OpenAI error format.
-fn json_error_response(message: &str, error_type: &str, code: u16) -> Response {
+fn json_error_response(message: &str, error_type: &str, status: StatusCode) -> Response {
     let body = serde_json::json!({
         "error": {
             "message": message,
             "type": error_type,
-            "code": code
+            "code": status.as_u16()
         }
     });
-    let bytes = serde_json::to_vec(&body).expect("failed to serialize JSON error");
+    let bytes = match serde_json::to_vec(&body) {
+        Ok(b) => b,
+        Err(_) => return (status, message.to_string()).into_response(),
+    };
     let mut response = Response::new(Body::from(bytes));
-    *response.status_mut() = StatusCode::from_u16(code).expect("invalid error status code");
+    *response.status_mut() = status;
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
