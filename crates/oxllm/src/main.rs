@@ -492,7 +492,7 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
         },
         _ => {
             // Default: IPv4
-            let addr = format!("127.0.0.1:{}", port);
+            let addr = format!("{}:{}", config.server.host, port);
             info!("Listening on http://{} (IPv4)", addr);
             tokio::net::TcpListener::bind(&addr).await?
         },

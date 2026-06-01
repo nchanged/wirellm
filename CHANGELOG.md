@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `oxllm serve` now uses the `host` config field for IPv4 binding instead of
+  hardcoding `127.0.0.1`. Set `host = "0.0.0.0"` to accept connections from
+  other machines. Admin and status routes remain protected by `localhost_only`
+  middleware regardless of bind address.
+
+
 ## [0.1.7] - 2026-06-01
 
 ### Fixed
