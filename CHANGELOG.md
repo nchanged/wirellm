@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-06-01
+
 ### Fixed
 - Hot-reload race: replaced all `.find().unwrap()` calls on provider state lookups
   with graceful `let Some(...) else { continue; }` patterns. Concurrent SIGHUP reloads
