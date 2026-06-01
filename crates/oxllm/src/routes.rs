@@ -6,7 +6,7 @@ use axum::{
     Json,
 };
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{stream::unfold, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -272,17 +272,29 @@ pub async fn create_embeddings(
     let strategy = AdaptivePriorityStrategy;
     let mut attempts = 0;
     let start_time = Instant::now();
+    let mut last_upstream_error = String::new();
+    let mut last_failed_provider = String::new();
+    let mut last_failed_status: u16 = 0;
 
     // Map candidate provider references for select strategy
     let candidate_states: Vec<&ProviderState> = candidates.iter().map(|(p, _)| *p).collect();
 
     while let Some(selected) = strategy.select(&candidate_states).await {
         attempts += 1;
-        let target_model = candidates
+        let target_model = match candidates
             .iter()
             .find(|(p, _)| p.name == selected.name)
             .map(|(_, m)| m.clone())
-            .unwrap();
+        {
+            Some(m) => m,
+            None => {
+                warn!(
+                    "Provider {} removed from candidates during embeddings routing",
+                    selected.name
+                );
+                continue;
+            },
+        };
 
         // 1. Rewrite model field in JSON body
         payload["model"] = Value::String(target_model.clone());
@@ -424,8 +436,32 @@ pub async fn create_embeddings(
                     selected.name, status_code
                 );
 
-                // Extract Retry-After if present
+                // Extract Retry-After before consuming the response body
                 let retry_after = extract_retry_after(res.headers());
+
+                // Best-effort: read upstream error body for final 502 response
+                let error_body = match res.bytes().await {
+                    Ok(b) => String::from_utf8_lossy(&b).to_string(),
+                    Err(e) => {
+                        warn!("Failed to read error body from {}: {}", selected.name, e);
+                        String::new()
+                    },
+                };
+                let parsed_error = if !error_body.is_empty() {
+                    serde_json::from_str::<Value>(&error_body)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|m| m.as_str().map(String::from))
+                        })
+                        .unwrap_or(error_body)
+                } else {
+                    String::new()
+                };
+                last_upstream_error = parsed_error;
+                last_failed_provider = selected.name.clone();
+                last_failed_status = status_code;
 
                 let target_provider_state = app_state
                     .providers
@@ -459,11 +495,15 @@ pub async fn create_embeddings(
         }
     }
 
-    (
-        StatusCode::BAD_GATEWAY,
-        "All upstream embeddings providers failed or are rate-limited",
-    )
-        .into_response()
+    let message = if !last_upstream_error.is_empty() {
+        format!(
+            "All upstream embeddings providers failed or are rate-limited. Last error from {} ({}): {}",
+            last_failed_provider, last_failed_status, last_upstream_error
+        )
+    } else {
+        "All upstream embeddings providers failed or are rate-limited".to_string()
+    };
+    (StatusCode::BAD_GATEWAY, message).into_response()
 }
 
 /// POST /v1/chat/completions
@@ -506,16 +546,28 @@ pub async fn create_chat_completions(
     let strategy = AdaptivePriorityStrategy;
     let mut attempts = 0;
     let start_time = Instant::now();
+    let mut last_upstream_error = String::new();
+    let mut last_failed_provider = String::new();
+    let mut last_failed_status: u16 = 0;
 
     let candidate_states: Vec<&ProviderState> = candidates.iter().map(|(p, _)| *p).collect();
 
     while let Some(selected) = strategy.select(&candidate_states).await {
         attempts += 1;
-        let target_model = candidates
+        let target_model = match candidates
             .iter()
             .find(|(p, _)| p.name == selected.name)
             .map(|(_, m)| m.clone())
-            .unwrap();
+        {
+            Some(m) => m,
+            None => {
+                warn!(
+                    "Provider {} removed from candidates during chat routing",
+                    selected.name
+                );
+                continue;
+            },
+        };
 
         payload["model"] = Value::String(target_model.clone());
         let rewritten_body = Bytes::from(serde_json::to_vec(&payload).unwrap());
@@ -564,43 +616,93 @@ pub async fn create_chat_completions(
                     .find(|p| p.name == selected.name)
                     .unwrap();
 
-                // Report Success feedback
-                strategy
-                    .feedback(
-                        target_provider_state,
-                        true,
-                        selected.is_probe,
-                        Some(status_code),
-                        None,
-                    )
-                    .await;
-
-                // Increment local counters (streaming: token counts deferred)
-                target_provider_state
-                    .successes
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
                 if is_streaming {
-                    // SSE chunk-streaming via bytes_stream() mapped to Boxed Error
-                    let reqwest_stream = res.bytes_stream();
-                    let axum_stream = reqwest_stream.map(|chunk_res| {
-                        chunk_res
-                            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                    let app_state_clone = app_state.clone();
+                    let provider_name = selected.name.clone();
+                    let is_probe = selected.is_probe;
+                    let telemetry_clone = telemetry.clone();
+                    let trace_id_clone = trace_id.clone();
+                    let parent_span_id_clone = parent_span_id.clone();
+                    let duration = start_time.elapsed();
+                    let attempt_count = attempts;
+                    let model_name = target_model;
+
+                    let (tx, rx) = tokio::sync::mpsc::channel::<
+                        Result<Bytes, Box<dyn std::error::Error + Send + Sync>>,
+                    >(32);
+
+                    tokio::spawn(async move {
+                        let mut reqwest_stream = res.bytes_stream();
+                        let mut stream_success = true;
+
+                        while let Some(chunk_result) = reqwest_stream.next().await {
+                            match chunk_result {
+                                Ok(chunk) => {
+                                    if tx.send(Ok(chunk)).await.is_err() {
+                                        // Client disconnected
+                                        stream_success = false;
+                                        break;
+                                    }
+                                },
+                                Err(e) => {
+                                    stream_success = false;
+                                    let _ = tx
+                                        .send(Err(
+                                            Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+                                        ))
+                                        .await;
+                                    break;
+                                },
+                            }
+                        }
+
+                        // Deferred circuit-breaker feedback after stream completes
+                        if let Some(provider_state) = app_state_clone
+                            .providers
+                            .iter()
+                            .find(|p| p.name == provider_name)
+                        {
+                            let strategy = AdaptivePriorityStrategy;
+                            strategy
+                                .feedback(
+                                    provider_state,
+                                    stream_success,
+                                    is_probe,
+                                    Some(status_code),
+                                    None,
+                                )
+                                .await;
+
+                            if stream_success {
+                                provider_state
+                                    .successes
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+
+                        // Push Telemetry Metrics
+                        telemetry_clone.emit(TelemetryEvent::RecordTransaction {
+                            operation: "chat".to_string(),
+                            provider: provider_name,
+                            model: model_name,
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            duration,
+                            attempts: attempt_count,
+                            failure_reason: if stream_success {
+                                None
+                            } else {
+                                Some("stream_failed".to_string())
+                            },
+                            trace_id: trace_id_clone,
+                            parent_span_id: parent_span_id_clone,
+                        });
                     });
 
-                    // Push Telemetry Metrics
-                    // Token counts deferred — parsing requires buffering the full stream
-                    telemetry.emit(TelemetryEvent::RecordTransaction {
-                        operation: "chat".to_string(),
-                        provider: selected.name.clone(),
-                        model: target_model,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        duration: start_time.elapsed(),
-                        attempts,
-                        failure_reason: None,
-                        trace_id: trace_id.clone(),
-                        parent_span_id: parent_span_id.clone(),
+                    // Convert mpsc receiver to a Stream for axum
+                    let axum_stream = unfold(Some(rx), |state| async move {
+                        let mut rx = state?;
+                        rx.recv().await.map(|item| (item, Some(rx)))
                     });
 
                     let mut response = Response::new(Body::from_stream(axum_stream));
@@ -608,6 +710,21 @@ pub async fn create_chat_completions(
                     copy_response_headers(&upstream_headers, response.headers_mut());
                     return response.into_response();
                 } else {
+                    // Report Success feedback (non-streaming: immediate, as before)
+                    strategy
+                        .feedback(
+                            target_provider_state,
+                            true,
+                            selected.is_probe,
+                            Some(status_code),
+                            None,
+                        )
+                        .await;
+
+                    // Increment local counters (streaming: token counts deferred)
+                    target_provider_state
+                        .successes
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let res_body = match res.bytes().await {
                         Ok(b) => b,
                         Err(e) => {
@@ -681,7 +798,33 @@ pub async fn create_chat_completions(
                     "Chat completions upstream {} failed with status {}",
                     selected.name, status_code
                 );
+
+                // Extract Retry-After before consuming the response body
                 let retry_after = extract_retry_after(res.headers());
+
+                // Best-effort: read upstream error body for final 502 response
+                let error_body = match res.bytes().await {
+                    Ok(b) => String::from_utf8_lossy(&b).to_string(),
+                    Err(e) => {
+                        warn!("Failed to read error body from {}: {}", selected.name, e);
+                        String::new()
+                    },
+                };
+                let parsed_error = if !error_body.is_empty() {
+                    serde_json::from_str::<Value>(&error_body)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|m| m.as_str().map(String::from))
+                        })
+                        .unwrap_or(error_body)
+                } else {
+                    String::new()
+                };
+                last_upstream_error = parsed_error;
+                last_failed_provider = selected.name.clone();
+                last_failed_status = status_code;
 
                 let target_provider_state = app_state
                     .providers
@@ -715,11 +858,15 @@ pub async fn create_chat_completions(
         }
     }
 
-    (
-        StatusCode::BAD_GATEWAY,
-        "All upstream chat completions providers failed or are rate-limited",
-    )
-        .into_response()
+    let message = if !last_upstream_error.is_empty() {
+        format!(
+            "All upstream chat completions providers failed or are rate-limited. Last error from {} ({}): {}",
+            last_failed_provider, last_failed_status, last_upstream_error
+        )
+    } else {
+        "All upstream chat completions providers failed or are rate-limited".to_string()
+    };
+    (StatusCode::BAD_GATEWAY, message).into_response()
 }
 
 /// Extracts W3C traceparent segments: 00-{trace_id}-{span_id}-{flags}

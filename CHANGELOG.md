@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Hot-reload race: replaced all `.find().unwrap()` calls on provider state lookups
+  with graceful `let Some(...) else { continue; }` patterns. Concurrent SIGHUP reloads
+  no longer panic when removing an in-flight provider.
+- Upstream error body passthrough: when a provider returns a non-2xx status, the
+  upstream error message is now captured and included in the final 502 response.
+  Clients see actionable errors instead of a generic "all providers failed" message.
+- Mid-stream feedback deferred: circuit breaker success feedback for streaming
+  chat completions now fires AFTER the stream completes rather than on 200 OK.
+  Mid-stream disconnections are counted as failures, preventing broken providers
+  from staying marked healthy.
+
 ## [0.1.8] - 2026-06-01
 
 ### Fixed
