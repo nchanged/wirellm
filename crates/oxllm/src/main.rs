@@ -11,10 +11,11 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use axum::{
     body::Body,
     extract::ConnectInfo,
-    http::{Request, StatusCode},
+    http::{header, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
+use tower_http::cors::{Any, CorsLayer};
 
 use oxllm_core::config::Config;
 use oxllm_core::state::{AppState, CircuitState, ProviderState};
@@ -245,11 +246,31 @@ fn send_sighup(pid: u32) -> std::io::Result<()> {
     }
 }
 
+/// Generates a random request ID for response correlation.
+fn generate_request_id() -> String {
+    format!("oxllm-{:016x}", rand::random::<u64>())
+}
+
+/// Middleware that adds an `x-request-id` header to every response.
+/// Does not override an existing `x-request-id` forwarded from upstream.
+async fn add_request_id(req: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    if !response.headers().contains_key("x-request-id") {
+        let id = generate_request_id();
+        // SAFETY: generate_request_id produces only ASCII hex chars and "oxllm-" prefix.
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_str(&id).expect("generated request ID contains invalid characters"),
+        );
+    }
+    response
+}
+
 async fn localhost_only(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request<Body>,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, Response> {
     let is_local = match addr.ip() {
         IpAddr::V4(v4) => v4.is_loopback(),
         // Dual-stack bindings present IPv4 connections as IPv4-mapped IPv6
@@ -261,7 +282,21 @@ async fn localhost_only(
         Ok(next.run(req).await)
     } else {
         warn!(target: "oxllm::security", "Blocked external attempt to access administrative route from IP: {}", addr.ip());
-        Err(StatusCode::FORBIDDEN)
+        let body = serde_json::json!({
+            "error": {
+                "message": "Access denied: administrative routes are localhost-only",
+                "type": "forbidden",
+                "code": 403
+            }
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let mut response = Response::new(Body::from(bytes));
+        *response.status_mut() = StatusCode::FORBIDDEN;
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        Err(response)
     }
 }
 
@@ -306,37 +341,90 @@ async fn handle_http_reload(
     let config = match Config::load_from_file(&reloader.config_path) {
         Ok(c) => c,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("Failed to load config: {}", e),
-            )
+            let body = serde_json::json!({
+                "error": {
+                    "message": format!("Failed to load config: {}", e),
+                    "type": "invalid_request_error",
+                    "code": 400
+                }
+            });
+            let bytes = serde_json::to_vec(&body).unwrap();
+            let mut response = Response::new(Body::from(bytes));
+            *response.status_mut() = StatusCode::BAD_REQUEST;
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            return response;
         },
     };
     if let Err(e) = config.validate() {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("Config validation failed: {}", e),
+        let body = serde_json::json!({
+            "error": {
+                "message": format!("Config validation failed: {}", e),
+                "type": "invalid_request_error",
+                "code": 400
+            }
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let mut response = Response::new(Body::from(bytes));
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
         );
+        return response;
     }
     match build_app_state(config) {
         Ok(new_state) => {
             if reloader.sender.send(Arc::new(new_state)).is_ok() {
                 info!("Configuration reloaded via HTTP POST /reload");
-                (
-                    StatusCode::OK,
-                    "Configuration reloaded successfully".to_string(),
-                )
+                let body = serde_json::json!({
+                    "message": "Configuration reloaded successfully"
+                });
+                let bytes = serde_json::to_vec(&body).unwrap();
+                let mut response = Response::new(Body::from(bytes));
+                *response.status_mut() = StatusCode::OK;
+                response.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+                response
             } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to send config update".to_string(),
-                )
+                let body = serde_json::json!({
+                    "error": {
+                        "message": "Failed to send config update",
+                        "type": "internal_error",
+                        "code": 500
+                    }
+                });
+                let bytes = serde_json::to_vec(&body).unwrap();
+                let mut response = Response::new(Body::from(bytes));
+                *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                response.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+                response
             }
         },
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            format!("Failed to build state: {}", e),
-        ),
+        Err(e) => {
+            let body = serde_json::json!({
+                "error": {
+                    "message": format!("Failed to build state: {}", e),
+                    "type": "invalid_request_error",
+                    "code": 400
+                }
+            });
+            let bytes = serde_json::to_vec(&body).unwrap();
+            let mut response = Response::new(Body::from(bytes));
+            *response.status_mut() = StatusCode::BAD_REQUEST;
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            response
+        },
     }
 }
 
@@ -451,6 +539,17 @@ async fn run_serve(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error
         .route(
             "/admin/providers/{name}/reset",
             post(routes::admin_reset).layer(middleware::from_fn(localhost_only)),
+        )
+        .layer(middleware::from_fn(add_request_id))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::OPTIONS,
+                ])
+                .allow_headers(Any),
         )
         .with_state(reloadable_state);
 
@@ -1902,5 +2001,444 @@ mod integration_tests {
         );
         assert_eq!(tokens_in, 42);
         assert_eq!(tokens_out, 7);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test helpers for JSON error format, CORS, and x-request-id tests
+    // -----------------------------------------------------------------------
+
+    /// Builds a minimal test AppState + ReloadableState with one provider
+    /// pointing at the given upstream address.
+    fn build_test_state(upstream_addr: SocketAddr) -> (Arc<AppState>, ReloadableState) {
+        let p = ProviderState {
+            name: "prov".into(),
+            base_url: Url::parse(&format!("http://{}/v1/", upstream_addr)).unwrap(),
+            api_key: "key".into(),
+            models: vec!["model".into()],
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+        };
+        let mut vm = std::collections::HashMap::new();
+        vm.insert(
+            "test".into(),
+            vec![VirtualModelTarget {
+                provider: "prov".into(),
+                model: "model".into(),
+            }],
+        );
+
+        let app_state = Arc::new(AppState {
+            providers: vec![p],
+            virtual_models: vm,
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+        });
+        let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let rs = ReloadableState {
+            app_state: wr,
+            telemetry: TelemetryClient::new(ttx),
+            start_time: Instant::now(),
+            reloader: Reloader {
+                sender: _ws,
+                config_path: PathBuf::from("."),
+            },
+        };
+        (app_state, rs)
+    }
+
+    /// Builds a test router with all middleware layers (request-id, CORS).
+    fn build_test_router(state: ReloadableState) -> axum::Router {
+        axum::Router::new()
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(routes::create_chat_completions),
+            )
+            .route(
+                "/v1/embeddings",
+                axum::routing::post(routes::create_embeddings),
+            )
+            .route("/v1/models", axum::routing::get(routes::list_models))
+            .layer(middleware::from_fn(add_request_id))
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods([
+                        axum::http::Method::GET,
+                        axum::http::Method::POST,
+                        axum::http::Method::OPTIONS,
+                    ])
+                    .allow_headers(Any),
+            )
+            .with_state(state)
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: JSON error format
+    // -----------------------------------------------------------------------
+
+    /// Invalid JSON body returns 400 with structured JSON error.
+    #[tokio::test]
+    async fn test_integration_invalid_json() {
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}".to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let (_app_state, rs) = build_test_state(addr);
+        let router = build_test_router(rs);
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .body("not valid json {{{")
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 400);
+        assert_eq!(
+            res.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+
+        let body: Value = res.json().await.unwrap();
+        let error = body.get("error").expect("response should have 'error' key");
+        assert!(error.get("message").is_some());
+        assert_eq!(
+            error.get("type").unwrap().as_str().unwrap(),
+            "invalid_request_error"
+        );
+        assert_eq!(error.get("code").unwrap().as_u64().unwrap(), 400);
+    }
+
+    /// Missing 'model' field returns 400 with structured JSON error.
+    #[tokio::test]
+    async fn test_integration_missing_model() {
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}".to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let (_app_state, rs) = build_test_state(addr);
+        let router = build_test_router(rs);
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .json(&serde_json::json!({
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 400);
+        assert_eq!(
+            res.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+
+        let body: Value = res.json().await.unwrap();
+        let error = body.get("error").expect("response should have 'error' key");
+        assert!(error.get("message").is_some());
+        assert_eq!(
+            error.get("type").unwrap().as_str().unwrap(),
+            "invalid_request_error"
+        );
+        assert_eq!(error.get("code").unwrap().as_u64().unwrap(), 400);
+    }
+
+    /// Unknown virtual model returns 400 with structured JSON error.
+    #[tokio::test]
+    async fn test_integration_unknown_model() {
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}".to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let (_app_state, rs) = build_test_state(addr);
+        let router = build_test_router(rs);
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .json(&serde_json::json!({
+                "model": "nonexistent-model",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 400);
+        assert_eq!(
+            res.headers().get("content-type").unwrap(),
+            "application/json"
+        );
+
+        let body: Value = res.json().await.unwrap();
+        let error = body.get("error").expect("response should have 'error' key");
+        let message = error.get("message").unwrap().as_str().unwrap();
+        assert!(message.contains("nonexistent-model"));
+        assert_eq!(
+            error.get("type").unwrap().as_str().unwrap(),
+            "invalid_request_error"
+        );
+        assert_eq!(error.get("code").unwrap().as_u64().unwrap(), 400);
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: CORS headers
+    // -----------------------------------------------------------------------
+
+    /// OPTIONS preflight to /v1/chat/completions returns CORS headers.
+    #[tokio::test]
+    async fn test_integration_cors_options() {
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}".to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let (_app_state, rs) = build_test_state(addr);
+        let router = build_test_router(rs);
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("http://{}/v1/chat/completions", proxy_addr),
+            )
+            .header("Origin", "http://localhost:3000")
+            .header("Access-Control-Request-Method", "POST")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 200);
+        assert_eq!(
+            res.headers().get("access-control-allow-origin").unwrap(),
+            "*"
+        );
+        assert!(res.headers().contains_key("access-control-allow-methods"));
+    }
+
+    /// POST to /v1/chat/completions includes CORS origin header in response.
+    #[tokio::test]
+    async fn test_integration_cors_post() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"Hello from prov"}}]}"#;
+        let ok_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let (_app_state, rs) = build_test_state(addr);
+        let router = build_test_router(rs);
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .header("Origin", "http://localhost:3000")
+            .json(&serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 200);
+        assert_eq!(
+            res.headers().get("access-control-allow-origin").unwrap(),
+            "*"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: x-request-id header
+    // -----------------------------------------------------------------------
+
+    /// Successful response includes x-request-id matching oxllm-[0-9a-f]{16}.
+    #[tokio::test]
+    async fn test_integration_request_id_on_success() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"Hello from prov"}}]}"#;
+        let ok_response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let (_app_state, rs) = build_test_state(addr);
+        let router = build_test_router(rs);
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .json(&serde_json::json!({
+                "model": "test",
+                "messages": [{"role": "user", "content": "hi"}]
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 200);
+        let request_id = res
+            .headers()
+            .get("x-request-id")
+            .expect("x-request-id header should be present");
+        let id_str = request_id.to_str().unwrap();
+        assert!(
+            id_str.starts_with("oxllm-"),
+            "x-request-id should start with 'oxllm-', got: {}",
+            id_str
+        );
+        assert_eq!(
+            id_str.len(),
+            22,
+            "x-request-id should be 'oxllm-' + 16 hex chars (len 22), got len {}",
+            id_str.len()
+        );
+        // Verify remaining chars are valid hex
+        let hex_part = &id_str[6..];
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "x-request-id hex part should be all hex chars, got: {}",
+            hex_part
+        );
+    }
+
+    /// Error response also includes x-request-id header.
+    #[tokio::test]
+    async fn test_integration_request_id_on_error() {
+        let ok_response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 32\r\n\r\n{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}".to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(ok_response.as_bytes()).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let (_app_state, rs) = build_test_state(addr);
+        let router = build_test_router(rs);
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let res = client
+            .post(format!("http://{}/v1/chat/completions", proxy_addr))
+            .body("not valid json")
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), 400);
+        let request_id = res
+            .headers()
+            .get("x-request-id")
+            .expect("x-request-id header should be present on error responses");
+        let id_str = request_id.to_str().unwrap();
+        assert!(
+            id_str.starts_with("oxllm-"),
+            "x-request-id should start with 'oxllm-', got: {}",
+            id_str
+        );
+        assert_eq!(id_str.len(), 22);
     }
 }

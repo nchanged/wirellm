@@ -24,6 +24,16 @@ Built to operate entirely in memory with zero local disk persistence, `oxllm` is
 * **Dual-Stack IPv4/IPv6**: Configurable via `bind_family`: `"ipv4"` (default), `"ipv6"`, or `"dual"` for both.
 * **Unix-Style Environment Expansion**: Shell-style `${VAR}` replacement in TOML config values.
 * **Musl Cross-Compilation**: Pure-Rust `rustls-tls` stack avoids native OpenSSL linking on edge routers.
+* **OpenAI SDK Compatible** — JSON error format, CORS headers, and `x-request-id`
+  correlation ID on every response. Works with official OpenAI Python and JavaScript
+  SDKs, including browser-based usage.
+
+---
+
+## 🌐 CORS Support
+
+All public endpoints return `Access-Control-Allow-Origin: *`
+headers. Browser-based applications can call the proxy directly.
 
 ---
 

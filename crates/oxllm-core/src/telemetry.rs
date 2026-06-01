@@ -23,6 +23,7 @@ pub enum TelemetryEvent {
         failure_reason: Option<String>,
         trace_id: Option<String>,       // Extracted from W3C traceparent
         parent_span_id: Option<String>, // Extracted from W3C traceparent
+        request_id: String,             // oxllm-generated request correlation ID
     },
     UpdateStatus {
         provider: String,
@@ -176,6 +177,7 @@ impl TelemetryWorker {
                     failure_reason,
                     trace_id,
                     parent_span_id,
+                    request_id,
                 } => {
                     let common_attributes = vec![
                         KeyValue::new("gen_ai.operation.name", operation.clone()),
@@ -242,6 +244,8 @@ impl TelemetryWorker {
                     if let Some(reason) = failure_reason {
                         attributes.push(KeyValue::new("proxy.initial_failure_reason", reason));
                     }
+
+                    attributes.push(KeyValue::new("proxy.request_id", request_id));
 
                     // Synthesize and explicitly end the span to flush to batch processor
                     let mut span = if let Some(ref cx) = parent_ctx {

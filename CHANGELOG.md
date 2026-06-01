@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **OpenAI-compatible JSON error format**: All error responses (400, 502, 403) now
+  return `{"error": {"message": ..., "type": ..., "code": ...}}` with
+  `Content-Type: application/json`. Official OpenAI SDKs can parse errors correctly.
+- **CORS headers**: `Access-Control-Allow-Origin: *` on all public endpoints
+  (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`). Enables browser-based
+  OpenAI SDKs (JavaScript, Vercel AI SDK) to call the proxy directly.
+- **`x-request-id` correlation**: Every response now includes an `oxllm-<hex>`
+  `x-request-id` header, visible in both success and error responses. The ID is
+  also attached to all log lines and OTel spans (`proxy.request_id` attribute)
+  for end-to-end request tracing.
+- **Provider status OTel gauge**: `llm_proxy.provider.status` (0=Healthy, 1=Cooldown,
+  2=Tripped) now emits on every circuit state transition. Previously the gauge was
+  defined but never populated.
+- **Unit & integration tests**: 7 new tests covering CORS preflight, JSON error
+  format parsing, and `x-request-id` presence on both success and error responses.
+
+### Changed
+- `localhost_only` middleware returns JSON error body instead of empty 403.
+- CORS layer registered globally, before all per-route middleware.
+- All upstream-failure `warn!` log lines now include `request_id` field.
+
+### Documentation
+- Added CORS support, `x-request-id`, and JSON error format to README features list.
+- Updated architecture doc with CORS subsection, request correlation docs, and
+  updated middleware diagram.
+
 ## [0.1.10] - 2026-06-01
 
 ### Documentation

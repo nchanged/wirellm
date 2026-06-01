@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -244,30 +244,37 @@ pub async fn create_embeddings(
     let mut payload: Value = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid JSON payload: {}", e),
+            return json_error_response(
+                &format!("Invalid JSON payload: {}", e),
+                "invalid_request_error",
+                400,
             )
-                .into_response()
         },
     };
 
     let requested_model = match payload.get("model").and_then(|m| m.as_str()) {
         Some(m) => m,
-        None => return (StatusCode::BAD_REQUEST, "Missing required 'model' field").into_response(),
+        None => {
+            return json_error_response(
+                "Missing required 'model' field",
+                "invalid_request_error",
+                400,
+            )
+        },
     };
 
     let candidates = app_state.resolve_candidates(requested_model);
     if candidates.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("Invalid or unmapped virtual model: {}", requested_model),
-        )
-            .into_response();
+        return json_error_response(
+            &format!("Invalid or unmapped virtual model: {}", requested_model),
+            "invalid_request_error",
+            400,
+        );
     }
 
     // Extract W3C traceparent headers if present for tracing
     let (trace_id, parent_span_id) = extract_traceparent(&headers);
+    let request_id = format!("oxllm-{:016x}", rand::random::<u64>());
 
     let strategy = AdaptivePriorityStrategy;
     let mut attempts = 0;
@@ -289,6 +296,7 @@ pub async fn create_embeddings(
             Some(m) => m,
             None => {
                 warn!(
+                    request_id = %request_id,
                     "Provider {} removed from candidates during embeddings routing",
                     selected.name
                 );
@@ -345,6 +353,7 @@ pub async fn create_embeddings(
                     Ok(b) => b,
                     Err(e) => {
                         warn!(
+                            request_id = %request_id,
                             "Failed to read success response body from {}: {}",
                             selected.name, e
                         );
@@ -362,6 +371,10 @@ pub async fn create_embeddings(
                                 None,
                             )
                             .await;
+                        telemetry.emit(TelemetryEvent::UpdateStatus {
+                            provider: selected.name.clone(),
+                            status: circuit_status(target_provider_state).await,
+                        });
                         continue;
                     },
                 };
@@ -397,6 +410,10 @@ pub async fn create_embeddings(
                         None,
                     )
                     .await;
+                telemetry.emit(TelemetryEvent::UpdateStatus {
+                    provider: selected.name.clone(),
+                    status: circuit_status(target_provider_state).await,
+                });
 
                 // Increment local counters
                 target_provider_state
@@ -421,6 +438,7 @@ pub async fn create_embeddings(
                     failure_reason: None,
                     trace_id: trace_id.clone(),
                     parent_span_id: parent_span_id.clone(),
+                    request_id: request_id.clone(),
                 });
 
                 // Construct clean Axum response copying headers cleanly via bytes
@@ -432,6 +450,7 @@ pub async fn create_embeddings(
             Ok(res) => {
                 let status_code = res.status().as_u16();
                 warn!(
+                    request_id = %request_id,
                     "Embedding request upstream {} failed with status {}",
                     selected.name, status_code
                 );
@@ -443,7 +462,10 @@ pub async fn create_embeddings(
                 let error_body = match res.bytes().await {
                     Ok(b) => String::from_utf8_lossy(&b).to_string(),
                     Err(e) => {
-                        warn!("Failed to read error body from {}: {}", selected.name, e);
+                        warn!(
+                            request_id = %request_id,
+                            "Failed to read error body from {}: {}", selected.name, e
+                        );
                         String::new()
                     },
                 };
@@ -477,9 +499,14 @@ pub async fn create_embeddings(
                         retry_after,
                     )
                     .await;
+                telemetry.emit(TelemetryEvent::UpdateStatus {
+                    provider: selected.name.clone(),
+                    status: circuit_status(target_provider_state).await,
+                });
             },
             Err(e) => {
                 warn!(
+                    request_id = %request_id,
                     "Embedding request upstream {} connection failed: {}",
                     selected.name, e
                 );
@@ -491,6 +518,10 @@ pub async fn create_embeddings(
                 strategy
                     .feedback(target_provider_state, false, selected.is_probe, None, None)
                     .await;
+                telemetry.emit(TelemetryEvent::UpdateStatus {
+                    provider: selected.name.clone(),
+                    status: circuit_status(target_provider_state).await,
+                });
             },
         }
     }
@@ -515,26 +546,32 @@ pub async fn create_chat_completions(
     let mut payload: Value = match serde_json::from_slice(&body) {
         Ok(p) => p,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid JSON payload: {}", e),
+            return json_error_response(
+                &format!("Invalid JSON payload: {}", e),
+                "invalid_request_error",
+                400,
             )
-                .into_response()
         },
     };
 
     let requested_model = match payload.get("model").and_then(|m| m.as_str()) {
         Some(m) => m,
-        None => return (StatusCode::BAD_REQUEST, "Missing required 'model' field").into_response(),
+        None => {
+            return json_error_response(
+                "Missing required 'model' field",
+                "invalid_request_error",
+                400,
+            )
+        },
     };
 
     let candidates = app_state.resolve_candidates(requested_model);
     if candidates.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("Invalid or unmapped virtual model: {}", requested_model),
-        )
-            .into_response();
+        return json_error_response(
+            &format!("Invalid or unmapped virtual model: {}", requested_model),
+            "invalid_request_error",
+            400,
+        );
     }
 
     let is_streaming = payload
@@ -542,6 +579,7 @@ pub async fn create_chat_completions(
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
     let (trace_id, parent_span_id) = extract_traceparent(&headers);
+    let request_id = format!("oxllm-{:016x}", rand::random::<u64>());
 
     let strategy = AdaptivePriorityStrategy;
     let mut attempts = 0;
@@ -562,6 +600,7 @@ pub async fn create_chat_completions(
             Some(m) => m,
             None => {
                 warn!(
+                    request_id = %request_id,
                     "Provider {} removed from candidates during chat routing",
                     selected.name
                 );
@@ -623,6 +662,7 @@ pub async fn create_chat_completions(
                     let telemetry_clone = telemetry.clone();
                     let trace_id_clone = trace_id.clone();
                     let parent_span_id_clone = parent_span_id.clone();
+                    let request_id_clone = request_id.clone();
                     let duration = start_time.elapsed();
                     let attempt_count = attempts;
                     let model_name = target_model;
@@ -672,6 +712,10 @@ pub async fn create_chat_completions(
                                     None,
                                 )
                                 .await;
+                            telemetry_clone.emit(TelemetryEvent::UpdateStatus {
+                                provider: provider_name.clone(),
+                                status: circuit_status(provider_state).await,
+                            });
 
                             if stream_success {
                                 provider_state
@@ -696,6 +740,7 @@ pub async fn create_chat_completions(
                             },
                             trace_id: trace_id_clone,
                             parent_span_id: parent_span_id_clone,
+                            request_id: request_id_clone,
                         });
                     });
 
@@ -720,6 +765,10 @@ pub async fn create_chat_completions(
                             None,
                         )
                         .await;
+                    telemetry.emit(TelemetryEvent::UpdateStatus {
+                        provider: selected.name.clone(),
+                        status: circuit_status(target_provider_state).await,
+                    });
 
                     // Increment local counters (streaming: token counts deferred)
                     target_provider_state
@@ -729,6 +778,7 @@ pub async fn create_chat_completions(
                         Ok(b) => b,
                         Err(e) => {
                             warn!(
+                                request_id = %request_id,
                                 "Failed to read success response body from {}: {}",
                                 selected.name, e
                             );
@@ -741,6 +791,10 @@ pub async fn create_chat_completions(
                                     None,
                                 )
                                 .await;
+                            telemetry.emit(TelemetryEvent::UpdateStatus {
+                                provider: selected.name.clone(),
+                                status: circuit_status(target_provider_state).await,
+                            });
                             continue;
                         },
                     };
@@ -784,6 +838,7 @@ pub async fn create_chat_completions(
                         failure_reason: None,
                         trace_id: trace_id.clone(),
                         parent_span_id: parent_span_id.clone(),
+                        request_id: request_id.clone(),
                     });
 
                     let mut response = Response::new(Body::from(res_body));
@@ -795,6 +850,7 @@ pub async fn create_chat_completions(
             Ok(res) => {
                 let status_code = res.status().as_u16();
                 warn!(
+                    request_id = %request_id,
                     "Chat completions upstream {} failed with status {}",
                     selected.name, status_code
                 );
@@ -806,7 +862,10 @@ pub async fn create_chat_completions(
                 let error_body = match res.bytes().await {
                     Ok(b) => String::from_utf8_lossy(&b).to_string(),
                     Err(e) => {
-                        warn!("Failed to read error body from {}: {}", selected.name, e);
+                        warn!(
+                            request_id = %request_id,
+                            "Failed to read error body from {}: {}", selected.name, e
+                        );
                         String::new()
                     },
                 };
@@ -840,9 +899,14 @@ pub async fn create_chat_completions(
                         retry_after,
                     )
                     .await;
+                telemetry.emit(TelemetryEvent::UpdateStatus {
+                    provider: selected.name.clone(),
+                    status: circuit_status(target_provider_state).await,
+                });
             },
             Err(e) => {
                 warn!(
+                    request_id = %request_id,
                     "Chat completions upstream {} connection failed: {}",
                     selected.name, e
                 );
@@ -854,6 +918,10 @@ pub async fn create_chat_completions(
                 strategy
                     .feedback(target_provider_state, false, selected.is_probe, None, None)
                     .await;
+                telemetry.emit(TelemetryEvent::UpdateStatus {
+                    provider: selected.name.clone(),
+                    status: circuit_status(target_provider_state).await,
+                });
             },
         }
     }
@@ -867,6 +935,31 @@ pub async fn create_chat_completions(
         "All upstream chat completions providers failed or are rate-limited".to_string()
     };
     (StatusCode::BAD_GATEWAY, message).into_response()
+}
+
+/// Reads the current circuit and rate-limit state to produce a status code
+/// for telemetry: 0 = Healthy, 1 = Cooldown, 2 = Tripped.
+async fn circuit_status(provider: &ProviderState) -> u64 {
+    let circuit = *provider.circuit.read().await;
+    let now = Instant::now();
+    match circuit {
+        CircuitState::Closed => {
+            let rl = *provider.rate_limited_until.read().await;
+            if rl.is_some() && now < rl.unwrap() {
+                1 // Cooldown (rate-limited)
+            } else {
+                0 // Healthy
+            }
+        },
+        CircuitState::HalfOpen => 1, // Cooldown (probing)
+        CircuitState::Open { until } => {
+            if now < until {
+                2 // Tripped
+            } else {
+                1 // Cooldown expired, about to probe
+            }
+        },
+    }
 }
 
 /// Extracts W3C traceparent segments: 00-{trace_id}-{span_id}-{flags}
@@ -907,6 +1000,25 @@ fn extract_retry_after(headers: &HeaderMap) -> Option<Duration> {
         }
     }
     None
+}
+
+/// Returns a structured JSON error response matching the OpenAI error format.
+fn json_error_response(message: &str, error_type: &str, code: u16) -> Response {
+    let body = serde_json::json!({
+        "error": {
+            "message": message,
+            "type": error_type,
+            "code": code
+        }
+    });
+    let bytes = serde_json::to_vec(&body).expect("failed to serialize JSON error");
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::from_u16(code).expect("invalid error status code");
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 // ---------------------------------------------------------------------------

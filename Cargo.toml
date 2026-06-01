@@ -35,6 +35,7 @@ opentelemetry_sdk = { version = "0.28", features = ["trace", "metrics", "rt-toki
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-json", "reqwest-rustls"] }
 opentelemetry-semantic-conventions = "0.28"
 socket2 = "0.5"
+rand = "0.9"
 
 [profile.release]
 opt-level = "z"      # Optimize specifically for binary size

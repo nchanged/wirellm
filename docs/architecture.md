@@ -52,6 +52,8 @@
 8. `POST /admin/providers/{name}/online` – Re-enable a manually disabled provider. Localhost-restricted.
 9. `POST /admin/providers/{name}/reset` – Reset a provider's circuit-breaker state and failure counters. Localhost-restricted.
 
+All public endpoints (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) return CORS headers (`Access-Control-Allow-Origin: *`) and include an `x-request-id` correlation header on every response.
+
 ---
 
 ## 3. Technical Specification
@@ -166,6 +168,9 @@ To enable seamless end-to-end trace auditing, `oxllm` participates in trace prop
 * Inject W3C Trace Context headers into upstream requests to the selected provider.
 * Pushes standard parented spans to `otelite` so developers get continuous trace chains.
 
+### 4.1.1. Request Correlation (`x-request-id`)
+Every response includes an `x-request-id` header containing a unique correlation ID. This header is generated at the earliest point in the request pipeline and is present even when no upstream provider is reached (e.g., on validation errors or when all providers are unavailable). Clients can use this ID to correlate logs, traces, and responses.
+
 ### 4.2. Bounded Backpressure Safety
 To protect against Out-Of-Memory (OOM) situations on memory-constrained edge routers, telemetry is funneled through a **bounded channel** (size `1024`). Telemetry is sent via a non-blocking `try_send` strategy. If the collector is down or lagging and the buffer fills up, telemetry payloads are gracefully dropped to prioritize routing stability over complete logs.
 
@@ -211,7 +216,12 @@ The binary supports clean POSIX subcommands for daemon management and operationa
 ### 5.2. Admin Route Protection
 To prevent external network actors from auditing provider credentials or configurations, all administrative endpoints (like `/status`, `/health`, `/reload`, and `/admin/providers/*`) are **localhost-restricted**. The `localhost_only` middleware accepts both IPv4 loopback (`127.0.0.1`) and IPv6-mapped IPv4 addresses (e.g., `::ffff:127.0.0.1`, added in v0.1.8). External callers receive an immediate `403 Forbidden`.
 
-### 5.3. Daemon Configuration (Service Mode)
+### 5.3. Cross-Origin Resource Sharing (CORS)
+All public endpoints (`/v1/chat/completions`, `/v1/embeddings`, `/v1/models`) return
+CORS headers allowing cross-origin requests from any origin. This enables browser-based
+OpenAI SDKs (JavaScript, Vercel AI SDK) to call the proxy directly.
+
+### 5.4. Daemon Configuration (Service Mode)
 
 #### macOS Lifecycle (`/Library/LaunchDaemons/org.oxllm.plist`)
 ```xml
