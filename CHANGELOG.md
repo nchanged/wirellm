@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-06-01
+
 ### Fixed
 - Fixed Homebrew formula publish: `publish-homebrew-formula` job now depends on
   `build-global-artifacts` where cargo-dist generates the `.rb` formula file.
