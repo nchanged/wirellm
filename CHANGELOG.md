@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-06-01
+
 ### Added
 - **OpenAI-compatible JSON error format**: All error responses (400, 502, 403) now
   return `{"error": {"message": ..., "type": ..., "code": ...}}` with
