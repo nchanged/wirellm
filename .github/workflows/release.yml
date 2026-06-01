@@ -289,6 +289,7 @@ jobs:
     needs:
       - plan
       - build-local-artifacts
+      - build-global-artifacts
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
