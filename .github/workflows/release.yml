@@ -288,7 +288,7 @@ jobs:
   publish-homebrew-formula:
     needs:
       - plan
-      - host
+      - build-local-artifacts
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
