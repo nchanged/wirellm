@@ -9,9 +9,8 @@ name: Bump version and tag
 #     CLI: gh workflow run bump-and-tag.yml --field bump=patch
 #
 # Note: GITHUB_TOKEN tag pushes do NOT trigger other workflow `push: tags:` listeners
-# (GitHub design). Binary releases are triggered via `gh workflow run release.yml`.
-# This requires RELEASE_TOKEN (PAT with `repo` + `workflow` scopes) to be set as a secret.
-# Without RELEASE_TOKEN, binary builds must be started manually after the tag is created.
+# (GitHub design). Binary releases are triggered via `gh workflow run release.yml`
+# using GITHUB_TOKEN with `actions: write` permission.
 
 on:
   push:
@@ -33,6 +32,7 @@ env:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   release:
@@ -42,8 +42,6 @@ jobs:
     if: "!startsWith(github.event.head_commit.message, 'chore: release v')"
     outputs:
       new_version: ${{ steps.bump.outputs.new }}
-    env:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,11 +108,11 @@ jobs:
 
       - name: Trigger binary release workflow
         if: steps.preflight.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           gh workflow run release.yml \
             --ref "v${{ steps.bump.outputs.new }}" \
+            --repo "${{ github.repository }}"
+          echo "Triggered release workflow for v${{ steps.bump.outputs.new }}"
             --repo "${{ github.repository }}"
           echo "Triggered release workflow for v${{ steps.bump.outputs.new }}"
 
