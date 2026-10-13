@@ -104,6 +104,18 @@ pub struct ProviderState {
     * Immediately drop the connection to this upstream, advance the loop index, and dispatch to the next available provider.
 5. **Mid-Stream Fallback**: If an upstream accepts the connection with a `200 OK` and fails mid-stream during an SSE event transfer, the proxy will transparently forward the disconnect to the downstream agent. As of v0.1.9, streaming success feedback is deferred until stream completion, and mid-stream failures ARE counted as failures (incrementing `consecutive_failures`). The proxy does not attempt to hot-swap upstreams mid-flight to avoid corrupted JSON token streams.
 
+#### 3.1.1. Predictive Pacing & Seamless Burst Cascading
+Instead of waiting for an upstream provider to reject a request with an HTTP `429 Too Many Requests`, WireLLM enforces proactive client-side pacing on the wire:
+
+* **Micro-Burst Spacing (`min_interval_ms`)**:
+  Free and tiered API providers often impose strict burst inter-arrival limits (e.g. at most 1 request every 2,500ms). When an agent makes subsequent requests inside this cooldown window, WireLLM detects this locally in `<0.1ms`. Rather than blocking or pausing the client with a sleep call, it **skips the pacing-limited candidate immediately** and dispatches to the next healthy standby provider in the virtual model ladder.
+* **Sliding-Window RPM Accounting (`max_rpm`)**:
+  Requests are timestamped in an in-memory `VecDeque<Instant>`. As new requests arrive, entries older than 60 seconds are purged. If the count reaches `max_rpm`, WireLLM proactively diverts excess queries to the next ladder target before remote provider limits are ever breached.
+* **In-Flight Concurrency Throttling (`max_concurrency`)**:
+  Guards against multi-agent parallel tool invocation spikes. If multiple agents attempt simultaneous requests, WireLLM fans them out across distinct providers in parallel.
+* **Zero-Downtime Agent Continuity**:
+  The downstream AI agent never experiences rate-limit errors, sleep backoffs, or failed tool calls. As soon as cooldown timers expire, the primary provider automatically resumes serving traffic.
+
 ### 3.2. Configuration Schema & Hot Reloading
 Configuration is declared in a single `config.toml` file (avoiding deprecated YAML dependencies).
 
