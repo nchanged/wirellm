@@ -23,7 +23,7 @@ pub enum TelemetryEvent {
         failure_reason: Option<String>,
         trace_id: Option<String>,       // Extracted from W3C traceparent
         parent_span_id: Option<String>, // Extracted from W3C traceparent
-        request_id: String,             // oxllm-generated request correlation ID
+        request_id: String,             // wirellm-generated request correlation ID
     },
     UpdateStatus {
         provider: String,
@@ -48,7 +48,7 @@ impl TelemetryClient {
         if let Err(_e) = self.sender.try_send(event) {
             // Graceful drop matching edge router constraints
             warn!(
-                target: "oxllm::telemetry",
+                target: "wirellm::telemetry",
                 "Telemetry queue full (1024 cap) or collector unreachable. Dropping event to prevent OOM."
             );
         }
@@ -76,8 +76,8 @@ impl TelemetryWorker {
     ) -> Result<tokio::task::JoinHandle<()>, crate::error::OxllmError> {
         // Build Resource Metadata
         let resource = Resource::builder()
-            .with_service_name("oxllm")
-            .with_attributes(vec![KeyValue::new("service.version", "0.1.0")])
+            .with_service_name("wirellm")
+            .with_attributes(vec![KeyValue::new("service.version", "0.2.1")])
             .build();
 
         let span_exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -107,7 +107,7 @@ impl TelemetryWorker {
                     .build();
                 global::set_meter_provider(meter_provider);
 
-                let meter = global::meter("oxllm-metrics");
+                let meter = global::meter("wirellm-metrics");
                 let provider_status_gauge = meter
                     .u64_gauge("llm_proxy.provider.status")
                     .with_description("0=Healthy, 1=Cooldown, 2=Tripped")
@@ -137,7 +137,7 @@ impl TelemetryWorker {
                 // Degraded mode: log the error(s) and drain the channel silently
                 if let Err(e) = se_result {
                     warn!(
-                        target: "oxllm::telemetry",
+                        target: "wirellm::telemetry",
                         "OTLP span exporter failed to initialise (endpoint: {}): {}. \
                          Running without telemetry export.",
                         otel_endpoint, e
@@ -145,7 +145,7 @@ impl TelemetryWorker {
                 }
                 if let Err(e) = me_result {
                     warn!(
-                        target: "oxllm::telemetry",
+                        target: "wirellm::telemetry",
                         "OTLP metric exporter failed to initialise (endpoint: {}): {}. \
                          Running without telemetry export.",
                         otel_endpoint, e
@@ -185,7 +185,7 @@ impl TelemetryWorker {
     }
 
     async fn run_loop(&mut self) {
-        let tracer = global::tracer("oxllm-tracer");
+        let tracer = global::tracer("wirellm-tracer");
 
         while let Some(event) = self.rx.recv().await {
             match event {
@@ -230,7 +230,7 @@ impl TelemetryWorker {
                     }
 
                     // 2. Build Propagated Trace Span Context if present
-                    let span_builder = tracer.span_builder("oxllm.transaction");
+                    let span_builder = tracer.span_builder("wirellm.transaction");
                     let mut parent_ctx = None;
 
                     if let (Some(tid), Some(pid)) = (trace_id, parent_span_id) {

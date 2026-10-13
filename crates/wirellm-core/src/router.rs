@@ -63,7 +63,7 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
             // 2. Proactive Client-Side Rate Limit Check (Sliding 60s Window)
             if provider.is_rpm_limited(now).await {
                 info!(
-                    target: "oxllm_core::router",
+                    target: "wirellm_core::router",
                     "Provider '{}' reached proactive rate limit ({} RPM). Proactively failing over to next candidate.",
                     provider.name, provider.max_rpm.unwrap_or(0)
                 );
@@ -73,7 +73,7 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
             // 2b. Proactive Burst & Concurrency Limit Check
             if provider.is_burst_limited(now).await {
                 info!(
-                    target: "oxllm_core::router",
+                    target: "wirellm_core::router",
                     "Provider '{}' is burst spacing or concurrency limited. Proactively failing over to next candidate.",
                     provider.name
                 );
@@ -186,13 +186,13 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
             if is_probe {
                 provider.probe_in_flight.store(false, Ordering::SeqCst);
                 info!(
-                    target: "oxllm_core::router",
+                    target: "wirellm_core::router",
                     "HalfOpen probe succeeded for {} — circuit closed",
                     provider.name
                 );
             } else {
                 info!(
-                    target: "oxllm_core::router",
+                    target: "wirellm_core::router",
                     "Circuit closed for {} after successful request",
                     provider.name
                 );
@@ -211,7 +211,7 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                 let mut rl = provider.rate_limited_until.write().await;
                 *rl = Some(now + cooldown);
                 info!(
-                    target: "oxllm_core::router",
+                    target: "wirellm_core::router",
                     "Rate-limited {} for {}s",
                     provider.name, cooldown.as_secs()
                 );
@@ -226,7 +226,7 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                     until: now + cooldown,
                 };
                 info!(
-                    target: "oxllm_core::router",
+                    target: "wirellm_core::router",
                     "Circuit opened for {} for {}s ({} consecutive failures)",
                     provider.name, cooldown.as_secs(), *failures
                 );

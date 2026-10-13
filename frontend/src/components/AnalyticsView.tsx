@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { AnalyticsResponse, DailyStats } from '../types';
+import { AnalyticsResponse } from '../types';
 import { fetchAnalytics } from '../api';
 import {
   BarChart3,
   TrendingUp,
   Zap,
   Clock,
-  Calendar,
   Activity,
   Layers,
+  Database,
 } from 'lucide-react';
 import {
   BarChart,
@@ -20,7 +20,19 @@ import {
   Legend,
   LineChart,
   Line,
+  CartesianGrid,
 } from 'recharts';
+import {
+  Card,
+  MetricCard,
+  Badge,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from '../ui';
 
 export const AnalyticsView: React.FC = () => {
   const [data, setData] = useState<AnalyticsResponse | null>(null);
@@ -44,7 +56,17 @@ export const AnalyticsView: React.FC = () => {
   }, [days]);
 
   // Aggregate by date for charts
-  const chartDataMap: Record<string, { date: string; input_tokens: number; output_tokens: number; requests: number; latency_sum: number; latency_count: number }> = {};
+  const chartDataMap: Record<
+    string,
+    {
+      date: string;
+      input_tokens: number;
+      output_tokens: number;
+      requests: number;
+      latency_sum: number;
+      latency_count: number;
+    }
+  > = {};
 
   if (data?.stats) {
     for (const s of data.stats) {
@@ -86,206 +108,228 @@ export const AnalyticsView: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Top Banner & Range Selector */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-        <div>
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-            <BarChart3 className="w-5 h-5 text-brand-500" />
-            Token Consumption &amp; Usage Analytics
-          </h2>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Real-time daily aggregation stored persistently in SQLite.
-          </p>
+      <Card className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-start gap-3.5">
+          <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/40 text-cyan-400 shrink-0">
+            <BarChart3 className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-white tracking-wide flex items-center gap-2">
+              Wire Telemetry &amp; Token Analytics
+              <Badge variant="cyan">SQLITE METRICS</Badge>
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              High-resolution transaction accounting. Zero external analytics or telemetry pinging outside your machine.
+            </p>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400 font-medium">History Range:</span>
+        <div className="flex items-center gap-1.5 bg-[#030508] p-1 rounded-lg border border-white/[0.06]">
           {[7, 30, 90].map((d) => (
             <button
               key={d}
               onClick={() => setDays(d)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all ${
                 days === d
-                  ? 'bg-brand-600 text-white shadow'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                  ? 'bg-cyan-500 text-black shadow-[0_0_12px_rgba(6,182,212,0.3)]'
+                  : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
               }`}
             >
-              {d} Days
+              {d}D
             </button>
           ))}
         </div>
-      </div>
+      </Card>
 
       {loading ? (
-        <div className="flex items-center justify-center p-12 text-slate-400">
-          <Activity className="w-6 h-6 animate-spin mr-2 text-brand-500" />
-          <span>Loading analytics data...</span>
-        </div>
+        <Card className="p-20 flex flex-col items-center justify-center text-slate-500 gap-3">
+          <Activity className="w-6 h-6 animate-spin text-cyan-400" />
+          <span className="text-xs font-mono">Aggregating telemetry logs...</span>
+        </Card>
       ) : (
         <>
-          {/* Key Analytics Cards */}
+          {/* Key Analytics Cards using MetricCard */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Total Tokens
+            <MetricCard
+              label="Total Throughput"
+              value={formatTokens((data?.total_input_tokens || 0) + (data?.total_output_tokens || 0))}
+              icon={<Zap className="w-4 h-4" />}
+              accent="amber"
+              subtext={
+                <span className="flex items-center gap-1.5">
+                  <span className="text-cyan-400">{formatTokens(data?.total_input_tokens || 0)} prompt</span>
+                  <span>/</span>
+                  <span className="text-indigo-400">{formatTokens(data?.total_output_tokens || 0)} completion</span>
                 </span>
-                <Zap className="w-5 h-5 text-amber-400" />
-              </div>
-              <div className="mt-3 text-2xl font-bold text-white tracking-tight">
-                {formatTokens((data?.total_input_tokens || 0) + (data?.total_output_tokens || 0))}
-              </div>
-              <div className="mt-1 text-xs text-slate-500">
-                {formatTokens(data?.total_input_tokens || 0)} prompt &bull;{' '}
-                {formatTokens(data?.total_output_tokens || 0)} completion
-              </div>
-            </div>
+              }
+            />
 
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Total Requests
-                </span>
-                <Activity className="w-5 h-5 text-sky-400" />
-              </div>
-              <div className="mt-3 text-2xl font-bold text-white tracking-tight">
-                {(data?.total_requests || 0).toLocaleString()}
-              </div>
-              <div className="mt-1 text-xs text-slate-500">
-                Routed across active providers
-              </div>
-            </div>
+            <MetricCard
+              label="Requests Dispatched"
+              value={(data?.total_requests || 0).toLocaleString()}
+              icon={<Activity className="w-4 h-4" />}
+              accent="cyan"
+              subtext="Routed across active upstreams"
+            />
 
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Daily Active Models
+            <MetricCard
+              label="Active Provider Breadth"
+              value={
+                <span>
+                  {new Set(data?.stats.map((s) => s.model_name)).size}{' '}
+                  <span className="text-sm text-slate-500 font-sans font-normal">models</span>
                 </span>
-                <Layers className="w-5 h-5 text-purple-400" />
-              </div>
-              <div className="mt-3 text-2xl font-bold text-white tracking-tight">
-                {new Set(data?.stats.map((s) => s.model_name)).size}
-              </div>
-              <div className="mt-1 text-xs text-slate-500">
-                Across {new Set(data?.stats.map((s) => s.provider_name)).size} upstream providers
-              </div>
-            </div>
+              }
+              icon={<Layers className="w-4 h-4" />}
+              accent="purple"
+              subtext={`Across ${new Set(data?.stats.map((s) => s.provider_name)).size} distinct gateways`}
+            />
           </div>
 
-          {/* Daily Token Chart */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-            <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-              <TrendingUp className="w-4 h-4 text-brand-500" />
-              Daily Token Volume Breakdown
-            </h3>
+          {/* Daily Token Volume Stacked Bar Chart */}
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-mono uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-cyan-400" />
+                Daily Token Volume (Input vs Output)
+              </h3>
+              <span className="text-[11px] font-mono text-slate-500">
+                Stacked breakdown
+              </span>
+            </div>
             <div className="h-72 w-full">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData}>
-                    <XAxis dataKey="date" stroke="#64748b" fontSize={11} />
-                    <YAxis stroke="#64748b" fontSize={11} tickFormatter={(v) => formatTokens(v)} />
+                  <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#ffffff0a" vertical={false} />
+                    <XAxis dataKey="date" stroke="#64748b" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis
+                      stroke="#64748b"
+                      fontSize={10}
+                      fontFamily="JetBrains Mono"
+                      tickFormatter={(v) => formatTokens(v)}
+                    />
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: '#0f172a',
-                        border: '1px solid #334155',
+                        backgroundColor: '#070a12',
+                        border: '1px solid rgba(255,255,255,0.1)',
                         borderRadius: '0.5rem',
-                        fontSize: '12px',
+                        fontSize: '11px',
+                        fontFamily: 'JetBrains Mono',
+                        boxShadow: '0 10px 25px rgba(0,0,0,0.8)',
                       }}
                     />
-                    <Legend wrapperStyle={{ fontSize: '12px' }} />
-                    <Bar dataKey="Input Tokens" stackId="a" fill="#0284c7" />
-                    <Bar dataKey="Output Tokens" stackId="a" fill="#10b981" />
+                    <Legend wrapperStyle={{ fontSize: '11px', fontFamily: 'JetBrains Mono', paddingTop: '8px' }} />
+                    <Bar dataKey="Input Tokens" stackId="a" fill="#06b6d4" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="Output Tokens" stackId="a" fill="#6366f1" radius={[3, 3, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="flex items-center justify-center h-full text-slate-500 text-xs">
-                  No historical traffic logged yet. Run requests through http://localhost:{window.location.port || '8088'}/v1/chat/completions!
+                <div className="flex items-center justify-center h-full text-slate-600 text-xs font-mono">
+                  No historical traffic logged yet. WireLLM will stream analytics as agents send requests.
                 </div>
               )}
             </div>
-          </div>
+          </Card>
 
-          {/* Daily Latency Trend */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-            <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-              <Clock className="w-4 h-4 text-sky-400" />
-              Average Upstream Response Latency (ms)
-            </h3>
+          {/* Daily Latency Line Chart */}
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-mono uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-cyan-400" />
+                Upstream Provider Round-Trip Latency
+              </h3>
+              <span className="text-[11px] font-mono text-cyan-400/80">
+                Wire overhead &lt;2ms
+              </span>
+            </div>
             <div className="h-56 w-full">
               {chartData.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData}>
-                    <XAxis dataKey="date" stroke="#64748b" fontSize={11} />
-                    <YAxis stroke="#64748b" fontSize={11} unit="ms" />
+                  <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#ffffff0a" vertical={false} />
+                    <XAxis dataKey="date" stroke="#64748b" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis stroke="#64748b" fontSize={10} fontFamily="JetBrains Mono" unit="ms" />
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: '#0f172a',
-                        border: '1px solid #334155',
+                        backgroundColor: '#070a12',
+                        border: '1px solid rgba(255,255,255,0.1)',
                         borderRadius: '0.5rem',
-                        fontSize: '12px',
+                        fontSize: '11px',
+                        fontFamily: 'JetBrains Mono',
+                        boxShadow: '0 10px 25px rgba(0,0,0,0.8)',
                       }}
                     />
                     <Line
                       type="monotone"
                       dataKey="Avg Latency (ms)"
-                      stroke="#38bdf8"
+                      stroke="#06b6d4"
                       strokeWidth={2}
-                      dot={{ r: 3 }}
+                      dot={{ r: 3, fill: '#06b6d4' }}
+                      activeDot={{ r: 5, fill: '#22d3ee' }}
                     />
                   </LineChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="flex items-center justify-center h-full text-slate-500 text-xs">
-                  No latency stats logged yet.
+                <div className="flex items-center justify-center h-full text-slate-600 text-xs font-mono">
+                  No latency benchmarks logged yet.
                 </div>
               )}
             </div>
-          </div>
+          </Card>
 
           {/* Model Breakdown Table */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
-            <h3 className="text-sm font-semibold text-white mb-4">
-              Model Usage Breakdown (Last {days} Days)
-            </h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-slate-300">
-                <thead className="bg-slate-950/60 text-slate-400 uppercase tracking-wider border-b border-slate-800">
-                  <tr>
-                    <th className="py-2.5 px-3 font-medium">Date</th>
-                    <th className="py-2.5 px-3 font-medium">Provider</th>
-                    <th className="py-2.5 px-3 font-medium">Model</th>
-                    <th className="py-2.5 px-3 font-medium">Requests</th>
-                    <th className="py-2.5 px-3 font-medium">Prompt Tokens</th>
-                    <th className="py-2.5 px-3 font-medium">Completion Tokens</th>
-                    <th className="py-2.5 px-3 font-medium">Avg Latency</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono">
-                  {data?.stats.map((s, idx) => (
-                    <tr key={`${s.date}-${s.provider_name}-${s.model_name}-${idx}`} className="hover:bg-slate-800/40">
-                      <td className="py-2.5 px-3 text-slate-400 font-sans">{s.date}</td>
-                      <td className="py-2.5 px-3 font-semibold text-slate-200 capitalize font-sans">
-                        {s.provider_name}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-300">{s.model_name}</td>
-                      <td className="py-2.5 px-3 text-slate-200">{s.total_requests}</td>
-                      <td className="py-2.5 px-3 text-sky-400">{s.total_input_tokens.toLocaleString()}</td>
-                      <td className="py-2.5 px-3 text-emerald-400">{s.total_output_tokens.toLocaleString()}</td>
-                      <td className="py-2.5 px-3 text-slate-300">
-                        {s.avg_latency_ms > 0 ? `${s.avg_latency_ms.toFixed(0)} ms` : '-'}
-                      </td>
-                    </tr>
-                  ))}
-                  {(!data?.stats || data.stats.length === 0) && (
-                    <tr>
-                      <td colSpan={7} className="py-6 text-center text-slate-500 font-sans">
-                        No transactions recorded in the selected period.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+          <Card className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xs font-mono uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                <Database className="w-4 h-4 text-slate-400" />
+                Granular Model Ledger (Last {days} Days)
+              </h3>
+              <Badge variant="neutral">{data?.stats.length || 0} transaction records</Badge>
             </div>
-          </div>
+
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Provider</TableHead>
+                  <TableHead>Model Target</TableHead>
+                  <TableHead className="text-right">Requests</TableHead>
+                  <TableHead className="text-right">Prompt Tokens</TableHead>
+                  <TableHead className="text-right">Completion Tokens</TableHead>
+                  <TableHead className="text-right">Latency</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data?.stats.map((s, idx) => (
+                  <TableRow key={`${s.date}-${s.provider_name}-${s.model_name}-${idx}`}>
+                    <TableCell className="text-slate-400 font-sans text-xs">{s.date}</TableCell>
+                    <TableCell className="font-semibold text-slate-200 capitalize font-sans">
+                      {s.provider_name}
+                    </TableCell>
+                    <TableCell className="text-slate-300 font-mono text-[11px]">{s.model_name}</TableCell>
+                    <TableCell className="text-right text-slate-300">{s.total_requests}</TableCell>
+                    <TableCell className="text-right text-cyan-400">
+                      {s.total_input_tokens.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right text-indigo-400">
+                      {s.total_output_tokens.toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right text-slate-400">
+                      {s.avg_latency_ms > 0 ? `${s.avg_latency_ms.toFixed(0)} ms` : '-'}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {(!data?.stats || data.stats.length === 0) && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-8 text-center text-slate-600 font-sans text-xs">
+                      No transactions recorded in the selected period.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </Card>
         </>
       )}
     </div>

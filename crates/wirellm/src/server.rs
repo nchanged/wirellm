@@ -80,7 +80,7 @@ impl Reloader {
         self.sender
             .send(Arc::new(new_state))
             .map_err(|e| format!("Failed to update watch channel: {}", e))?;
-        info!("OxLLM state reloaded successfully");
+        info!("WireLLM state reloaded successfully");
         Ok(())
     }
 
