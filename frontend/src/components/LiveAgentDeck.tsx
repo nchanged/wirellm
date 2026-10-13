@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Terminal, Activity, CheckCircle2, AlertOctagon, X, Zap } from 'lucide-react';
 import { Badge, Button, cn } from '../ui';
 
@@ -22,10 +22,21 @@ interface LiveAgentDeckProps {
   onClearCompleted: () => void;
 }
 
+function formatTimeAgo(timestampMs: number, now: number): string {
+  const diffSec = Math.max(0, Math.floor((now - timestampMs) / 1000));
+  if (diffSec < 4) return 'just now';
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  return `${diffHr}h ago`;
+}
+
 const LiveStreamCard: React.FC<{
   stream: ActiveStreamState;
+  now: number;
   onDismiss: (requestId: string) => void;
-}> = ({ stream, onDismiss }) => {
+}> = ({ stream, now, onDismiss }) => {
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -43,7 +54,7 @@ const LiveStreamCard: React.FC<{
       className={cn(
         'rounded-xl border transition-all duration-300 p-3.5 flex flex-col justify-between space-y-2.5 font-mono',
         stream.isDone
-          ? 'bg-[#02050c]/90 border-white/[0.08] shadow-sm opacity-90'
+          ? 'bg-[#02050c]/90 border-white/[0.08] shadow-sm'
           : 'bg-[#020814] border-[#00f0ff]/50 shadow-[0_0_20px_rgba(0,240,255,0.12)]'
       )}
     >
@@ -100,7 +111,7 @@ const LiveStreamCard: React.FC<{
         </div>
       </div>
 
-      {/* Telemetry Stats Bar */}
+      {/* Telemetry Stats Bar: Displays speed, tokens, and stable relative update time */}
       <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
         <div className="flex items-center gap-3">
           {stream.speedTokPerSec > 0 && (
@@ -112,12 +123,20 @@ const LiveStreamCard: React.FC<{
           <span className="text-amber-400 font-medium">
             {stream.tokensSoFar} <span className="text-[9px] font-normal text-slate-400">tok</span>
           </span>
-          <span>
-            {(stream.elapsedMs / 1000).toFixed(1)}s
+          <span className="text-slate-400">
+            {stream.isDone ? (
+              <span className="text-slate-400">
+                Updated <span className="text-slate-300 font-medium">{formatTimeAgo(stream.lastUpdated, now)}</span>
+              </span>
+            ) : (
+              <span className="text-cyan-300 font-medium">
+                {(stream.elapsedMs / 1000).toFixed(1)}s <span className="text-[10px] text-slate-400 font-normal">(live)</span>
+              </span>
+            )}
           </span>
         </div>
 
-        <div className="text-[10px] text-slate-500" title={`Request ID: ${stream.requestId}`}>
+        <div className="text-[10px] text-slate-500 font-mono" title={`Request ID: ${stream.requestId}`}>
           #{shortRequestId}
         </div>
       </div>
@@ -147,36 +166,22 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
   onDismiss,
   onClearCompleted,
 }) => {
+  const [now, setNow] = useState<number>(Date.now());
+
+  // Update relative timestamps smoothly every second
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const activeCount = streams.filter((s) => !s.isDone).length;
   const completedCount = streams.filter((s) => s.isDone).length;
 
-  if (streams.length === 0) {
-    return (
-      <div className="flex items-center justify-between px-4 py-3 rounded-xl border border-white/[0.06] bg-[#030712]/70 backdrop-blur font-mono text-xs">
-        <div className="flex items-center gap-2.5">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00f0ff] opacity-40" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00f0ff]/60" />
-          </span>
-          <span className="text-slate-400 font-semibold tracking-wider text-[11px]">
-            LIVE AGENT DECK <span className="text-slate-600 font-normal">/ STANDBY</span>
-          </span>
-          <span className="text-slate-600 hidden sm:inline">&bull;</span>
-          <span className="text-slate-500 text-[11px] hidden sm:inline">
-            Telemetry socket connected on <span className="text-cyan-400/90">/ws/live</span>. Ready to stream live inference.
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-[10px] text-slate-500 shrink-0">
-          <span className="w-1.5 h-1.5 rounded-full bg-cyan-500/40" />
-          0 Active Interceptions
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-3 rounded-2xl border border-[#00f0ff]/30 bg-[#020612]/80 backdrop-blur p-4 shadow-[0_0_30px_rgba(0,240,255,0.06)]">
-      {/* Deck Header */}
+    <div className="space-y-3 rounded-2xl border border-[#00f0ff]/25 bg-[#020612]/80 backdrop-blur p-4 shadow-[0_0_30px_rgba(0,240,255,0.06)] font-mono transition-all">
+      {/* Deck Header Bar */}
       <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
         <div className="flex items-center gap-2.5">
           <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
@@ -187,12 +192,22 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               <h3 className="text-sm font-bold text-white tracking-wider font-mono">
                 LIVE AGENT DECK
               </h3>
-              <Badge variant="cyan" className={cn(activeCount > 0 ? 'animate-pulse' : '')}>
-                {activeCount} ACTIVE {activeCount === 1 ? 'STREAM' : 'STREAMS'}
-              </Badge>
+              {activeCount > 0 ? (
+                <Badge variant="cyan" className="animate-pulse">
+                  {activeCount} ACTIVE {activeCount === 1 ? 'STREAM' : 'STREAMS'}
+                </Badge>
+              ) : completedCount > 0 ? (
+                <Badge variant="neutral">
+                  {completedCount} COMPLETED
+                </Badge>
+              ) : (
+                <Badge variant="neutral">
+                  STANDBY
+                </Badge>
+              )}
             </div>
-            <p className="text-[11px] text-slate-400 mt-0.5 font-mono">
-              Live token stream intercepted directly from upstream inference models.
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Real-time token streaming tap intercepted directly from upstream inference models.
             </p>
           </div>
         </div>
@@ -211,12 +226,32 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
         </div>
       </div>
 
-      {/* Grid of active streams */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3.5">
-        {streams.map((stream) => (
-          <LiveStreamCard key={stream.requestId} stream={stream} onDismiss={onDismiss} />
-        ))}
-      </div>
+      {/* Deck Body */}
+      {streams.length === 0 ? (
+        <div className="rounded-xl border border-white/[0.05] bg-[#01040a] p-3 text-xs text-slate-500 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00f0ff] opacity-40" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00f0ff]/60" />
+            </span>
+            <span>
+              Connected to <span className="text-cyan-400 font-semibold">/ws/live</span>. Ready for incoming agent inference.
+            </span>
+          </div>
+          <div className="text-[10px] text-slate-600">0 Active Streams</div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3.5">
+          {streams.map((stream) => (
+            <LiveStreamCard
+              key={stream.requestId}
+              stream={stream}
+              now={now}
+              onDismiss={onDismiss}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 };

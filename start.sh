@@ -6,6 +6,7 @@
 
 set -eo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="$HOME/.wirellm/wirellm.pid"
 LOG_FILE="$HOME/.wirellm/wirellm.log"
 PORT="${WIRELLM_PORT:-${OXLLM_PORT:-8765}}"
@@ -126,8 +127,11 @@ case "$ACTION" in
   logs)
     logs
     ;;
+  deploy)
+    exec "$SCRIPT_DIR/scripts/deploy.sh"
+    ;;
   *)
-    echo "Usage: $0 [start|stop|restart|status|logs|foreground]"
+    echo "Usage: $0 [start|stop|restart|status|logs|foreground|deploy]"
     exit 1
     ;;
 esac
