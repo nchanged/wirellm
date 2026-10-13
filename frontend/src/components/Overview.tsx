@@ -34,25 +34,12 @@ import {
   TableCell,
   cn,
 } from '../ui';
+import { LiveAgentDeck, ActiveStreamState } from './LiveAgentDeck';
 
 interface OverviewProps {
   status: ApiStatusResponse | null;
   onRefresh: () => void;
   liveEvent?: LiveStreamEvent | null;
-}
-
-interface ActiveStreamState {
-  requestId: string;
-  virtualModel?: string;
-  provider: string;
-  model: string;
-  text: string;
-  tokensSoFar: number;
-  elapsedMs: number;
-  isDone: boolean;
-  error?: string;
-  speedTokPerSec: number;
-  lastUpdated: number;
 }
 
 interface TargetEvaluation {
@@ -152,7 +139,7 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
   useEffect(() => {
     if (!liveEvent) return;
 
-    const key = `${liveEvent.provider}::${liveEvent.model}`;
+    const key = liveEvent.request_id;
     const now = Date.now();
     const speed = liveEvent.elapsed_ms > 150
       ? Math.round((liveEvent.tokens_so_far / (liveEvent.elapsed_ms / 1000)))
@@ -160,8 +147,8 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
 
     setActiveStreams((prev) => {
       const existing = prev[key];
-      const prevText = existing && existing.requestId === liveEvent.request_id ? existing.text : '';
-      const newText = liveEvent.delta ? (prevText + liveEvent.delta).slice(-600) : prevText;
+      const prevText = existing ? existing.text : '';
+      const newText = liveEvent.delta ? (prevText + liveEvent.delta).slice(-800) : prevText;
 
       return {
         ...prev,
@@ -184,7 +171,7 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
     if (liveEvent.is_done) {
       setTimeout(() => {
         setActiveStreams((prev) => {
-          if (!prev[key] || prev[key].requestId !== liveEvent.request_id) return prev;
+          if (!prev[key]) return prev;
           const copy = { ...prev };
           delete copy[key];
           return copy;
@@ -192,6 +179,27 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
       }, 7000);
     }
   }, [liveEvent]);
+
+  const handleDismissStream = (requestId: string) => {
+    setActiveStreams((prev) => {
+      if (!prev[requestId]) return prev;
+      const copy = { ...prev };
+      delete copy[requestId];
+      return copy;
+    });
+  };
+
+  const handleClearCompleted = () => {
+    setActiveStreams((prev) => {
+      const next: Record<string, ActiveStreamState> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        if (!v.isDone) next[k] = v;
+      }
+      return next;
+    });
+  };
+
+  const activeStreamList = Object.values(activeStreams);
 
   if (!status) {
     return (
@@ -302,7 +310,16 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
       </div>
 
       {/* ============================================================== */}
-      {/* 2. THE ROUTING MATRIX: Live Virtual Model Fallback Ladders     */}
+      {/* 2. LIVE AGENT DECK: Real-time Intercepted Agent Stream View    */}
+      {/* ============================================================== */}
+      <LiveAgentDeck
+        streams={activeStreamList}
+        onDismiss={handleDismissStream}
+        onClearCompleted={handleClearCompleted}
+      />
+
+      {/* ============================================================== */}
+      {/* 3. THE ROUTING MATRIX: Live Virtual Model Fallback Ladders     */}
       {/* ============================================================== */}
       <Card className="p-5 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.06] pb-4">
@@ -385,9 +402,22 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
                 status.providers,
                 isFirstHealthyFound
               );
+
+              const isTargetStreaming = activeStreamList.some(
+                (s) =>
+                  !s.isDone &&
+                  (s.virtualModel === vm.name || (!s.virtualModel && s.provider === tgt.provider && s.model === tgt.model)) &&
+                  s.provider === tgt.provider &&
+                  s.model === tgt.model
+              );
+
               return {
                 ...tgt,
-                evaluation: evalRes,
+                evaluation: {
+                  ...evalRes,
+                  status: (evalRes.status === 'running' || isTargetStreaming) ? ('running' as const) : evalRes.status,
+                },
+                isStreaming: isTargetStreaming,
               };
             });
 
@@ -455,134 +485,90 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
                 <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                   {visibleTargets.map((tgt, idx) => {
                     const ev = tgt.evaluation;
-                    const isRunning = ev.status === 'running';
+                    const isRunning = ev.status === 'running' || tgt.isStreaming;
                     const isPrimary = ev.status === 'primary';
                     const isBlocked = ev.status === 'blocked';
-                    const streamKey = `${tgt.provider}::${tgt.model}`;
-                    const stream = activeStreams[streamKey];
 
                     return (
-                      <div key={`${tgt.provider}-${tgt.model}-${idx}`} className="space-y-1">
-                        <div
-                          className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs transition-all ${
-                            isRunning || stream
-                              ? 'bg-[#001c24]/40 border-[#00f0ff]/60 shadow-[0_0_15px_rgba(0,240,255,0.25)]'
-                              : isPrimary
-                              ? 'bg-[#040810] border-cyan-500/40 shadow-sm'
-                              : isBlocked
-                              ? 'bg-rose-950/15 border-rose-900/40 opacity-75'
-                              : 'bg-[#02050c] border-white/[0.04] hover:border-white/[0.08]'
-                          }`}
-                        >
-                          {/* Step Index & Provider */}
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <span
-                              className={`w-5 h-5 rounded-md text-[10px] font-mono font-bold flex items-center justify-center shrink-0 ${
-                                isRunning || stream
-                                  ? 'bg-[#00f0ff] text-slate-950 font-extrabold shadow-[0_0_10px_rgba(0,240,255,0.9)]'
-                                  : isPrimary
-                                  ? 'bg-[#00222a] text-[#00f0ff] border border-[#00f0ff]/50'
-                                  : isBlocked
-                                  ? 'bg-rose-950/80 text-rose-400 border border-rose-800/60'
-                                  : 'bg-slate-800/60 text-slate-400'
-                              }`}
-                            >
-                              {idx + 1}
-                            </span>
+                      <div
+                        key={`${tgt.provider}-${tgt.model}-${idx}`}
+                        className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs transition-all ${
+                          isRunning
+                            ? 'bg-[#001c24]/40 border-[#00f0ff]/60 shadow-[0_0_15px_rgba(0,240,255,0.25)]'
+                            : isPrimary
+                            ? 'bg-[#040810] border-cyan-500/40 shadow-sm'
+                            : isBlocked
+                            ? 'bg-rose-950/15 border-rose-900/40 opacity-75'
+                            : 'bg-[#02050c] border-white/[0.04] hover:border-white/[0.08]'
+                        }`}
+                      >
+                        {/* Step Index & Provider */}
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span
+                            className={`w-5 h-5 rounded-md text-[10px] font-mono font-bold flex items-center justify-center shrink-0 ${
+                              isRunning
+                                ? 'bg-[#00f0ff] text-slate-950 font-extrabold shadow-[0_0_10px_rgba(0,240,255,0.9)]'
+                                : isPrimary
+                                ? 'bg-[#00222a] text-[#00f0ff] border border-[#00f0ff]/50'
+                                : isBlocked
+                                ? 'bg-rose-950/80 text-rose-400 border border-rose-800/60'
+                                : 'bg-slate-800/60 text-slate-400'
+                            }`}
+                          >
+                            {idx + 1}
+                          </span>
 
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5">
-                                <span
-                                  className={`font-semibold font-mono text-xs truncate ${
-                                    isRunning || isPrimary || stream ? 'text-white' : isBlocked ? 'text-slate-400' : 'text-slate-300'
-                                  }`}
-                                >
-                                  {tgt.provider}
-                                </span>
-                                <ChevronRight className="w-3 h-3 text-slate-600 shrink-0" />
-                                <span
-                                  className={`font-mono text-[11px] truncate max-w-[150px] sm:max-w-[200px] ${
-                                    isRunning || isPrimary || stream ? 'text-[#00f0ff] font-medium' : 'text-slate-400'
-                                  }`}
-                                  title={tgt.model}
-                                >
-                                  {tgt.model}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Status / Failover Tag */}
-                          <div className="flex items-center gap-2 shrink-0 font-mono">
-                            {(isRunning || stream) && (
-                              <Badge variant="cyan" className="shadow animate-pulse font-bold">
-                                <Activity className="w-3 h-3 animate-spin text-[#00f0ff]" />
-                                ACTIVE {ev.inFlight > 0 ? `(${ev.inFlight} req)` : ''}
-                              </Badge>
-                            )}
-
-                            {isPrimary && !isRunning && !stream && (
-                              <Badge variant="cyan">
-                                <CheckCircle2 className="w-3 h-3 text-[#00f0ff]" />
-                                PRIMARY ROUTE
-                              </Badge>
-                            )}
-
-                            {isBlocked && (
-                              <Badge variant="rose" title={ev.reason} className="cursor-help">
-                                <AlertOctagon className="w-3 h-3 text-rose-400 shrink-0" />
-                                <span className="truncate max-w-[150px]">{ev.reason}</span>
-                              </Badge>
-                            )}
-
-                            {!isRunning && !isPrimary && !isBlocked && !stream && (
-                              <span className="text-[10px] text-slate-500 bg-[#010307] px-2 py-0.5 rounded border border-white/[0.04]">
-                                STANDBY #{idx + 1}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={`font-semibold font-mono text-xs truncate ${
+                                  isRunning || isPrimary ? 'text-white' : isBlocked ? 'text-slate-400' : 'text-slate-300'
+                                }`}
+                              >
+                                {tgt.provider}
                               </span>
-                            )}
+                              <ChevronRight className="w-3 h-3 text-slate-600 shrink-0" />
+                              <span
+                                className={`font-mono text-[11px] truncate max-w-[150px] sm:max-w-[200px] ${
+                                  isRunning || isPrimary ? 'text-[#00f0ff] font-medium' : 'text-slate-400'
+                                }`}
+                                title={tgt.model}
+                              >
+                                {tgt.model}
+                              </span>
+                            </div>
                           </div>
                         </div>
 
-                        {/* Live Agent Terminal Stream Unfolded in Place */}
-                        {stream && (
-                          <div className="rounded-lg border border-[#00f0ff]/40 bg-[#01040a] p-2.5 shadow-[0_0_15px_rgba(0,240,255,0.12)] font-mono text-xs transition-all">
-                            <div className="flex items-center justify-between text-[10px] pb-1.5 border-b border-white/[0.06] text-slate-400">
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span
-                                  className={cn(
-                                    'w-2 h-2 rounded-full shrink-0',
-                                    stream.isDone ? 'bg-slate-500' : 'bg-[#00f0ff] animate-ping'
-                                  )}
-                                />
-                                <span className={cn('font-bold tracking-wider shrink-0', stream.isDone ? 'text-slate-400' : 'text-[#00f0ff]')}>
-                                  {stream.isDone ? 'COMPLETED' : 'LIVE AGENT STREAM'}
-                                </span>
-                                <span className="text-slate-600">&bull;</span>
-                                <span className="text-slate-500 truncate max-w-[120px]">{stream.requestId}</span>
-                              </div>
-                              <div className="flex items-center gap-3 shrink-0">
-                                {stream.speedTokPerSec > 0 && (
-                                  <span className="text-[#00f0ff] font-bold">
-                                    {stream.speedTokPerSec} <span className="text-[9px] font-normal text-slate-400">tok/s</span>
-                                  </span>
-                                )}
-                                <span className="text-amber-400 font-medium">
-                                  {stream.tokensSoFar} tok
-                                </span>
-                                <span className="text-slate-400">
-                                  {(stream.elapsedMs / 1000).toFixed(1)}s
-                                </span>
-                              </div>
-                            </div>
+                        {/* Status / Failover Tag */}
+                        <div className="flex items-center gap-2 shrink-0 font-mono">
+                          {isRunning && (
+                            <Badge variant="cyan" className="shadow animate-pulse font-bold">
+                              <Activity className="w-3 h-3 animate-spin text-[#00f0ff]" />
+                              ACTIVE {ev.inFlight > 0 ? `(${ev.inFlight} req)` : ''}
+                            </Badge>
+                          )}
 
-                            <div className="mt-2 text-[11px] leading-relaxed text-cyan-200/95 font-mono max-h-24 overflow-y-auto whitespace-pre-wrap break-words bg-[#02050e] p-2 rounded border border-white/[0.04]">
-                              {stream.text || <span className="text-slate-500 italic">Streaming agent response...</span>}
-                              {!stream.isDone && (
-                                <span className="inline-block w-1.5 h-3.5 bg-[#00f0ff] ml-0.5 animate-pulse align-middle" />
-                              )}
-                            </div>
-                          </div>
-                        )}
+                          {isPrimary && !isRunning && (
+                            <Badge variant="cyan">
+                              <CheckCircle2 className="w-3 h-3 text-[#00f0ff]" />
+                              PRIMARY ROUTE
+                            </Badge>
+                          )}
+
+                          {isBlocked && (
+                            <Badge variant="rose" title={ev.reason} className="cursor-help">
+                              <AlertOctagon className="w-3 h-3 text-rose-400 shrink-0" />
+                              <span className="truncate max-w-[150px]">{ev.reason}</span>
+                            </Badge>
+                          )}
+
+                          {!isRunning && !isPrimary && !isBlocked && (
+                            <span className="text-[10px] text-slate-500 bg-[#010307] px-2 py-0.5 rounded border border-white/[0.04]">
+                              STANDBY #{idx + 1}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
