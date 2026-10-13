@@ -27,6 +27,7 @@ export const App: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [latestLiveEvent, setLatestLiveEvent] = useState<LiveStreamEvent | null>(null);
+  const [recentStreams, setRecentStreams] = useState<any[] | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const loadStatus = async () => {
@@ -73,6 +74,8 @@ export const App: React.FC = () => {
               setIsConnected(true);
             } else if (parsed.type === 'token' && parsed.data) {
               setLatestLiveEvent(parsed.data);
+            } else if (parsed.type === 'recent_streams' && Array.isArray(parsed.data)) {
+              setRecentStreams(parsed.data);
             }
           } catch {
             // Ignore non-json frames
@@ -234,6 +237,7 @@ export const App: React.FC = () => {
             status={status}
             onRefresh={handleManualRefresh}
             liveEvent={latestLiveEvent}
+            recentStreams={recentStreams}
           />
         )}
         {activeTab === 'providers' && <ProvidersStudio status={status} onRefresh={handleManualRefresh} />}

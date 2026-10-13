@@ -40,6 +40,7 @@ interface OverviewProps {
   status: ApiStatusResponse | null;
   onRefresh: () => void;
   liveEvent?: LiveStreamEvent | null;
+  recentStreams?: Array<{ event: LiveStreamEvent; timestamp_ms: number }> | null;
 }
 
 interface TargetEvaluation {
@@ -131,10 +132,99 @@ function evaluateTarget(
   };
 }
 
-export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent }) => {
+const STORAGE_KEY = 'wirellm_live_streams_v2';
+const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+export const Overview: React.FC<OverviewProps> = ({
+  status,
+  onRefresh,
+  liveEvent,
+  recentStreams,
+}) => {
   const [selectedVmTab, setSelectedVmTab] = useState<string>('all');
   const [filterMode, setFilterMode] = useState<'all' | 'active_blocked'>('all');
-  const [activeStreams, setActiveStreams] = useState<Record<string, ActiveStreamState>>({});
+
+  // Initialize from localStorage (pruning entries older than 5 minutes)
+  const [activeStreams, setActiveStreams] = useState<Record<string, ActiveStreamState>>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const now = Date.now();
+        const filtered: Record<string, ActiveStreamState> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, ActiveStreamState>)) {
+          if (!v.isDone || (now - v.lastUpdated <= FIVE_MINUTES_MS)) {
+            filtered[k] = v;
+          }
+        }
+        return filtered;
+      }
+    } catch {
+      // ignore
+    }
+    return {};
+  });
+
+  // Persist to localStorage on change
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(activeStreams));
+    } catch {
+      // ignore
+    }
+  }, [activeStreams]);
+
+  // Periodic pruner: remove streams older than 5 minutes every 10 seconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setActiveStreams((prev) => {
+        const now = Date.now();
+        let changed = false;
+        const next: Record<string, ActiveStreamState> = {};
+        for (const [k, v] of Object.entries(prev)) {
+          if (!v.isDone || (now - v.lastUpdated <= FIVE_MINUTES_MS)) {
+            next[k] = v;
+          } else {
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Ingest recent streams from backend on connect
+  useEffect(() => {
+    if (!recentStreams || recentStreams.length === 0) return;
+    const now = Date.now();
+    setActiveStreams((prev) => {
+      const next = { ...prev };
+      for (const item of recentStreams) {
+        const ev = item.event;
+        const key = ev.request_id;
+        const timestamp = item.timestamp_ms || now;
+        if (!ev.is_done || (now - timestamp <= FIVE_MINUTES_MS)) {
+          if (!next[key] || (next[key].isDone && timestamp > next[key].lastUpdated)) {
+            next[key] = {
+              requestId: ev.request_id,
+              virtualModel: ev.virtual_model,
+              provider: ev.provider,
+              model: ev.model,
+              text: ev.delta,
+              tokensSoFar: ev.tokens_so_far,
+              elapsedMs: ev.elapsed_ms,
+              isDone: ev.is_done,
+              error: ev.error,
+              speedTokPerSec: ev.elapsed_ms > 150 ? Math.round((ev.tokens_so_far / (ev.elapsed_ms / 1000))) : 0,
+              lastUpdated: timestamp,
+            };
+          }
+        }
+      }
+      return next;
+    });
+  }, [recentStreams]);
 
   useEffect(() => {
     if (!liveEvent) return;
@@ -148,7 +238,7 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
     setActiveStreams((prev) => {
       const existing = prev[key];
       const prevText = existing ? existing.text : '';
-      const newText = liveEvent.delta ? (prevText + liveEvent.delta).slice(-800) : prevText;
+      const newText = liveEvent.delta ? (prevText + liveEvent.delta).slice(-1000) : prevText;
 
       const updated = {
         ...prev,
@@ -167,19 +257,15 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
         },
       };
 
-      // Retain completed streams to prevent UI jumping back and forth.
-      // Soft-prune oldest completed streams only when total entries exceed 6.
-      const entries = Object.entries(updated);
-      if (entries.length > 6) {
-        const completed = entries
-          .filter(([_, s]) => s.isDone)
-          .sort((a, b) => a[1].lastUpdated - b[1].lastUpdated);
-        if (completed.length > 0) {
-          delete updated[completed[0][0]];
+      // Prune entries older than 5 minutes
+      const pruned: Record<string, ActiveStreamState> = {};
+      for (const [k, v] of Object.entries(updated)) {
+        if (!v.isDone || (now - v.lastUpdated <= FIVE_MINUTES_MS)) {
+          pruned[k] = v;
         }
       }
 
-      return updated;
+      return pruned;
     });
   }, [liveEvent]);
 
@@ -188,6 +274,11 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
       if (!prev[requestId]) return prev;
       const copy = { ...prev };
       delete copy[requestId];
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(copy));
+      } catch {
+        // ignore
+      }
       return copy;
     });
   };
@@ -197,6 +288,11 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
       const next: Record<string, ActiveStreamState> = {};
       for (const [k, v] of Object.entries(prev)) {
         if (!v.isDone) next[k] = v;
+      }
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore
       }
       return next;
     });
