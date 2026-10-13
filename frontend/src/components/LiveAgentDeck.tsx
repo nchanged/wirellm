@@ -142,18 +142,32 @@ const LiveStreamCard: React.FC<{
         </div>
       </div>
 
-      {/* Live Stream Terminal Viewport - Internal scroll only */}
+      {/* Live Stream Terminal Viewport - Internal scroll only & Tool Call Highlighting */}
       <div
         ref={terminalBoxRef}
-        className="relative rounded-lg bg-[#010309] border border-white/[0.06] p-2.5 max-h-36 min-h-[58px] overflow-y-auto text-xs text-cyan-100/90 whitespace-pre-wrap break-words leading-relaxed selection:bg-cyan-500/30 selection:text-white"
+        className="relative rounded-lg bg-[#010309] border border-white/[0.06] p-3 max-h-48 min-h-[64px] overflow-y-auto text-xs font-mono leading-relaxed whitespace-pre-wrap break-words selection:bg-cyan-500/30 selection:text-white"
       >
         {stream.text ? (
-          <>
-            {stream.text}
-            {!stream.isDone && (
-              <span className="inline-block w-1.5 h-3.5 bg-[#00f0ff] ml-0.5 animate-pulse align-middle shadow-[0_0_8px_#00f0ff]" />
-            )}
-          </>
+          <div className="space-y-0.5">
+            {stream.text.split('\n').map((line, idx, arr) => {
+              const isToolCall = line.trim().startsWith('🔧 call:');
+              return (
+                <div
+                  key={idx}
+                  className={cn(
+                    isToolCall
+                      ? 'text-amber-300 font-semibold bg-amber-500/10 px-2 py-1 rounded border border-amber-500/25 my-1 shadow-sm'
+                      : 'text-cyan-100/90'
+                  )}
+                >
+                  {line}
+                  {idx === arr.length - 1 && !stream.isDone && (
+                    <span className="inline-block w-1.5 h-3.5 bg-[#00f0ff] ml-1 animate-pulse align-middle shadow-[0_0_8px_#00f0ff]" />
+                  )}
+                </div>
+              );
+            })}
+          </div>
         ) : (
           <span className="text-slate-500 italic text-[11px]">
             {stream.isDone ? 'Empty response payload' : 'Intercepting upstream token stream...'}
@@ -184,13 +198,8 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
     .filter((s) => s.isDone)
     .sort((a, b) => b.lastUpdated - a.lastUpdated);
 
-  // Bound the deck strictly:
-  // Show active streams first, plus at most enough completed streams to fill a single clean 2-card row (max 2 cards total)
-  const maxCompleted = activeStreams.length >= 2 ? 0 : activeStreams.length === 1 ? 1 : 2;
-  const boundedStreams = [
-    ...activeStreams.slice(0, 2),
-    ...completedStreams.slice(0, maxCompleted),
-  ].slice(0, 2);
+  // Strictly bound to exactly ONE focused stream: the active one (or latest completed if idle)
+  const currentStream = activeStreams.length > 0 ? activeStreams[0] : completedStreams[0];
 
   const activeCount = activeStreams.length;
   const completedCount = completedStreams.length;
@@ -210,11 +219,11 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               </h3>
               {activeCount > 0 ? (
                 <Badge variant="cyan" className="animate-pulse">
-                  {activeCount} ACTIVE {activeCount === 1 ? 'STREAM' : 'STREAMS'}
+                  {activeCount} ACTIVE STREAM
                 </Badge>
               ) : completedCount > 0 ? (
                 <Badge variant="neutral">
-                  IDLE &bull; {completedCount} RECENT
+                  IDLE &bull; LAST STREAM
                 </Badge>
               ) : (
                 <Badge variant="neutral">
@@ -223,7 +232,7 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               )}
             </div>
             <p className="text-[11px] text-slate-400 mt-0.5">
-              Real-time token streaming tap intercepted directly from upstream inference models.
+              Real-time token streaming &amp; tool call interceptor from upstream inference models.
             </p>
           </div>
         </div>
@@ -236,14 +245,14 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               onClick={onClearCompleted}
               className="text-xs font-mono h-7"
             >
-              Clear Completed ({completedCount})
+              Clear Completed
             </Button>
           )}
         </div>
       </div>
 
-      {/* Deck Body - Strictly bounded to at most 2 cards */}
-      {boundedStreams.length === 0 ? (
+      {/* Deck Body - Bound to single focused card */}
+      {!currentStream ? (
         <div className="rounded-xl border border-white/[0.05] bg-[#01040a] p-3 text-xs text-slate-500 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <span className="relative flex h-2 w-2">
@@ -251,21 +260,18 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00f0ff]/60" />
             </span>
             <span>
-              Connected to <span className="text-cyan-400 font-semibold">/ws/live</span>. Ready for incoming agent inference.
+              Connected to <span className="text-cyan-400 font-semibold">/ws/live</span>. Ready for incoming agent inference and tool calls.
             </span>
           </div>
           <div className="text-[10px] text-slate-600">0 Active Streams</div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
-          {boundedStreams.map((stream) => (
-            <LiveStreamCard
-              key={stream.requestId}
-              stream={stream}
-              now={now}
-              onDismiss={onDismiss}
-            />
-          ))}
+        <div>
+          <LiveStreamCard
+            stream={currentStream}
+            now={now}
+            onDismiss={onDismiss}
+          />
         </div>
       )}
     </div>

@@ -230,24 +230,54 @@ pub async fn create_chat_completions(
                                                         }
                                                         if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
                                                             for choice in choices {
+                                                                let mut chunk_text = String::new();
+
                                                                 if let Some(delta) = choice.get("delta") {
-                                                                    let delta_str = delta.get("content").and_then(|c| c.as_str())
-                                                                        .or_else(|| delta.get("reasoning_content").and_then(|c| c.as_str()));
-                                                                    if let Some(content) = delta_str {
-                                                                        accumulated_output_chars += content.len();
-                                                                        if live_tx_clone.receiver_count() > 0 {
-                                                                            let _ = live_tx_clone.send(crate::server::LiveStreamEvent {
-                                                                                request_id: request_id_clone.clone(),
-                                                                                virtual_model: Some(requested_model_clone.clone()),
-                                                                                provider: provider_name.clone(),
-                                                                                model: model_name.clone(),
-                                                                                delta: content.to_string(),
-                                                                                is_done: false,
-                                                                                error: None,
-                                                                                tokens_so_far: (accumulated_output_chars + 3) / 4,
-                                                                                elapsed_ms: stream_start_time.elapsed().as_millis() as u64,
-                                                                            });
+                                                                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                                                        chunk_text.push_str(content);
+                                                                    } else if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+                                                                        chunk_text.push_str(reasoning);
+                                                                    }
+
+                                                                    if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
+                                                                        for tc in tool_calls {
+                                                                            if let Some(func) = tc.get("function") {
+                                                                                if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
+                                                                                    if !name.is_empty() {
+                                                                                        if !chunk_text.is_empty() {
+                                                                                            chunk_text.push('\n');
+                                                                                        }
+                                                                                        chunk_text.push_str(&format!("\n🔧 call: {}(", name));
+                                                                                    }
+                                                                                }
+                                                                                if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
+                                                                                    chunk_text.push_str(args);
+                                                                                }
+                                                                            }
                                                                         }
+                                                                    }
+                                                                }
+
+                                                                if let Some(fr) = choice.get("finish_reason").and_then(|f| f.as_str()) {
+                                                                    if fr == "tool_calls" || fr == "function_call" {
+                                                                        chunk_text.push(')');
+                                                                    }
+                                                                }
+
+                                                                if !chunk_text.is_empty() {
+                                                                    accumulated_output_chars += chunk_text.len();
+                                                                    if live_tx_clone.receiver_count() > 0 {
+                                                                        let _ = live_tx_clone.send(crate::server::LiveStreamEvent {
+                                                                            request_id: request_id_clone.clone(),
+                                                                            virtual_model: Some(requested_model_clone.clone()),
+                                                                            provider: provider_name.clone(),
+                                                                            model: model_name.clone(),
+                                                                            delta: chunk_text,
+                                                                            is_done: false,
+                                                                            error: None,
+                                                                            tokens_so_far: (accumulated_output_chars + 3) / 4,
+                                                                            elapsed_ms: stream_start_time.elapsed().as_millis() as u64,
+                                                                        });
                                                                     }
                                                                 }
                                                             }
@@ -463,9 +493,22 @@ pub async fn create_chat_completions(
                                     .and_then(|c| c.as_array())
                                     .and_then(|a| a.first())
                                     .and_then(|c| c.get("message"))
-                                    .and_then(|m| m.get("content"))
-                                    .and_then(|c| c.as_str())
-                                    .map(|s| s.to_string())
+                                    .map(|m| {
+                                        let mut text = m.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                                        if let Some(tool_calls) = m.get("tool_calls").and_then(|tc| tc.as_array()) {
+                                            for tc in tool_calls {
+                                                if let Some(f) = tc.get("function") {
+                                                    let name = f.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                                                    let args = f.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+                                                    if !text.is_empty() {
+                                                        text.push('\n');
+                                                    }
+                                                    text.push_str(&format!("🔧 call: {}({})", name, args));
+                                                }
+                                            }
+                                        }
+                                        text
+                                    })
                             })
                             .unwrap_or_default();
                         let _ = live_tx.send(crate::server::LiveStreamEvent {
