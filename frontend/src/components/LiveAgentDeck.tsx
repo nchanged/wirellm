@@ -127,7 +127,7 @@ const LiveStreamCard: React.FC<{
           <span className="text-slate-400">
             {stream.isDone ? (
               <span className="text-slate-400">
-                Updated <span className="text-slate-300 font-medium">{formatTimeAgo(stream.lastUpdated, now)}</span>
+                Fired <span className="text-slate-300 font-medium">{formatTimeAgo(stream.lastUpdated, now)}</span>
               </span>
             ) : (
               <span className="text-cyan-300 font-medium">
@@ -184,6 +184,7 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
   onClearCompleted,
 }) => {
   const [now, setNow] = useState<number>(Date.now());
+  const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
   // Update relative timestamps smoothly every second
   useEffect(() => {
@@ -193,16 +194,41 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  const activeStreams = streams.filter((s) => !s.isDone);
-  const completedStreams = streams
-    .filter((s) => s.isDone)
-    .sort((a, b) => b.lastUpdated - a.lastUpdated);
+  // 1. Filter to active streams or completed streams within the past 5 minutes
+  const recentStreams = streams.filter(
+    (s) => !s.isDone || (now - s.lastUpdated <= FIVE_MINUTES_MS)
+  );
 
-  // Strictly bound to exactly ONE focused stream: the active one (or latest completed if idle)
-  const currentStream = activeStreams.length > 0 ? activeStreams[0] : completedStreams[0];
+  // 2. Group by unique Agent / Target to show the latest stream for each agent fired in past 5m
+  const agentMap = new Map<string, ActiveStreamState>();
+  for (const s of recentStreams) {
+    const agentKey = s.virtualModel
+      ? `${s.virtualModel}:${s.provider}`
+      : `${s.provider}:${s.model}`;
 
-  const activeCount = activeStreams.length;
-  const completedCount = completedStreams.length;
+    const existing = agentMap.get(agentKey);
+    if (!existing) {
+      agentMap.set(agentKey, s);
+    } else {
+      if (!s.isDone && existing.isDone) {
+        agentMap.set(agentKey, s);
+      } else if (s.isDone && !existing.isDone) {
+        // Keep active stream
+      } else if (s.lastUpdated > existing.lastUpdated) {
+        agentMap.set(agentKey, s);
+      }
+    }
+  }
+
+  // 3. Sort: Active streaming cards first, then by lastUpdated descending (most recently fired first)
+  const displayedAgents = Array.from(agentMap.values()).sort((a, b) => {
+    if (!a.isDone && b.isDone) return -1;
+    if (a.isDone && !b.isDone) return 1;
+    return b.lastUpdated - a.lastUpdated;
+  });
+
+  const activeCount = displayedAgents.filter((s) => !s.isDone).length;
+  const completedCount = displayedAgents.filter((s) => s.isDone).length;
 
   return (
     <div className="space-y-3 rounded-2xl border border-[#00f0ff]/25 bg-[#020612]/80 backdrop-blur p-4 shadow-[0_0_30px_rgba(0,240,255,0.06)] font-mono transition-all">
@@ -217,13 +243,14 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               <h3 className="text-sm font-bold text-white tracking-wider font-mono">
                 LIVE AGENT DECK
               </h3>
-              {activeCount > 0 ? (
+              {activeCount > 0 && (
                 <Badge variant="cyan" className="animate-pulse">
-                  {activeCount} ACTIVE STREAM
+                  {activeCount} ACTIVE STREAM{activeCount > 1 ? 'S' : ''}
                 </Badge>
-              ) : completedCount > 0 ? (
+              )}
+              {displayedAgents.length > 0 ? (
                 <Badge variant="neutral">
-                  IDLE &bull; LAST STREAM
+                  {displayedAgents.length} AGENT{displayedAgents.length === 1 ? '' : 'S'} &bull; PAST 5 MIN
                 </Badge>
               ) : (
                 <Badge variant="neutral">
@@ -232,7 +259,7 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               )}
             </div>
             <p className="text-[11px] text-slate-400 mt-0.5">
-              Real-time token streaming &amp; tool call interceptor from upstream inference models.
+              Real-time token streaming &amp; tool call interceptor. Shows latest output from all agents fired in the past 5 minutes.
             </p>
           </div>
         </div>
@@ -251,8 +278,8 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
         </div>
       </div>
 
-      {/* Deck Body - Bound to single focused card */}
-      {!currentStream ? (
+      {/* Deck Body - Grid of all agents fired in the past 5 minutes */}
+      {displayedAgents.length === 0 ? (
         <div className="rounded-xl border border-white/[0.05] bg-[#01040a] p-3 text-xs text-slate-500 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <span className="relative flex h-2 w-2">
@@ -263,15 +290,23 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               Connected to <span className="text-cyan-400 font-semibold">/ws/live</span>. Ready for incoming agent inference and tool calls.
             </span>
           </div>
-          <div className="text-[10px] text-slate-600">0 Active Streams</div>
+          <div className="text-[10px] text-slate-600">0 Active Streams (Past 5m)</div>
         </div>
       ) : (
-        <div>
-          <LiveStreamCard
-            stream={currentStream}
-            now={now}
-            onDismiss={onDismiss}
-          />
+        <div
+          className={cn(
+            'grid gap-3.5',
+            displayedAgents.length > 1 ? 'grid-cols-1 xl:grid-cols-2' : 'grid-cols-1'
+          )}
+        >
+          {displayedAgents.map((stream) => (
+            <LiveStreamCard
+              key={`${stream.virtualModel || 'direct'}-${stream.provider}-${stream.requestId}`}
+              stream={stream}
+              now={now}
+              onDismiss={onDismiss}
+            />
+          ))}
         </div>
       )}
     </div>

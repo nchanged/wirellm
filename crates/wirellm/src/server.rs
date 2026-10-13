@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
+use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -17,6 +18,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 use reqwest::Url;
 use rust_embed::RustEmbed;
+use serde::{Deserialize, Serialize};
 
 use wirellm_core::config::Config;
 use wirellm_core::db::{get_wirellm_home, DbManager};
@@ -111,6 +113,12 @@ pub struct LiveStreamEvent {
     pub elapsed_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentStreamItem {
+    pub event: LiveStreamEvent,
+    pub timestamp_ms: u64,
+}
+
 #[derive(Clone)]
 pub struct ReloadableState {
     pub app_state: tokio::sync::watch::Receiver<Arc<AppState>>,
@@ -119,6 +127,7 @@ pub struct ReloadableState {
     pub reloader: Reloader,
     pub db: Arc<DbManager>,
     pub live_tx: tokio::sync::broadcast::Sender<LiveStreamEvent>,
+    pub recent_streams: Arc<tokio::sync::RwLock<VecDeque<RecentStreamItem>>>,
 }
 
 #[cfg(test)]
@@ -130,6 +139,7 @@ impl ReloadableState {
     ) -> Self {
         let db = reloader.db.clone();
         let (live_tx, _) = tokio::sync::broadcast::channel(16);
+        let recent_streams = Arc::new(tokio::sync::RwLock::new(VecDeque::new()));
         Self {
             app_state,
             telemetry,
@@ -137,6 +147,7 @@ impl ReloadableState {
             reloader,
             db,
             live_tx,
+            recent_streams,
         }
     }
 }
@@ -427,6 +438,19 @@ async fn handle_live_socket(
         }
     }
 
+    // Send recent streams from past 5 minutes immediately on connection
+    {
+        let guard = state.recent_streams.read().await;
+        if !guard.is_empty() {
+            let list: Vec<_> = guard.iter().cloned().collect();
+            let msg = serde_json::json!({
+                "type": "recent_streams",
+                "data": list,
+            });
+            let _ = socket.send(Message::Text(msg.to_string().into())).await;
+        }
+    }
+
     loop {
         tokio::select! {
             // Live token stream broadcast
@@ -542,7 +566,43 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
 
     // 6. Build Axum Router
     let start_time = Instant::now();
-    let (live_tx, _) = tokio::sync::broadcast::channel(256);
+    let (live_tx, _) = tokio::sync::broadcast::channel::<LiveStreamEvent>(256);
+    let recent_streams = Arc::new(tokio::sync::RwLock::new(VecDeque::<RecentStreamItem>::new()));
+
+    // Background task: persist live events in a bounded ring buffer (past 5 minutes)
+    let recent_streams_bg = recent_streams.clone();
+    let mut live_rx = live_tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(event) = live_rx.recv().await {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let mut guard = recent_streams_bg.write().await;
+            if let Some(pos) = guard.iter().position(|item| item.event.request_id == event.request_id) {
+                if !event.delta.is_empty() {
+                    guard[pos].event.delta.push_str(&event.delta);
+                    if guard[pos].event.delta.len() > 1000 {
+                        let start = guard[pos].event.delta.len() - 1000;
+                        guard[pos].event.delta = guard[pos].event.delta[start..].to_string();
+                    }
+                }
+                guard[pos].event.is_done = event.is_done;
+                guard[pos].event.tokens_so_far = event.tokens_so_far;
+                guard[pos].event.elapsed_ms = event.elapsed_ms;
+                guard[pos].timestamp_ms = now;
+            } else {
+                guard.push_back(RecentStreamItem {
+                    event,
+                    timestamp_ms: now,
+                });
+            }
+            while guard.len() > 30 || (guard.front().map_or(false, |it| now.saturating_sub(it.timestamp_ms) > 300_000)) {
+                guard.pop_front();
+            }
+        }
+    });
+
     let reloadable_state = ReloadableState {
         app_state: watch_receiver,
         telemetry: telemetry_client,
@@ -550,6 +610,7 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         reloader,
         db,
         live_tx,
+        recent_streams,
     };
 
     let app = Router::new()

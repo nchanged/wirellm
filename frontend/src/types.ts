@@ -119,3 +119,9 @@ export interface LiveStreamEvent {
   tokens_so_far: number;
   elapsed_ms: number;
 }
+
+export interface RecentStreamItem {
+  event: LiveStreamEvent;
+  timestamp_ms: number;
+}
+
