@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { LogEntry } from '../types';
 import { fetchLogs } from '../api';
-import { Terminal, Search, RotateCcw, Play, Pause } from 'lucide-react';
+import { Terminal, Search, RotateCcw, Play, Pause, ArrowDown } from 'lucide-react';
 import { Card, Button, Input, Select, Badge } from '../ui';
 
 export const LogsView: React.FC = () => {
@@ -10,7 +10,7 @@ export const LogsView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isAutoScroll, setIsAutoScroll] = useState<boolean>(true);
   const [isLive, setIsLive] = useState<boolean>(true);
-  const logsEndRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const loadLogs = async () => {
     try {
@@ -28,11 +28,24 @@ export const LogsView: React.FC = () => {
     return () => clearInterval(interval);
   }, [isLive]);
 
+  // Pure internal scroll: NEVER calls window scrollIntoView
   useEffect(() => {
-    if (isAutoScroll && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (isAutoScroll && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [logs, isAutoScroll]);
+
+  // Pause auto-scroll when user manually scrolls up to inspect logs
+  const handleScroll = () => {
+    if (!containerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 40;
+    if (!isAtBottom && isAutoScroll) {
+      setIsAutoScroll(false);
+    } else if (isAtBottom && !isAutoScroll) {
+      setIsAutoScroll(true);
+    }
+  };
 
   const filteredLogs = logs.filter((entry) => {
     if (filterLevel !== 'ALL' && entry.level.toUpperCase() !== filterLevel) {
@@ -106,6 +119,23 @@ export const LogsView: React.FC = () => {
             <option value="DEBUG">DEBUG</option>
           </Select>
 
+          {/* Auto-Scroll Toggle */}
+          <Button
+            variant={isAutoScroll ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={() => {
+              setIsAutoScroll(!isAutoScroll);
+              if (!isAutoScroll && containerRef.current) {
+                containerRef.current.scrollTop = containerRef.current.scrollHeight;
+              }
+            }}
+            title={isAutoScroll ? 'Auto-scroll active. Click to lock view' : 'Auto-scroll paused. Click to follow bottom'}
+            className="text-xs"
+          >
+            <ArrowDown className="w-3 h-3" />
+            {isAutoScroll ? 'Auto-Scroll' : 'Locked'}
+          </Button>
+
           {/* Live / Pause Button */}
           <Button
             variant={isLive ? 'primary' : 'secondary'}
@@ -128,8 +158,12 @@ export const LogsView: React.FC = () => {
         </div>
       </Card>
 
-      {/* Terminal View Container */}
-      <Card className="bg-[#030508] p-4 font-mono text-xs overflow-x-auto h-[600px] overflow-y-auto">
+      {/* Terminal View Container - Strictly internal scroll, never scrolls browser window */}
+      <Card
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="bg-[#030508] p-4 font-mono text-xs overflow-x-auto h-[600px] overflow-y-auto"
+      >
         <div className="space-y-1.5">
           {filteredLogs.map((entry, idx) => (
             <div
@@ -157,8 +191,6 @@ export const LogsView: React.FC = () => {
               No log records match current filter.
             </div>
           )}
-
-          <div ref={logsEndRef} />
         </div>
       </Card>
     </div>

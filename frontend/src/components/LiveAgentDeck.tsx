@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Terminal, Activity, CheckCircle2, AlertOctagon, X, Zap } from 'lucide-react';
+import { Terminal, CheckCircle2, AlertOctagon, X, Zap } from 'lucide-react';
 import { Badge, Button, cn } from '../ui';
 
 export interface ActiveStreamState {
@@ -37,11 +37,12 @@ const LiveStreamCard: React.FC<{
   now: number;
   onDismiss: (requestId: string) => void;
 }> = ({ stream, now, onDismiss }) => {
-  const terminalEndRef = useRef<HTMLDivElement | null>(null);
+  const terminalBoxRef = useRef<HTMLDivElement | null>(null);
 
+  // Pure internal scroll: NEVER scroll the entire browser window
   useEffect(() => {
-    if (terminalEndRef.current) {
-      terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (terminalBoxRef.current) {
+      terminalBoxRef.current.scrollTop = terminalBoxRef.current.scrollHeight;
     }
   }, [stream.text]);
 
@@ -141,8 +142,11 @@ const LiveStreamCard: React.FC<{
         </div>
       </div>
 
-      {/* Live Stream Terminal Viewport */}
-      <div className="relative rounded-lg bg-[#010309] border border-white/[0.06] p-2.5 max-h-36 min-h-[58px] overflow-y-auto text-xs text-cyan-100/90 whitespace-pre-wrap break-words leading-relaxed selection:bg-cyan-500/30 selection:text-white">
+      {/* Live Stream Terminal Viewport - Internal scroll only */}
+      <div
+        ref={terminalBoxRef}
+        className="relative rounded-lg bg-[#010309] border border-white/[0.06] p-2.5 max-h-36 min-h-[58px] overflow-y-auto text-xs text-cyan-100/90 whitespace-pre-wrap break-words leading-relaxed selection:bg-cyan-500/30 selection:text-white"
+      >
         {stream.text ? (
           <>
             {stream.text}
@@ -155,7 +159,6 @@ const LiveStreamCard: React.FC<{
             {stream.isDone ? 'Empty response payload' : 'Intercepting upstream token stream...'}
           </span>
         )}
-        <div ref={terminalEndRef} />
       </div>
     </div>
   );
@@ -176,8 +179,21 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  const activeCount = streams.filter((s) => !s.isDone).length;
-  const completedCount = streams.filter((s) => s.isDone).length;
+  const activeStreams = streams.filter((s) => !s.isDone);
+  const completedStreams = streams
+    .filter((s) => s.isDone)
+    .sort((a, b) => b.lastUpdated - a.lastUpdated);
+
+  // Bound the deck strictly:
+  // Show active streams first, plus at most enough completed streams to fill a single clean 2-card row (max 2 cards total)
+  const maxCompleted = activeStreams.length >= 2 ? 0 : activeStreams.length === 1 ? 1 : 2;
+  const boundedStreams = [
+    ...activeStreams.slice(0, 2),
+    ...completedStreams.slice(0, maxCompleted),
+  ].slice(0, 2);
+
+  const activeCount = activeStreams.length;
+  const completedCount = completedStreams.length;
 
   return (
     <div className="space-y-3 rounded-2xl border border-[#00f0ff]/25 bg-[#020612]/80 backdrop-blur p-4 shadow-[0_0_30px_rgba(0,240,255,0.06)] font-mono transition-all">
@@ -198,7 +214,7 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
                 </Badge>
               ) : completedCount > 0 ? (
                 <Badge variant="neutral">
-                  {completedCount} COMPLETED
+                  IDLE &bull; {completedCount} RECENT
                 </Badge>
               ) : (
                 <Badge variant="neutral">
@@ -226,8 +242,8 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
         </div>
       </div>
 
-      {/* Deck Body */}
-      {streams.length === 0 ? (
+      {/* Deck Body - Strictly bounded to at most 2 cards */}
+      {boundedStreams.length === 0 ? (
         <div className="rounded-xl border border-white/[0.05] bg-[#01040a] p-3 text-xs text-slate-500 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <span className="relative flex h-2 w-2">
@@ -241,8 +257,8 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
           <div className="text-[10px] text-slate-600">0 Active Streams</div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3.5">
-          {streams.map((stream) => (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+          {boundedStreams.map((stream) => (
             <LiveStreamCard
               key={stream.requestId}
               stream={stream}
