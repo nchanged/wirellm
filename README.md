@@ -34,12 +34,16 @@ This means your AI coding agents can **manage their own model infrastructure**:
 ### 3. "Let Your Agents Set It Up For You"
 Why spend 20 minutes manually configuring config files, base URLs, and environment variables? With WireLLM, you can simply hand an agent a single prompt (see [Agent Setup Instructions](#-let-your-agents-set-it-up-for-you)), and the agent will inspect the running WireLLM instance, configure providers, and set up virtual model chains through the MCP interface or REST API.
 
-### 4. Smart Adaptive Routing & Virtual Roles
-Instead of hardcoding a single provider model in your tools:
-* Define virtual roles: `wirellm/coder`, `wirellm/planner`, `wirellm/orchestrator`, `wirellm/code-reviewer`.
-* Configure fallback chains across multiple cloud providers (DeepSeek, Groq, NVIDIA NIM, OpenAI, Anthropic, Cerebras, Sambanova, OpenRouter, local Ollama).
-* **Adaptive Circuit Breakers**: Automatically detects 429 rate limits and 5xx server errors, trips provider circuits with exponential backoff, and probes for recovery without dropping user requests.
-* **Proactive Burst Rate Limiting**: Enforces RPM and burst interval spacing locally before hitting remote provider limits.
+### 4. Predictive Pacing & Seamless Burst Cascading
+Autonomous agents (OpenCode, Cline, Claude Code, Cursor) frequently fire rapid bursts of requests during autonomous multi-step loops (planning, tool calls, code review) that instantly trigger `429 Too Many Requests` or harsh rate-limit locks on upstream providers.
+
+WireLLM eliminates this **proactively on the wire before the upstream provider is ever contacted**:
+* **Predictive Burst Spacing (`min_interval_ms`)**: Enforces required inter-request cooldown intervals (e.g., 2,500ms between calls for free/community tiers) locally. When a rapid request arrives within the cooldown window, WireLLM **never sleeps or blocks the client**—it instantly skips the constrained target in `<0.1ms` and cascades down the priority ladder to the next standby provider.
+* **Sliding-Window RPM Accounting (`max_rpm`)**: Tracks requests across an in-memory 60-second sliding window. When a provider reaches its RPM ceiling, subsequent queries are preemptively diverted to standby fallbacks, preventing upstream 429 lockouts entirely.
+* **In-Flight Concurrency Throttling (`max_concurrency`)**: Guards against multi-agent parallel bursts. If an agent executes concurrent tool calls, WireLLM fans them out across available ladder targets simultaneously.
+* **Zero Client-Side Retries or Delays**: Coding agents never sleep, crash, or see 429 errors. They receive immediate streaming tokens while WireLLM silently manages upstream pacing, rate limits, and fallback execution.
+* **Autonomous Self-Healing**: As soon as a provider's cooldown timer elapses or the 60s sliding window frees up slots, WireLLM automatically restores it to primary status without human intervention.
+* **Virtual Role Fallback Ladders**: Group models into roles like `coder`, `planner`, `orchestrator`, and `code-reviewer` with deterministic cascade chains across cloud providers (DeepSeek, Groq, NVIDIA NIM, OpenAI, Anthropic, Cerebras, Sambanova, OpenRouter, local Ollama).
 
 ### 5. Encrypted Vault (Zero Secret Leaks)
 * API keys can be stored encrypted with **AES-256-GCM** using local machine salt (`0600` permissions) directly in `~/.wirellm/`.
