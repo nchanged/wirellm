@@ -581,6 +581,19 @@ pub async fn create_chat_completions(
                     provider: selected.name.clone(),
                     status: circuit_status(target_provider_state).await,
                 });
+                telemetry.emit(TelemetryEvent::RecordTransaction {
+                    operation: "chat".to_string(),
+                    provider: selected.name.clone(),
+                    model: target_model.clone(),
+                    input_tokens: estimated_prompt_tokens,
+                    output_tokens: 0,
+                    duration: start_time.elapsed(),
+                    attempts,
+                    failure_reason: Some(format!("HTTP {}", status_code)),
+                    trace_id: trace_id.clone(),
+                    parent_span_id: parent_span_id.clone(),
+                    request_id: request_id.clone(),
+                });
             },
             Err(e) => {
                 warn!(
@@ -599,6 +612,19 @@ pub async fn create_chat_completions(
                 telemetry.emit(TelemetryEvent::UpdateStatus {
                     provider: selected.name.clone(),
                     status: circuit_status(target_provider_state).await,
+                });
+                telemetry.emit(TelemetryEvent::RecordTransaction {
+                    operation: "chat".to_string(),
+                    provider: selected.name.clone(),
+                    model: target_model.clone(),
+                    input_tokens: estimated_prompt_tokens,
+                    output_tokens: 0,
+                    duration: start_time.elapsed(),
+                    attempts,
+                    failure_reason: Some(e.to_string()),
+                    trace_id: trace_id.clone(),
+                    parent_span_id: parent_span_id.clone(),
+                    request_id: request_id.clone(),
                 });
             },
         }
