@@ -1369,7 +1369,7 @@ pub async fn get_logs(
             } else if std::path::Path::new("/tmp/wirellm.log").exists() {
                 "/tmp/wirellm.log".to_string()
             } else {
-                "/tmp/oxllm.log".to_string()
+                "/tmp/wirellm.log".to_string()
             }
         });
     let limit = query.limit.unwrap_or(200).min(2000);

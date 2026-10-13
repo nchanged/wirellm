@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { LogEntry } from '../types';
 import { fetchLogs } from '../api';
-import { Terminal, Search, Filter, RotateCcw, Play, Pause, ArrowDown } from 'lucide-react';
+import { Terminal, Search, RotateCcw, Play, Pause } from 'lucide-react';
+import { Card, Button, Input, Select, Badge } from '../ui';
 
 export const LogsView: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -48,103 +49,101 @@ export const LogsView: React.FC = () => {
     return true;
   });
 
-  const getLevelBadge = (level: string) => {
+  const getBadgeVariant = (level: string) => {
     switch (level.toUpperCase()) {
       case 'ERROR':
-        return 'text-rose-400 bg-rose-950/60 border-rose-800/80';
+        return 'rose';
       case 'WARN':
-        return 'text-amber-400 bg-amber-950/60 border-amber-800/80';
+        return 'amber';
       case 'INFO':
-        return 'text-sky-400 bg-sky-950/60 border-sky-800/80';
-      case 'DEBUG':
-        return 'text-slate-400 bg-slate-800/60 border-slate-700/80';
+        return 'cyan';
       default:
-        return 'text-slate-300 bg-slate-800 border-slate-700';
+        return 'neutral';
     }
   };
 
   return (
     <div className="space-y-4">
       {/* Controls Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg">
+      <Card className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <Terminal className="w-5 h-5 text-brand-500" />
+          <div className="p-2 rounded-lg bg-cyan-950/40 border border-cyan-800/40 text-cyan-400 shrink-0">
+            <Terminal className="w-5 h-5" />
+          </div>
           <div>
-            <h2 className="text-sm font-semibold text-white">Live Ring-Buffer Log Stream</h2>
-            <p className="text-[11px] text-slate-400">Captured in memory without disk I/O bottlenecks</p>
+            <h2 className="text-sm font-bold text-white font-mono flex items-center gap-2">
+              Wire Daemon Ring-Buffer Console
+              <Badge variant="cyan">IN-MEMORY</Badge>
+            </h2>
+            <p className="text-[11px] text-slate-400">Zero disk I/O lock contention during burst traffic</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
           {/* Search Box */}
           <div className="relative">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input
+            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <Input
               type="text"
               placeholder="Search message, req_id..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-brand-500 w-44"
+              className="pl-8 w-44"
+              mono
             />
           </div>
 
           {/* Level Filter */}
-          <select
+          <Select
             value={filterLevel}
             onChange={(e) => setFilterLevel(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-brand-500"
+            mono
           >
             <option value="ALL">All Levels</option>
             <option value="INFO">INFO</option>
             <option value="WARN">WARN</option>
             <option value="ERROR">ERROR</option>
             <option value="DEBUG">DEBUG</option>
-          </select>
+          </Select>
 
           {/* Live / Pause Button */}
-          <button
+          <Button
+            variant={isLive ? 'primary' : 'secondary'}
+            size="sm"
             onClick={() => setIsLive(!isLive)}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border transition-colors ${
-              isLive
-                ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800/80 hover:bg-emerald-950/60'
-                : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
-            }`}
           >
             {isLive ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
             {isLive ? 'Live' : 'Paused'}
-          </button>
+          </Button>
 
           {/* Refresh Button */}
-          <button
+          <Button
+            variant="secondary"
+            size="icon"
             onClick={loadLogs}
-            className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition-colors"
             title="Refresh logs now"
           >
             <RotateCcw className="w-4 h-4" />
-          </button>
+          </Button>
         </div>
-      </div>
+      </Card>
 
       {/* Terminal View Container */}
-      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 shadow-2xl font-mono text-xs overflow-x-auto h-[600px] overflow-y-auto">
+      <Card className="bg-[#030508] p-4 font-mono text-xs overflow-x-auto h-[600px] overflow-y-auto">
         <div className="space-y-1.5">
           {filteredLogs.map((entry, idx) => (
             <div
               key={idx}
-              className="flex items-start gap-2.5 hover:bg-slate-900/60 py-1 px-1.5 rounded transition-colors"
+              className="flex items-start gap-2.5 hover:bg-white/[0.03] py-1 px-1.5 rounded transition-colors"
             >
-              <span className="text-slate-500 text-[11px] whitespace-nowrap">
+              <span className="text-slate-600 text-[11px] whitespace-nowrap">
                 {entry.timestamp.slice(11, 19)}
               </span>
-              <span
-                className={`px-1.5 py-0.2 rounded border text-[10px] font-bold tracking-wider ${getLevelBadge(
-                  entry.level
-                )}`}
-              >
+              <Badge variant={getBadgeVariant(entry.level)} size="xs">
                 {entry.level}
-              </span>
+              </Badge>
               {entry.provider && (
-                <span className="text-brand-400 text-[11px] font-semibold">[{entry.provider}]</span>
+                <span className="text-cyan-400 text-[11px] font-semibold">[{entry.provider}]</span>
               )}
               {entry.request_id && (
                 <span className="text-sky-400 text-[11px]">({entry.request_id})</span>
@@ -154,14 +153,14 @@ export const LogsView: React.FC = () => {
           ))}
 
           {filteredLogs.length === 0 && (
-            <div className="text-center py-12 text-slate-600 font-sans text-xs">
+            <div className="text-center py-16 text-slate-600 font-sans text-xs">
               No log records match current filter.
             </div>
           )}
 
           <div ref={logsEndRef} />
         </div>
-      </div>
+      </Card>
     </div>
   );
 };

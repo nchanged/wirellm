@@ -9,18 +9,29 @@ import {
   AlertTriangle,
   XCircle,
   Zap,
-  Gauge,
   Clock,
   RotateCcw,
-  Layers,
-  Database,
   ShieldCheck,
   AlertOctagon,
   ArrowRight,
   ChevronRight,
   Filter,
+  CircuitBoard,
+  Workflow,
 } from 'lucide-react';
 import { resetProviderCircuit } from '../api';
+import {
+  Card,
+  MetricCard,
+  Button,
+  Badge,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from '../ui';
 
 interface OverviewProps {
   status: ApiStatusResponse | null;
@@ -102,7 +113,7 @@ function evaluateTarget(
     isFirstHealthyFound.current = true;
     return {
       status: 'primary',
-      reason: 'Active Target (Next in line)',
+      reason: 'Primary Healthy Route',
       inFlight: 0,
       circuit: p.circuit,
     };
@@ -110,7 +121,7 @@ function evaluateTarget(
 
   return {
     status: 'standby',
-    reason: 'Standby Backup',
+    reason: 'Standby Cascade Target',
     inFlight: 0,
     circuit: p.circuit,
   };
@@ -122,20 +133,20 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
 
   if (!status) {
     return (
-      <div className="flex items-center justify-center p-12 text-slate-400">
-        <Activity className="w-6 h-6 animate-spin mr-2 text-brand-500" />
-        <span>Loading gateway state...</span>
-      </div>
+      <Card className="p-12 text-center text-slate-500 font-mono flex flex-col items-center justify-center gap-3">
+        <Activity className="w-6 h-6 text-cyan-400 animate-spin" />
+        <p className="text-sm">Connecting to WireLLM telemetry socket...</p>
+      </Card>
     );
   }
 
-  const formatUptime = (secs: number) => {
-    const d = Math.floor(secs / 86400);
-    const h = Math.floor((secs % 86400) / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
+  const formatUptime = (seconds: number) => {
+    const d = Math.floor(seconds / (3600 * 24));
+    const h = Math.floor((seconds % (3600 * 24)) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
     if (d > 0) return `${d}d ${h}h ${m}m`;
-    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (h > 0) return `${h}h ${m}m`;
     return `${m}m ${s}s`;
   };
 
@@ -163,115 +174,115 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
     return vm.name === selectedVmTab;
   });
 
+  const activePort = window.location.port || '8765';
+
   return (
     <div className="space-y-6">
-      {/* 1. Quick Metrics Stats Strip */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Gateway Uptime
-            </div>
-            <div className="mt-1 text-xl font-bold text-white tracking-tight">
-              {formatUptime(status.uptime_secs)}
-            </div>
-            <div className="text-[11px] text-emerald-400 flex items-center gap-1 mt-0.5">
-              <ShieldCheck className="w-3 h-3" />
-              <span>Port :8088 &bull; SQLite WAL</span>
-            </div>
-          </div>
-          <Clock className="w-5 h-5 text-emerald-400/80" />
-        </div>
+      {/* 1. Quick Telemetry Strip using MetricCard */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <MetricCard
+          label="Gateway Uptime"
+          value={formatUptime(status.uptime_secs)}
+          icon={<Clock className="w-3.5 h-3.5 text-cyan-400" />}
+          accent="cyan"
+          subtext={
+            <span className="text-cyan-400/90 flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Port :{activePort} &bull; SQLite WAL</span>
+            </span>
+          }
+        />
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Tokens Processed
-            </div>
-            <div className="mt-1 text-xl font-bold text-white tracking-tight">
-              {formatTokens(totalTokens)}
-            </div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              {formatTokens(status.total_input_tokens)} in &bull; {formatTokens(status.total_output_tokens)} out
-            </div>
-          </div>
-          <Zap className="w-5 h-5 text-amber-400/80" />
-        </div>
+        <MetricCard
+          label="Total Tokens"
+          value={formatTokens(totalTokens)}
+          icon={<Zap className="w-3.5 h-3.5 text-amber-400" />}
+          accent="amber"
+          subtext={
+            <span className="flex items-center gap-1.5">
+              <span className="text-amber-300 font-medium">{formatTokens(status.total_input_tokens)} in</span>
+              <span className="text-slate-600">&bull;</span>
+              <span className="text-cyan-300 font-medium">{formatTokens(status.total_output_tokens)} out</span>
+            </span>
+          }
+        />
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Requests Handled
-            </div>
-            <div className="mt-1 text-xl font-bold text-white tracking-tight">
-              {status.total_requests.toLocaleString()}
-            </div>
-            <div className="text-[11px] text-sky-400 mt-0.5">
-              Zero dropped sessions
-            </div>
-          </div>
-          <Activity className="w-5 h-5 text-sky-400/80" />
-        </div>
+        <MetricCard
+          label="Requests Routed"
+          value={status.total_requests.toLocaleString()}
+          icon={<Activity className="w-3.5 h-3.5 text-cyan-400" />}
+          accent="cyan"
+          subtext={
+            <span className="text-cyan-400 flex items-center gap-1.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              <span>&lt;2ms wire overhead</span>
+            </span>
+          }
+        />
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Providers Health
-            </div>
-            <div className="mt-1 text-xl font-bold text-white tracking-tight flex items-center gap-1.5">
-              <span className="text-emerald-400">{healthyCount}</span>
+        <MetricCard
+          label="Circuit Health"
+          value={
+            <span className="flex items-center gap-2">
+              <span className="text-cyan-400">{healthyCount}</span>
               <span className="text-xs text-slate-500 font-normal">/ {status.providers.length} online</span>
-            </div>
-            <div className="text-[11px] text-slate-400 mt-0.5">
-              Adaptive failover active
-            </div>
-          </div>
-          <Database className="w-5 h-5 text-purple-400/80" />
-        </div>
+            </span>
+          }
+          icon={<CircuitBoard className="w-3.5 h-3.5 text-indigo-400" />}
+          accent="purple"
+          subtext={
+            <span className="flex items-center gap-1.5 text-indigo-300">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+              <span>Adaptive cascade active</span>
+            </span>
+          }
+        />
       </div>
 
       {/* ============================================================== */}
-      {/* 2. FIRST & CENTER: Configured Virtual Model Fallback Ladders   */}
+      {/* 2. THE ROUTING MATRIX: Live Virtual Model Fallback Ladders     */}
       {/* ============================================================== */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-2xl space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
+      <Card className="p-5 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.06] pb-4">
           <div>
-            <div className="flex items-center gap-2">
-              <Layers className="w-5 h-5 text-brand-400" />
-              <h2 className="text-base font-bold text-white">
-                Live Fallback Ladders (Virtual Models)
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+                <Workflow className="w-4 h-4" />
+              </div>
+              <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2 font-mono">
+                ROUTING LADDERS <span className="text-slate-500 font-normal text-xs">(Virtual Models)</span>
               </h2>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 uppercase">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Live Router
-              </span>
+              <Badge variant="cyan">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+                Live Wire
+              </Badge>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Real-time routing ladder. Shows which target is actively receiving requests, which is next in line, and why blocked models failover.
+            <p className="text-xs text-slate-400 mt-1">
+              Deterministic priority ladders. Shows which target is actively receiving traffic, standby failovers, and circuit breakers.
             </p>
           </div>
 
-          {/* Controls: Tab filters & Refresh */}
+          {/* Filter Bar & Controls */}
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
+            <div className="flex items-center bg-[#030508] p-1 rounded-lg border border-white/[0.08] text-xs">
               <button
                 onClick={() => setSelectedVmTab('all')}
-                className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+                className={`px-3 py-1 rounded-md font-mono text-[11px] font-medium transition-all ${
                   selectedVmTab === 'all'
-                    ? 'bg-brand-600 text-white'
-                    : 'text-slate-400 hover:text-white'
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-white border border-transparent'
                 }`}
               >
-                All Pools ({status.virtual_models.length})
+                All Ladders ({status.virtual_models.length})
               </button>
               {status.virtual_models.map((vm) => (
                 <button
                   key={vm.name}
                   onClick={() => setSelectedVmTab(vm.name)}
-                  className={`px-2.5 py-1 rounded-md font-mono text-[11px] transition-colors ${
+                  className={`px-3 py-1 rounded-md font-mono text-[11px] transition-all ${
                     selectedVmTab === vm.name
-                      ? 'bg-brand-600 text-white'
-                      : 'text-slate-400 hover:text-white'
+                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                      : 'text-slate-400 hover:text-white border border-transparent'
                   }`}
                 >
                   {vm.name}
@@ -279,26 +290,24 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
               ))}
             </div>
 
-            <button
+            <Button
+              variant={filterMode === 'active_blocked' ? 'primary' : 'secondary'}
+              size="sm"
               onClick={() => setFilterMode(filterMode === 'all' ? 'active_blocked' : 'all')}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1 ${
-                filterMode === 'active_blocked'
-                  ? 'bg-amber-950/60 text-amber-300 border-amber-800'
-                  : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
-              }`}
               title="Toggle to show only active, primary, or blocked targets"
             >
-              <Filter className="w-3 h-3" />
-              {filterMode === 'active_blocked' ? 'Active/Blocked Only' : 'Show All Steps'}
-            </button>
+              <Filter className="w-3 h-3 text-slate-400" />
+              {filterMode === 'active_blocked' ? 'Active / Blocked Only' : 'All Targets'}
+            </Button>
 
-            <button
+            <Button
+              variant="secondary"
+              size="icon"
               onClick={onRefresh}
-              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-colors"
               title="Refresh status"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
+              <RotateCcw className="w-3.5 h-3.5 text-slate-400 hover:text-white" />
+            </Button>
           </div>
         </div>
 
@@ -307,7 +316,6 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
           {filteredVirtualModels.map((vm) => {
             const isFirstHealthyFound = { current: false };
 
-            // Pre-evaluate each target
             const evaluatedTargets = vm.targets.map((tgt) => {
               const evalRes = evaluateTarget(
                 tgt.provider,
@@ -321,7 +329,6 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
               };
             });
 
-            // Find current active / primary target
             const activeOrPrimary =
               evaluatedTargets.find((t) => t.evaluation.status === 'running') ||
               evaluatedTargets.find((t) => t.evaluation.status === 'primary');
@@ -336,22 +343,24 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
                 : evaluatedTargets;
 
             return (
-              <div
+              <Card
                 key={vm.name}
-                className="bg-slate-950/80 border border-slate-800/90 rounded-xl p-4 shadow-lg flex flex-col justify-between space-y-3"
+                hoverEffect
+                className="bg-[#05080e] p-4 flex flex-col justify-between space-y-3.5"
               >
                 {/* Virtual Model Header Bar */}
-                <div className="flex items-start justify-between gap-2 border-b border-slate-800/60 pb-2.5">
+                <div className="flex items-start justify-between gap-2 border-b border-white/[0.05] pb-3">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-brand-400 font-mono tracking-tight">
+                      <span className="text-sm font-bold text-white font-mono tracking-tight flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)]" />
                         {vm.name}
                       </span>
                       {activeOrPrimary && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono bg-slate-900 border border-slate-700/80 text-slate-300">
-                          <ArrowRight className="w-3 h-3 text-emerald-400" />
-                          <span className="text-emerald-400 font-semibold">{activeOrPrimary.provider}</span>
-                          <span className="text-slate-500">:</span>
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono bg-[#090e18] border border-cyan-500/30 text-slate-300">
+                          <ArrowRight className="w-3 h-3 text-cyan-400" />
+                          <span className="text-cyan-400 font-semibold">{activeOrPrimary.provider}</span>
+                          <span className="text-slate-600">:</span>
                           <span className="truncate max-w-[140px] text-slate-300">{activeOrPrimary.model}</span>
                         </span>
                       )}
@@ -362,25 +371,25 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
                   </div>
 
                   {/* Summary Status Badges */}
-                  <div className="flex items-center gap-1 text-[10px] font-mono flex-shrink-0">
+                  <div className="flex items-center gap-1.5 text-[10px] font-mono flex-shrink-0">
                     {runningCount > 0 && (
-                      <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800 font-bold animate-pulse">
-                        {runningCount} RUNNING
-                      </span>
+                      <Badge variant="cyan" className="animate-pulse">
+                        {runningCount} ACTIVE
+                      </Badge>
                     )}
-                    <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800">
+                    <Badge variant="neutral">
                       {standbyCount} STANDBY
-                    </span>
+                    </Badge>
                     {blockedCount > 0 && (
-                      <span className="px-1.5 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-800/70 font-semibold">
+                      <Badge variant="rose">
                         {blockedCount} BLOCKED
-                      </span>
+                      </Badge>
                     )}
                   </div>
                 </div>
 
-                {/* Compact, Highly Visual Ladder List */}
-                <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                {/* Ladder List */}
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                   {visibleTargets.map((tgt, idx) => {
                     const ev = tgt.evaluation;
                     const isRunning = ev.status === 'running';
@@ -390,27 +399,27 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
                     return (
                       <div
                         key={`${tgt.provider}-${tgt.model}-${idx}`}
-                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs transition-all ${
+                        className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs transition-all ${
                           isRunning
-                            ? 'bg-emerald-950/50 border-emerald-500/80 shadow-md shadow-emerald-950/50 animate-pulse'
+                            ? 'bg-cyan-950/30 border-cyan-500/60 shadow-[0_0_12px_rgba(6,182,212,0.3)] animate-pulse'
                             : isPrimary
-                            ? 'bg-slate-900 border-emerald-600/70 shadow-sm'
+                            ? 'bg-[#080d16] border-cyan-500/40 shadow-sm'
                             : isBlocked
-                            ? 'bg-rose-950/20 border-rose-900/50 opacity-80'
-                            : 'bg-slate-900/50 border-slate-800/60 hover:bg-slate-900'
+                            ? 'bg-rose-950/15 border-rose-900/40 opacity-75'
+                            : 'bg-[#070b13] border-white/[0.04] hover:border-white/[0.08]'
                         }`}
                       >
                         {/* Step Index & Provider */}
                         <div className="flex items-center gap-2.5 min-w-0">
                           <span
-                            className={`w-4 h-4 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0 ${
+                            className={`w-5 h-5 rounded-md text-[10px] font-mono font-bold flex items-center justify-center flex-shrink-0 ${
                               isRunning
-                                ? 'bg-emerald-500 text-slate-950'
+                                ? 'bg-cyan-400 text-slate-950 font-extrabold shadow-[0_0_10px_rgba(6,182,212,0.8)]'
                                 : isPrimary
-                                ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500/50'
+                                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
                                 : isBlocked
-                                ? 'bg-rose-950 text-rose-400 border border-rose-800/60'
-                                : 'bg-slate-800 text-slate-400'
+                                ? 'bg-rose-950/80 text-rose-400 border border-rose-800/60'
+                                : 'bg-slate-800/60 text-slate-400'
                             }`}
                           >
                             {idx + 1}
@@ -428,7 +437,7 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
                               <ChevronRight className="w-3 h-3 text-slate-600 flex-shrink-0" />
                               <span
                                 className={`font-mono text-[11px] truncate max-w-[150px] sm:max-w-[200px] ${
-                                  isRunning || isPrimary ? 'text-emerald-300' : 'text-slate-400'
+                                  isRunning || isPrimary ? 'text-cyan-300 font-medium' : 'text-slate-400'
                                 }`}
                                 title={tgt.model}
                               >
@@ -439,34 +448,31 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
                         </div>
 
                         {/* Status / Failover Tag */}
-                        <div className="flex items-center gap-2 flex-shrink-0">
+                        <div className="flex items-center gap-2 flex-shrink-0 font-mono">
                           {isRunning && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-500 text-slate-950 font-mono shadow">
+                            <Badge variant="cyan" className="shadow animate-pulse font-bold">
                               <Activity className="w-3 h-3 animate-spin" />
                               ACTIVE ({ev.inFlight} req)
-                            </span>
+                            </Badge>
                           )}
 
                           {isPrimary && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-950/80 text-emerald-300 border border-emerald-700/80 font-mono">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                              PRIMARY (Next)
-                            </span>
+                            <Badge variant="cyan">
+                              <CheckCircle2 className="w-3 h-3 text-cyan-400" />
+                              PRIMARY ROUTE
+                            </Badge>
                           )}
 
                           {isBlocked && (
-                            <span
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-rose-950 text-rose-300 border border-rose-800/80 cursor-help"
-                              title={ev.reason}
-                            >
+                            <Badge variant="rose" title={ev.reason} className="cursor-help">
                               <AlertOctagon className="w-3 h-3 text-rose-400 flex-shrink-0" />
-                              <span className="truncate max-w-[160px]">{ev.reason}</span>
-                            </span>
+                              <span className="truncate max-w-[150px]">{ev.reason}</span>
+                            </Badge>
                           )}
 
                           {!isRunning && !isPrimary && !isBlocked && (
-                            <span className="text-[10px] font-mono text-slate-500 bg-slate-950 px-2 py-0.5 rounded border border-slate-800/80">
-                              STANDBY
+                            <span className="text-[10px] text-slate-500 bg-[#030508] px-2 py-0.5 rounded border border-white/[0.04]">
+                              STANDBY #{idx + 1}
                             </span>
                           )}
                         </div>
@@ -474,180 +480,179 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh }) => {
                     );
                   })}
                 </div>
-              </div>
+              </Card>
             );
           })}
         </div>
-      </div>
+      </Card>
 
       {/* ============================================================== */}
       {/* 3. Detailed Circuit Breaker & Provider Health Table            */}
       {/* ============================================================== */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
-        <div className="flex items-center justify-between mb-4">
+      <Card className="p-5">
+        <div className="flex items-center justify-between mb-4 border-b border-white/[0.06] pb-3">
           <div>
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              <Gauge className="w-5 h-5 text-brand-500" />
-              Provider Circuit Breakers & Throttle Meters
+            <h2 className="text-base font-bold text-white flex items-center gap-2 font-mono">
+              <CircuitBoard className="w-4 h-4 text-cyan-400" />
+              PROVIDER CIRCUITS &amp; LIVE METERS
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Live status, sliding 60-second RPM counters, burst spacing timers, and smartness rankings.
+              Circuit state machine, sliding RPM throttle windows, burst guard timings, and lifetime token consumption.
             </p>
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm text-slate-300">
-            <thead className="bg-slate-950/60 text-slate-400 text-xs uppercase tracking-wider border-b border-slate-800">
-              <tr>
-                <th className="py-2.5 px-3 font-medium">Provider</th>
-                <th className="py-2.5 px-3 font-medium">Circuit State</th>
-                <th className="py-2.5 px-3 font-medium">Smartness</th>
-                <th className="py-2.5 px-3 font-medium">RPM Throttle</th>
-                <th className="py-2.5 px-3 font-medium">Burst Guard</th>
-                <th className="py-2.5 px-3 font-medium">In Flight</th>
-                <th className="py-2.5 px-3 font-medium">Avg Latency</th>
-                <th className="py-2.5 px-3 font-medium">Tokens</th>
-                <th className="py-2.5 px-3 font-medium text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-              {status.providers.map((p) => {
-                const isHealthy = p.circuit.includes('Closed');
-                const isTripped = p.circuit.includes('Open');
-                const isProbing = p.circuit.includes('Half-Open');
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Provider</TableHead>
+              <TableHead>Circuit State</TableHead>
+              <TableHead>Smartness</TableHead>
+              <TableHead>RPM Throttle</TableHead>
+              <TableHead>Burst Guard</TableHead>
+              <TableHead>In Flight</TableHead>
+              <TableHead>Avg Latency</TableHead>
+              <TableHead>Tokens (In / Out)</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {status.providers.map((p) => {
+              const isHealthy = p.circuit.includes('Closed');
+              const isTripped = p.circuit.includes('Open');
+              const isProbing = p.circuit.includes('Half-Open');
 
-                return (
-                  <tr key={String(p.name)} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="py-2.5 px-3 font-semibold text-slate-200">
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`w-2 h-2 rounded-full inline-block ${
-                            p.in_flight > 0
-                              ? 'bg-emerald-400 animate-ping'
-                              : isHealthy
-                              ? 'bg-emerald-500'
-                              : 'bg-rose-500'
-                          }`}
+              return (
+                <TableRow key={String(p.name)}>
+                  <TableCell className="font-semibold text-slate-200">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`w-2 h-2 rounded-full inline-block ${
+                          p.in_flight > 0
+                            ? 'bg-cyan-400 animate-ping'
+                            : isHealthy
+                            ? 'bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)]'
+                            : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]'
+                        }`}
+                      />
+                      <span className="text-xs font-mono font-bold text-white">{p.name}</span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate max-w-xs">
+                      {p.models.slice(0, 2).join(', ')}
+                      {p.models.length > 2 && ` +${p.models.length - 2} more`}
+                    </div>
+                  </TableCell>
+
+                  <TableCell>
+                    {isHealthy && (
+                      <Badge variant="cyan">
+                        <CheckCircle2 className="w-3 h-3 text-cyan-400" />
+                        Healthy
+                      </Badge>
+                    )}
+                    {isTripped && (
+                      <Badge variant="rose" className="animate-pulse">
+                        <XCircle className="w-3 h-3 text-rose-400" />
+                        Tripped ({p.failures}f)
+                      </Badge>
+                    )}
+                    {isProbing && (
+                      <Badge variant="amber">
+                        <AlertTriangle className="w-3 h-3 text-amber-400" />
+                        Probing
+                      </Badge>
+                    )}
+                  </TableCell>
+
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <div className="w-12 bg-white/[0.05] h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-cyan-400 h-full rounded-full"
+                          style={{ width: `${Math.min(100, p.smartness_score)}%` }}
                         />
-                        <span className="text-xs font-sans font-bold">{p.name}</span>
                       </div>
-                      <div className="text-[10px] text-slate-500 font-sans mt-0.5 truncate max-w-xs">
-                        {p.models.slice(0, 2).join(', ')}
-                        {p.models.length > 2 && ` +${p.models.length - 2} more`}
-                      </div>
-                    </td>
+                      <span className="text-slate-300 font-mono text-[11px]">{p.smartness_score}</span>
+                    </div>
+                  </TableCell>
 
-                    <td className="py-2.5 px-3">
-                      {isHealthy && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-950/70 text-emerald-400 border border-emerald-800/60">
-                          <CheckCircle2 className="w-3 h-3" />
-                          Healthy
-                        </span>
-                      )}
-                      {isTripped && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-rose-950/70 text-rose-400 border border-rose-800/60 animate-pulse">
-                          <XCircle className="w-3 h-3" />
-                          Tripped
-                        </span>
-                      )}
-                      {isProbing && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-950/70 text-amber-400 border border-amber-800/60">
-                          <AlertTriangle className="w-3 h-3" />
-                          Probing
-                        </span>
-                      )}
-                    </td>
-
-                    <td className="py-2.5 px-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-12 bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                  <TableCell>
+                    {p.max_rpm ? (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className={p.is_rpm_capped ? 'text-amber-400 font-bold' : 'text-slate-300'}>
+                            {p.current_rpm} / {p.max_rpm}
+                          </span>
+                          {p.is_rpm_capped && (
+                            <span className="text-[9px] text-amber-400 uppercase font-mono tracking-wide">
+                              Capped
+                            </span>
+                          )}
+                        </div>
+                        <div className="w-20 bg-white/[0.05] h-1.5 rounded-full overflow-hidden">
                           <div
-                            className="bg-brand-500 h-full rounded-full"
-                            style={{ width: `${Math.min(100, p.smartness_score)}%` }}
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              p.is_rpm_capped ? 'bg-amber-500' : 'bg-cyan-500'
+                            }`}
+                            style={{ width: `${Math.min(100, (p.current_rpm / p.max_rpm) * 100)}%` }}
                           />
                         </div>
-                        <span className="text-slate-300 font-sans font-medium text-[11px]">{p.smartness_score}</span>
                       </div>
-                    </td>
+                    ) : (
+                      <span className="text-slate-500 text-[11px]">Unlimited</span>
+                    )}
+                  </TableCell>
 
-                    <td className="py-2.5 px-3">
-                      {p.max_rpm ? (
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className={p.is_rpm_capped ? 'text-amber-400 font-bold' : 'text-slate-300'}>
-                              {p.current_rpm} / {p.max_rpm}
-                            </span>
-                            {p.is_rpm_capped && (
-                              <span className="text-[9px] text-amber-400 uppercase font-sans tracking-wide">
-                                Capped
-                              </span>
-                            )}
-                          </div>
-                          <div className="w-20 bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all duration-300 ${
-                                p.is_rpm_capped ? 'bg-amber-500' : 'bg-sky-500'
-                              }`}
-                              style={{ width: `${Math.min(100, (p.current_rpm / p.max_rpm) * 100)}%` }}
-                            />
-                          </div>
-                        </div>
+                  <TableCell>
+                    {p.min_interval_ms ? (
+                      p.is_burst_limited ? (
+                        <span className="text-amber-400 font-medium text-[11px]">Spacing ({p.min_interval_ms}ms)</span>
                       ) : (
-                        <span className="text-slate-500 font-sans text-[11px]">Unlimited</span>
-                      )}
-                    </td>
+                        <span className="text-cyan-400 text-[11px]">Ready ({p.min_interval_ms}ms)</span>
+                      )
+                    ) : (
+                      <span className="text-slate-500 text-[11px]">None</span>
+                    )}
+                  </TableCell>
 
-                    <td className="py-2.5 px-3">
-                      {p.min_interval_ms ? (
-                        p.is_burst_limited ? (
-                          <span className="text-amber-400 font-medium text-[11px]">Spacing ({p.min_interval_ms}ms)</span>
-                        ) : (
-                          <span className="text-emerald-400 text-[11px]">Ready ({p.min_interval_ms}ms)</span>
-                        )
-                      ) : (
-                        <span className="text-slate-500 font-sans text-[11px]">None</span>
-                      )}
-                    </td>
+                  <TableCell>
+                    <span className={p.in_flight > 0 ? 'text-cyan-400 font-bold animate-pulse' : 'text-slate-400'}>
+                      {p.in_flight}
+                    </span>
+                  </TableCell>
 
-                    <td className="py-2.5 px-3">
-                      <span className={p.in_flight > 0 ? 'text-emerald-400 font-bold animate-pulse' : 'text-slate-400'}>
-                        {p.in_flight}
-                      </span>
-                    </td>
+                  <TableCell>
+                    <span className="text-slate-300">
+                      {p.avg_latency_ms > 0 ? `${p.avg_latency_ms.toFixed(0)} ms` : '-'}
+                    </span>
+                  </TableCell>
 
-                    <td className="py-2.5 px-3">
-                      <span className="text-slate-300">
-                        {p.avg_latency_ms > 0 ? `${p.avg_latency_ms.toFixed(0)} ms` : '-'}
-                      </span>
-                    </td>
+                  <TableCell className="text-slate-400">
+                    <div>
+                      {formatTokens(p.lifetime_input_tokens + p.lifetime_output_tokens)}
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      {formatTokens(p.current_requests)} reqs
+                    </div>
+                  </TableCell>
 
-                    <td className="py-2.5 px-3 text-slate-400 font-sans">
-                      <div>
-                        {formatTokens(p.lifetime_input_tokens + p.lifetime_output_tokens)}
-                      </div>
-                      <div className="text-[10px] text-slate-500">
-                        {formatTokens(p.current_requests)} reqs
-                      </div>
-                    </td>
-
-                    <td className="py-2.5 px-3 text-right">
-                      {isTripped && (
-                        <button
-                          onClick={() => handleResetCircuit(String(p.name))}
-                          className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded text-[11px] font-sans transition-colors"
-                        >
-                          Reset
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                  <TableCell className="text-right">
+                    {isTripped && (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => handleResetCircuit(String(p.name))}
+                      >
+                        Reset
+                      </Button>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </Card>
     </div>
   );
 };
