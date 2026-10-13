@@ -238,11 +238,7 @@ pub async fn create_chat_completions(
                                                                         if live_tx_clone.receiver_count() > 0 {
                                                                             let _ = live_tx_clone.send(crate::server::LiveStreamEvent {
                                                                                 request_id: request_id_clone.clone(),
-                                                                                virtual_model: if requested_model_clone != model_name {
-                                                                                    Some(requested_model_clone.clone())
-                                                                                } else {
-                                                                                    None
-                                                                                },
+                                                                                virtual_model: Some(requested_model_clone.clone()),
                                                                                 provider: provider_name.clone(),
                                                                                 model: model_name.clone(),
                                                                                 delta: content.to_string(),
@@ -327,11 +323,7 @@ pub async fn create_chat_completions(
                         if live_tx_clone.receiver_count() > 0 {
                             let _ = live_tx_clone.send(crate::server::LiveStreamEvent {
                                 request_id: request_id_clone.clone(),
-                                virtual_model: if requested_model_clone != model_name {
-                                    Some(requested_model_clone.clone())
-                                } else {
-                                    None
-                                },
+                                virtual_model: Some(requested_model_clone.clone()),
                                 provider: provider_name.clone(),
                                 model: model_name.clone(),
                                 delta: String::new(),
@@ -478,11 +470,7 @@ pub async fn create_chat_completions(
                             .unwrap_or_default();
                         let _ = live_tx.send(crate::server::LiveStreamEvent {
                             request_id: request_id.clone(),
-                            virtual_model: if requested_model != target_model {
-                                Some(requested_model.to_string())
-                            } else {
-                                None
-                            },
+                            virtual_model: Some(requested_model.to_string()),
                             provider: selected.name.clone(),
                             model: target_model,
                             delta: preview_text,
