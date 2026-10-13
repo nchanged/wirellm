@@ -424,9 +424,8 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
               };
             });
 
-            const activeOrPrimary =
-              evaluatedTargets.find((t) => t.evaluation.status === 'running') ||
-              evaluatedTargets.find((t) => t.evaluation.status === 'primary');
+            const activeTarget = evaluatedTargets.find((t) => t.evaluation.status === 'running');
+            const primaryStandbyTarget = evaluatedTargets.find((t) => t.evaluation.status === 'primary');
 
             const runningCount = evaluatedTargets.filter((t) => t.evaluation.status === 'running').length;
             const blockedCount = evaluatedTargets.filter((t) => t.evaluation.status === 'blocked').length;
@@ -450,17 +449,27 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
                       <span className="w-2 h-2 rounded-full bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,0.9)] shrink-0" />
                       {vm.name}
                     </span>
-                    {activeOrPrimary && (
+                    {activeTarget ? (
                       <span
-                        className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono bg-[#001822] border border-[#00f0ff]/40 text-slate-300 whitespace-nowrap truncate max-w-[210px] shrink-0"
-                        title={`${activeOrPrimary.provider}:${activeOrPrimary.model}`}
+                        className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono bg-[#00222a] border border-[#00f0ff]/60 text-slate-200 whitespace-nowrap truncate max-w-[230px] shrink-0 shadow-[0_0_12px_rgba(0,240,255,0.3)] animate-pulse"
+                        title={`Active: ${activeTarget.provider}:${activeTarget.model}`}
                       >
-                        <ArrowRight className="w-3 h-3 text-[#00f0ff] shrink-0" />
-                        <span className="text-[#00f0ff] font-semibold">{activeOrPrimary.provider}</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] shrink-0" />
+                        <span className="text-[#00f0ff] font-bold">ACTIVE: {activeTarget.provider}</span>
                         <span className="text-slate-600">:</span>
-                        <span className="text-slate-300 truncate">{activeOrPrimary.model}</span>
+                        <span className="text-slate-300 truncate">{activeTarget.model}</span>
                       </span>
-                    )}
+                    ) : primaryStandbyTarget ? (
+                      <span
+                        className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono bg-[#02050c] border border-white/[0.08] text-slate-400 whitespace-nowrap truncate max-w-[230px] shrink-0"
+                        title={`Standby Next: ${primaryStandbyTarget.provider}:${primaryStandbyTarget.model}`}
+                      >
+                        <ArrowRight className="w-3 h-3 text-slate-500 shrink-0" />
+                        <span className="text-slate-300 font-medium">NEXT: {primaryStandbyTarget.provider}</span>
+                        <span className="text-slate-600">:</span>
+                        <span className="text-slate-400 truncate">{primaryStandbyTarget.model}</span>
+                      </span>
+                    ) : null}
                   </div>
 
                   {/* Summary Status Badges */}
@@ -553,9 +562,9 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
                           )}
 
                           {isPrimary && !isRunning && (
-                            <Badge variant="cyan">
-                              <CheckCircle2 className="w-3 h-3 text-[#00f0ff]" />
-                              PRIMARY ROUTE
+                            <Badge variant={idx === 0 ? 'cyan' : 'amber'}>
+                              <CheckCircle2 className={`w-3 h-3 ${idx === 0 ? 'text-[#00f0ff]' : 'text-amber-400'}`} />
+                              {idx === 0 ? 'PRIMARY READY' : `FAILOVER READY (#${idx + 1})`}
                             </Badge>
                           )}
 
