@@ -1,0 +1,851 @@
+use crate::config::{Config, ProviderConfig, ServerConfig, VirtualModelTarget};
+use crate::error::{OxllmError, Result};
+use rusqlite::{params, Connection};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use tracing::{info, warn};
+
+/// Resolves the default ~/.wirellm directory.
+/// Creates the directory if it does not already exist.
+pub fn get_wirellm_home() -> PathBuf {
+    if let Ok(dir) = std::env::var("WIRELLM_HOME").or_else(|_| std::env::var("OXLLM_HOME")) {
+        let p = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&p);
+        return p;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let wirellm_dir = PathBuf::from(&home).join(".wirellm");
+    if !wirellm_dir.exists() {
+        let old_dir = PathBuf::from(&home).join(".oxllm");
+        if old_dir.exists() {
+            let _ = std::fs::create_dir_all(&wirellm_dir);
+            let _ = std::fs::copy(old_dir.join(".vault_salt"), wirellm_dir.join(".vault_salt"));
+            let _ = std::fs::copy(old_dir.join("config.yaml"), wirellm_dir.join("config.yaml"));
+            let _ = std::fs::copy(old_dir.join("oxllm.db"), wirellm_dir.join("wirellm.db"));
+            let _ = std::fs::copy(old_dir.join(".env"), wirellm_dir.join(".env"));
+        }
+    }
+    let _ = std::fs::create_dir_all(&wirellm_dir);
+    wirellm_dir
+}
+
+/// Backwards-compatibility alias for get_wirellm_home.
+pub fn get_oxllm_home() -> PathBuf {
+    get_wirellm_home()
+}
+
+/// Resolves the default SQLite database path at ~/.wirellm/wirellm.db.
+pub fn get_default_db_path() -> PathBuf {
+    get_wirellm_home().join("wirellm.db")
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DailyStats {
+    pub date: String,
+    pub provider_name: String,
+    pub model_name: String,
+    pub total_requests: u64,
+    pub successful_requests: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub avg_latency_ms: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProviderSummary {
+    pub name: String,
+    pub enabled: bool,
+    pub base_url: String,
+    pub api_key_template: String,
+    pub models: Vec<String>,
+    pub rpm: Option<u32>,
+    pub min_interval_ms: Option<u64>,
+    pub max_concurrency: Option<u32>,
+    pub smartness_score: u32,
+    pub lifetime_requests: u64,
+    pub lifetime_successes: u64,
+    pub lifetime_input_tokens: u64,
+    pub lifetime_output_tokens: u64,
+    pub avg_latency_ms: f64,
+    pub has_encrypted_key: bool,
+    pub key_preview: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VirtualModelDetail {
+    pub name: String,
+    pub description: String,
+    pub weight_smartness: f64,
+    pub weight_speed: f64,
+    pub weight_reliability: f64,
+    pub targets: Vec<VirtualModelTarget>,
+}
+
+pub struct DbManager {
+    db_path: PathBuf,
+}
+
+impl DbManager {
+    /// Opens the SQLite database at the specified path (or default ~/.oxllm/oxllm.db)
+    /// and initializes the schema.
+    pub fn new<P: AsRef<Path>>(path: Option<P>) -> Result<Self> {
+        let db_path = match path {
+            Some(p) => p.as_ref().to_path_buf(),
+            None => get_default_db_path(),
+        };
+
+        if let Some(parent) = db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let mgr = Self { db_path };
+        mgr.init_schema()?;
+        mgr.auto_migrate_if_empty()?;
+        Ok(mgr)
+    }
+
+    /// Open a connection with WAL mode and foreign keys enabled.
+    pub fn connect(&self) -> Result<Connection> {
+        let conn = Connection::open(&self.db_path)
+            .map_err(|e| OxllmError::Internal(format!("Failed to open SQLite database: {}", e)))?;
+
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(|e| OxllmError::Internal(format!("Failed to configure SQLite PRAGMAs: {}", e)))?;
+
+        Ok(conn)
+    }
+
+    fn init_schema(&self) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS server_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS providers (
+                name TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                base_url TEXT NOT NULL,
+                api_key_template TEXT NOT NULL,
+                models_json TEXT NOT NULL,
+                headers_json TEXT NOT NULL DEFAULT '{}',
+                rpm INTEGER,
+                min_interval_ms INTEGER,
+                max_concurrency INTEGER,
+                smartness_score INTEGER NOT NULL DEFAULT 80,
+                encrypted_api_key TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS virtual_models (
+                name TEXT PRIMARY KEY,
+                description TEXT DEFAULT '',
+                weight_smartness REAL NOT NULL DEFAULT 0.5,
+                weight_speed REAL NOT NULL DEFAULT 0.3,
+                weight_reliability REAL NOT NULL DEFAULT 0.2,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS virtual_model_targets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                virtual_model_name TEXT NOT NULL REFERENCES virtual_models(name) ON DELETE CASCADE,
+                provider_name TEXT NOT NULL REFERENCES providers(name) ON DELETE CASCADE,
+                model_name TEXT NOT NULL,
+                priority_order INTEGER NOT NULL,
+                UNIQUE(virtual_model_name, provider_name, model_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS request_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider_name TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                status_code INTEGER NOT NULL,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                is_stream INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_metrics_provider ON request_metrics(provider_name, created_at);
+
+            CREATE TABLE IF NOT EXISTS daily_usage (
+                date TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                total_requests INTEGER DEFAULT 0,
+                successful_requests INTEGER DEFAULT 0,
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0,
+                total_duration_ms INTEGER DEFAULT 0,
+                PRIMARY KEY(date, provider_name, model_name)
+            );",
+        )
+        .map_err(|e| OxllmError::Internal(format!("Failed to initialize SQLite schema: {}", e)))?;
+
+        // Auto-migrate column encrypted_api_key for existing databases
+        let _ = conn.execute("ALTER TABLE providers ADD COLUMN encrypted_api_key TEXT DEFAULT ''", []);
+
+        Ok(())
+    }
+
+    /// Automatically migrates existing configuration from ~/.config/oxllm/config.toml
+    /// into SQLite if providers table is currently empty.
+    fn auto_migrate_if_empty(&self) -> Result<()> {
+        let conn = self.connect()?;
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM providers", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        if count > 0 {
+            return Ok(());
+        }
+
+        // Try locating existing config.toml
+        let candidates = [
+            get_oxllm_home().join("config.toml"),
+            get_oxllm_home().join("config.backup.toml"),
+            dirs_fallback_config_path(),
+            PathBuf::from("config.toml"),
+        ];
+
+        let mut found_path = None;
+        for path in &candidates {
+            if path.exists() {
+                found_path = Some(path.clone());
+                break;
+            }
+        }
+
+        let config_path = match found_path {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        info!(
+            "Database is empty. Automatically migrating existing configuration from {:?}",
+            config_path
+        );
+
+        // Read raw TOML content (preserving ${VAR} templates)
+        let content = match std::fs::read_to_string(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to read config for migration: {}", e);
+                return Ok(());
+            },
+        };
+
+        // Also save a backup into ~/.oxllm/config.backup.toml
+        let backup_path = get_oxllm_home().join("config.backup.toml");
+        let _ = std::fs::write(&backup_path, &content);
+
+        let parsed: toml::Value = match toml::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to parse TOML during auto-migration: {}", e);
+                return Ok(());
+            },
+        };
+
+        // 1. Server settings
+        if let Some(server) = parsed.get("server").and_then(|s| s.as_table()) {
+            let host = server.get("host").and_then(|v| v.as_str()).unwrap_or("127.0.0.1");
+            let port = server.get("port").and_then(|v| v.as_integer()).unwrap_or(8088);
+            let otel = server.get("otel_endpoint").and_then(|v| v.as_str()).unwrap_or("http://127.0.0.1:4318");
+            let timeout = server.get("upstream_timeout_secs").and_then(|v| v.as_integer()).unwrap_or(300);
+            let bind_family = server.get("bind_family").and_then(|v| v.as_str()).unwrap_or("ipv4");
+
+            let _ = conn.execute("INSERT OR REPLACE INTO server_settings (key, value) VALUES ('host', ?)", [host]);
+            let _ = conn.execute("INSERT OR REPLACE INTO server_settings (key, value) VALUES ('port', ?)", [port.to_string()]);
+            let _ = conn.execute("INSERT OR REPLACE INTO server_settings (key, value) VALUES ('otel_endpoint', ?)", [otel]);
+            let _ = conn.execute("INSERT OR REPLACE INTO server_settings (key, value) VALUES ('upstream_timeout_secs', ?)", [timeout.to_string()]);
+            let _ = conn.execute("INSERT OR REPLACE INTO server_settings (key, value) VALUES ('bind_family', ?)", [bind_family]);
+        }
+
+        // 2. Providers
+        if let Some(providers) = parsed.get("providers").and_then(|p| p.as_array()) {
+            for p in providers {
+                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if name.is_empty() {
+                    continue;
+                }
+                let enabled = if p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true) { 1 } else { 0 };
+                let base_url = p.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+                let api_key = p.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
+                
+                let models: Vec<String> = p.get("models")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|m| m.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let models_json = serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_string());
+
+                let headers_map: HashMap<String, String> = p.get("headers")
+                    .and_then(|v| v.as_table())
+                    .map(|tbl| tbl.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+                    .unwrap_or_default();
+                let headers_json = serde_json::to_string(&headers_map).unwrap_or_else(|_| "{}".to_string());
+
+                let rpm = p.get("rpm").and_then(|v| v.as_integer());
+                let min_interval_ms = p.get("min_interval_ms").and_then(|v| v.as_integer());
+                let max_concurrency = p.get("max_concurrency").and_then(|v| v.as_integer());
+
+                let smartness = calculate_default_smartness(name, &models);
+
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO providers 
+                    (name, enabled, base_url, api_key_template, models_json, headers_json, rpm, min_interval_ms, max_concurrency, smartness_score) 
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![name, enabled, base_url, api_key, models_json, headers_json, rpm, min_interval_ms, max_concurrency, smartness],
+                );
+            }
+        }
+
+        // 3. Virtual Models (skip 1-to-1 single model shims handled natively by direct passthrough)
+        if let Some(vms) = parsed.get("virtual_models").and_then(|v| v.as_table()) {
+            for (vm_name, targets) in vms {
+                let target_arr = match targets.as_array() {
+                    Some(arr) if !arr.is_empty() => arr,
+                    _ => continue,
+                };
+
+                // Skip 1-to-1 passthrough dummy virtual models (handled natively by direct routing)
+                if target_arr.len() == 1 {
+                    let single_model = target_arr[0].get("model").and_then(|v| v.as_str()).unwrap_or("");
+                    if single_model == vm_name || single_model.ends_with(&format!("/{}", vm_name)) || vm_name.starts_with("nvidia-") || vm_name.starts_with("openrouter-") {
+                        continue;
+                    }
+                }
+
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO virtual_models (name, description) VALUES (?1, ?2)",
+                    params![vm_name, format!("Virtual model group for {}", vm_name)],
+                );
+
+                for (order, t) in target_arr.iter().enumerate() {
+                    let provider = t.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                    let model = t.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                    if !provider.is_empty() && !model.is_empty() {
+                        let _ = conn.execute(
+                            "INSERT OR REPLACE INTO virtual_model_targets 
+                            (virtual_model_name, provider_name, model_name, priority_order) 
+                            VALUES (?1, ?2, ?3, ?4)",
+                            params![vm_name, provider, model, order as i64],
+                        );
+                    }
+                }
+            }
+        }
+
+        info!("Successfully migrated configuration to SQLite database at {:?}", self.db_path);
+        Ok(())
+    }
+
+    /// Loads the active Config struct from SQLite, expanding environment variables.
+    pub fn load_config(&self) -> Result<Config> {
+        let conn = self.connect()?;
+
+        // 1. Server settings
+        let host: String = conn.query_row("SELECT value FROM server_settings WHERE key = 'host'", [], |r| r.get(0)).unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port_str: String = conn.query_row("SELECT value FROM server_settings WHERE key = 'port'", [], |r| r.get(0)).unwrap_or_else(|_| "8088".to_string());
+        let port = port_str.parse::<u16>().unwrap_or(8088);
+        let otel_endpoint: String = conn.query_row("SELECT value FROM server_settings WHERE key = 'otel_endpoint'", [], |r| r.get(0)).unwrap_or_else(|_| "http://127.0.0.1:4318".to_string());
+        let timeout_str: String = conn.query_row("SELECT value FROM server_settings WHERE key = 'upstream_timeout_secs'", [], |r| r.get(0)).unwrap_or_else(|_| "300".to_string());
+        let upstream_timeout_secs = timeout_str.parse::<u64>().unwrap_or(300);
+        let bind_family: String = conn.query_row("SELECT value FROM server_settings WHERE key = 'bind_family'", [], |r| r.get(0)).unwrap_or_else(|_| "ipv4".to_string());
+
+        let server = ServerConfig {
+            host,
+            port,
+            otel_endpoint,
+            upstream_timeout_secs,
+            bind_family,
+        };
+
+        // 2. Providers
+        let mut stmt = conn.prepare(
+            "SELECT name, enabled, base_url, api_key_template, models_json, headers_json, rpm, min_interval_ms, max_concurrency, COALESCE(encrypted_api_key, '') 
+             FROM providers ORDER BY name ASC"
+        ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let provider_rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let enabled_int: i64 = row.get(1)?;
+            let base_url: String = row.get(2)?;
+            let api_key_template: String = row.get(3)?;
+            let models_json: String = row.get(4)?;
+            let headers_json: String = row.get(5)?;
+            let rpm: Option<u32> = row.get::<_, Option<i64>>(6)?.map(|v| v as u32);
+            let min_interval_ms: Option<u64> = row.get::<_, Option<i64>>(7)?.map(|v| v as u64);
+            let max_concurrency: Option<u32> = row.get::<_, Option<i64>>(8)?.map(|v| v as u32);
+            let encrypted_api_key: String = row.get(9)?;
+
+            Ok((name, enabled_int != 0, base_url, api_key_template, models_json, headers_json, rpm, min_interval_ms, max_concurrency, encrypted_api_key))
+        }).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut providers = Vec::new();
+        for res in provider_rows {
+            let (name, enabled, base_url, api_key_template, models_json, headers_json, rpm, min_interval_ms, max_concurrency, encrypted_api_key) = res
+                .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+            let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
+            let headers: HashMap<String, String> = serde_json::from_str(&headers_json).unwrap_or_default();
+
+            // Decrypt raw API key from vault if present, otherwise expand environment variable template
+            let (api_key, enabled) = if !encrypted_api_key.trim().is_empty() {
+                match crate::vault::decrypt_key(&encrypted_api_key) {
+                    Ok(k) if !k.trim().is_empty() => (k, enabled),
+                    Ok(_) => (String::new(), false),
+                    Err(e) => {
+                        tracing::warn!("Provider '{}' has encrypted key in vault, but decryption failed ({}). Disabling provider.", name, e);
+                        (String::new(), false)
+                    }
+                }
+            } else {
+                match crate::config::expand_env_vars(&api_key_template) {
+                    Ok(k) => (k, enabled),
+                    Err(e) => {
+                        tracing::warn!("Provider '{}' has unresolvable api_key ({}). Disabling provider until configured.", name, e);
+                        (String::new(), false)
+                    }
+                }
+            };
+
+            providers.push(ProviderConfig {
+                name,
+                enabled,
+                base_url,
+                api_key,
+                models,
+                headers,
+                rpm,
+                min_interval_ms,
+                max_concurrency,
+            });
+        }
+
+        // 3. Virtual Models
+        let mut vm_stmt = conn.prepare("SELECT name FROM virtual_models ORDER BY name ASC")
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+        let vm_rows = vm_stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut virtual_models: HashMap<String, Vec<VirtualModelTarget>> = HashMap::new();
+        for vm_res in vm_rows {
+            let vm_name = vm_res.map_err(|e| OxllmError::Internal(e.to_string()))?;
+            let mut target_stmt = conn.prepare(
+                "SELECT provider_name, model_name FROM virtual_model_targets 
+                 WHERE virtual_model_name = ?1 ORDER BY priority_order ASC"
+            ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+            let target_rows = target_stmt.query_map([&vm_name], |row| {
+                Ok(VirtualModelTarget {
+                    provider: row.get(0)?,
+                    model: row.get(1)?,
+                })
+            }).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+            let mut targets = Vec::new();
+            for t_res in target_rows {
+                targets.push(t_res.map_err(|e| OxllmError::Internal(e.to_string()))?);
+            }
+            virtual_models.insert(vm_name, targets);
+        }
+
+        Ok(Config {
+            server,
+            providers,
+            virtual_models,
+        })
+    }
+
+    /// Records request execution metrics and updates daily usage counters.
+    pub fn record_metric(
+        &self,
+        provider: &str,
+        model: &str,
+        duration_ms: u64,
+        status_code: u16,
+        in_tokens: u64,
+        out_tokens: u64,
+        is_stream: bool,
+    ) -> Result<()> {
+        let conn = self.connect()?;
+        let is_success = if (200..300).contains(&status_code) { 1 } else { 0 };
+
+        // 1. Insert into raw request_metrics
+        let _ = conn.execute(
+            "INSERT INTO request_metrics 
+            (provider_name, model_name, duration_ms, status_code, input_tokens, output_tokens, is_stream) 
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![provider, model, duration_ms as i64, status_code as i64, in_tokens as i64, out_tokens as i64, is_stream as i64],
+        );
+
+        // 2. Upsert into daily_usage
+        let today = time::OffsetDateTime::now_utc().date().to_string();
+        let _ = conn.execute(
+            "INSERT INTO daily_usage 
+            (date, provider_name, model_name, total_requests, successful_requests, total_input_tokens, total_output_tokens, total_duration_ms) 
+            VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7)
+            ON CONFLICT(date, provider_name, model_name) DO UPDATE SET 
+                total_requests = total_requests + 1,
+                successful_requests = successful_requests + ?4,
+                total_input_tokens = total_input_tokens + ?5,
+                total_output_tokens = total_output_tokens + ?6,
+                total_duration_ms = total_duration_ms + ?7",
+            params![today, provider, model, is_success, in_tokens as i64, out_tokens as i64, duration_ms as i64],
+        );
+
+        Ok(())
+    }
+
+    /// Returns daily usage statistics for the specified number of days (default 30).
+    pub fn get_daily_stats(&self, days: u32) -> Result<Vec<DailyStats>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT date, provider_name, model_name, total_requests, successful_requests, 
+                    total_input_tokens, total_output_tokens,
+                    CASE WHEN total_requests > 0 THEN (total_duration_ms * 1.0 / total_requests) ELSE 0.0 END as avg_latency
+             FROM daily_usage 
+             ORDER BY date DESC, total_requests DESC 
+             LIMIT ?1"
+        ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let limit = (days * 50).max(100) as i64;
+        let rows = stmt.query_map([limit], |row| {
+            Ok(DailyStats {
+                date: row.get(0)?,
+                provider_name: row.get(1)?,
+                model_name: row.get(2)?,
+                total_requests: row.get::<_, i64>(3)? as u64,
+                successful_requests: row.get::<_, i64>(4)? as u64,
+                total_input_tokens: row.get::<_, i64>(5)? as u64,
+                total_output_tokens: row.get::<_, i64>(6)? as u64,
+                avg_latency_ms: row.get(7)?,
+            })
+        }).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut res = Vec::new();
+        for r in rows {
+            res.push(r.map_err(|e| OxllmError::Internal(e.to_string()))?);
+        }
+        Ok(res)
+    }
+
+    /// Returns provider summaries with aggregated lifetime statistics.
+    pub fn get_provider_summaries(&self) -> Result<Vec<ProviderSummary>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT p.name, p.enabled, p.base_url, p.api_key_template, p.models_json, p.rpm, p.min_interval_ms, p.max_concurrency, p.smartness_score,
+                    COALESCE(SUM(d.total_requests), 0) as total_reqs,
+                    COALESCE(SUM(d.successful_requests), 0) as total_succ,
+                    COALESCE(SUM(d.total_input_tokens), 0) as total_in,
+                    COALESCE(SUM(d.total_output_tokens), 0) as total_out,
+                    COALESCE(AVG(d.total_duration_ms * 1.0 / NULLIF(d.total_requests, 0)), 0.0) as avg_lat,
+                    COALESCE(p.encrypted_api_key, '') as encrypted_api_key
+             FROM providers p
+             LEFT JOIN daily_usage d ON p.name = d.provider_name
+             GROUP BY p.name
+             ORDER BY p.name ASC"
+        ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let rows = stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let enabled_int: i64 = row.get(1)?;
+            let base_url: String = row.get(2)?;
+            let api_key_template: String = row.get(3)?;
+            let models_json: String = row.get(4)?;
+            let rpm: Option<u32> = row.get::<_, Option<i64>>(5)?.map(|v| v as u32);
+            let min_interval_ms: Option<u64> = row.get::<_, Option<i64>>(6)?.map(|v| v as u64);
+            let max_concurrency: Option<u32> = row.get::<_, Option<i64>>(7)?.map(|v| v as u32);
+            let smartness_score: u32 = row.get::<_, i64>(8)? as u32;
+            let enc_key: String = row.get(14)?;
+
+            let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
+            let has_encrypted_key = !enc_key.trim().is_empty();
+            let key_preview = if has_encrypted_key {
+                "••••••••••••".to_string()
+            } else {
+                api_key_template.clone()
+            };
+
+            Ok(ProviderSummary {
+                name,
+                enabled: enabled_int != 0,
+                base_url,
+                api_key_template,
+                models,
+                rpm,
+                min_interval_ms,
+                max_concurrency,
+                smartness_score,
+                lifetime_requests: row.get::<_, i64>(9)? as u64,
+                lifetime_successes: row.get::<_, i64>(10)? as u64,
+                lifetime_input_tokens: row.get::<_, i64>(11)? as u64,
+                lifetime_output_tokens: row.get::<_, i64>(12)? as u64,
+                avg_latency_ms: row.get(13)?,
+                has_encrypted_key,
+                key_preview,
+            })
+        }).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut res = Vec::new();
+        for r in rows {
+            res.push(r.map_err(|e| OxllmError::Internal(e.to_string()))?);
+        }
+        Ok(res)
+    }
+
+    /// Upserts a provider into SQLite with optional encrypted secret key in vault.
+    pub fn upsert_provider(
+        &self,
+        name: &str,
+        enabled: bool,
+        base_url: &str,
+        api_key_template: &str,
+        models: &[String],
+        headers: &HashMap<String, String>,
+        rpm: Option<u32>,
+        min_interval_ms: Option<u64>,
+        max_concurrency: Option<u32>,
+        smartness: Option<u32>,
+        raw_api_key: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.connect()?;
+        let models_json = serde_json::to_string(models).unwrap_or_else(|_| "[]".to_string());
+        let headers_json = serde_json::to_string(headers).unwrap_or_else(|_| "{}".to_string());
+        let smartness_score = smartness.unwrap_or_else(|| calculate_default_smartness(name, models));
+
+        let trimmed_raw = raw_api_key.map(|s| s.trim()).filter(|s| !s.is_empty());
+        let trimmed_template = api_key_template.trim();
+
+        let (final_template, encrypted_val): (String, Option<String>) = if let Some(raw) = trimmed_raw {
+            if raw.starts_with('$') {
+                // User provided an env var reference (e.g. $VAR or ${VAR}) -> clear encrypted key
+                (raw.to_string(), Some(String::new()))
+            } else {
+                // User provided a literal secret string -> encrypt it
+                let enc = crate::vault::encrypt_key(raw)?;
+                let templ = if trimmed_template.starts_with('$') {
+                    trimmed_template.to_string()
+                } else {
+                    format!("${{{}_API_KEY}}", name.to_uppercase().replace('-', "_"))
+                };
+                (templ, Some(enc))
+            }
+        } else if !trimmed_template.is_empty() && !trimmed_template.starts_with('$') {
+            // Direct key entered in api_key_template field
+            let enc = crate::vault::encrypt_key(trimmed_template)?;
+            let templ = format!("${{{}_API_KEY}}", name.to_uppercase().replace('-', "_"));
+            (templ, Some(enc))
+        } else if trimmed_template.starts_with('$') {
+            (trimmed_template.to_string(), Some(String::new()))
+        } else {
+            (trimmed_template.to_string(), None)
+        };
+
+        if let Some(enc) = encrypted_val {
+            conn.execute(
+                "INSERT INTO providers 
+                (name, enabled, base_url, api_key_template, models_json, headers_json, rpm, min_interval_ms, max_concurrency, smartness_score, encrypted_api_key, updated_at) 
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP)
+                ON CONFLICT(name) DO UPDATE SET 
+                    enabled = ?2,
+                    base_url = ?3,
+                    api_key_template = ?4,
+                    models_json = ?5,
+                    headers_json = ?6,
+                    rpm = ?7,
+                    min_interval_ms = ?8,
+                    max_concurrency = ?9,
+                    smartness_score = ?10,
+                    encrypted_api_key = ?11,
+                    updated_at = CURRENT_TIMESTAMP",
+                params![
+                    name,
+                    if enabled { 1 } else { 0 },
+                    base_url,
+                    final_template,
+                    models_json,
+                    headers_json,
+                    rpm.map(|v| v as i64),
+                    min_interval_ms.map(|v| v as i64),
+                    max_concurrency.map(|v| v as i64),
+                    smartness_score as i64,
+                    enc,
+                ],
+            ).map_err(|e| OxllmError::Internal(format!("Failed to upsert provider: {}", e)))?;
+        } else {
+            conn.execute(
+                "INSERT INTO providers 
+                (name, enabled, base_url, api_key_template, models_json, headers_json, rpm, min_interval_ms, max_concurrency, smartness_score, updated_at) 
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, CURRENT_TIMESTAMP)
+                ON CONFLICT(name) DO UPDATE SET 
+                    enabled = ?2,
+                    base_url = ?3,
+                    api_key_template = ?4,
+                    models_json = ?5,
+                    headers_json = ?6,
+                    rpm = ?7,
+                    min_interval_ms = ?8,
+                    max_concurrency = ?9,
+                    smartness_score = ?10,
+                    updated_at = CURRENT_TIMESTAMP",
+                params![
+                    name,
+                    if enabled { 1 } else { 0 },
+                    base_url,
+                    final_template,
+                    models_json,
+                    headers_json,
+                    rpm.map(|v| v as i64),
+                    min_interval_ms.map(|v| v as i64),
+                    max_concurrency.map(|v| v as i64),
+                    smartness_score as i64,
+                ],
+            ).map_err(|e| OxllmError::Internal(format!("Failed to upsert provider: {}", e)))?;
+        }
+
+        Ok(())
+    }
+
+    /// Deletes a provider and cascades targets.
+    pub fn delete_provider(&self, name: &str) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM providers WHERE name = ?1", params![name])
+            .map_err(|e| OxllmError::Internal(format!("Failed to delete provider: {}", e)))?;
+        Ok(())
+    }
+
+    /// Upserts a virtual model and replaces its target candidates.
+    pub fn upsert_virtual_model(
+        &self,
+        name: &str,
+        description: &str,
+        targets: &[VirtualModelTarget],
+        weights: Option<(f64, f64, f64)>,
+    ) -> Result<()> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction().map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let (w_smart, w_speed, w_rel) = weights.unwrap_or((0.5, 0.3, 0.2));
+
+        tx.execute(
+            "INSERT INTO virtual_models (name, description, weight_smartness, weight_speed, weight_reliability, updated_at) 
+             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+             ON CONFLICT(name) DO UPDATE SET 
+                description = ?2,
+                weight_smartness = ?3,
+                weight_speed = ?4,
+                weight_reliability = ?5,
+                updated_at = CURRENT_TIMESTAMP",
+            params![name, description, w_smart, w_speed, w_rel],
+        ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        tx.execute("DELETE FROM virtual_model_targets WHERE virtual_model_name = ?1", params![name])
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        for (idx, target) in targets.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO virtual_model_targets (virtual_model_name, provider_name, model_name, priority_order) 
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![name, target.provider, target.model, idx as i64],
+            ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+        }
+
+        tx.commit().map_err(|e| OxllmError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Returns list of all virtual models with their targets and weights.
+    pub fn get_virtual_models_detail(&self) -> Result<Vec<VirtualModelDetail>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT name, description, weight_smartness, weight_speed, weight_reliability 
+             FROM virtual_models ORDER BY name ASC"
+        ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+            ))
+        }).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut res = Vec::new();
+        for r in rows {
+            let (name, description, weight_smartness, weight_speed, weight_reliability) = r
+                .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+            let mut target_stmt = conn.prepare(
+                "SELECT provider_name, model_name FROM virtual_model_targets 
+                 WHERE virtual_model_name = ?1 ORDER BY priority_order ASC"
+            ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+            let targets = target_stmt.query_map([&name], |row| {
+                Ok(VirtualModelTarget {
+                    provider: row.get(0)?,
+                    model: row.get(1)?,
+                })
+            }).map_err(|e| OxllmError::Internal(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+            res.push(VirtualModelDetail {
+                name,
+                description,
+                weight_smartness,
+                weight_speed,
+                weight_reliability,
+                targets,
+            });
+        }
+
+        Ok(res)
+    }
+
+    /// Deletes a virtual model and its targets.
+    pub fn delete_virtual_model(&self, name: &str) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM virtual_models WHERE name = ?1", params![name])
+            .map_err(|e| OxllmError::Internal(format!("Failed to delete virtual model: {}", e)))?;
+        Ok(())
+    }
+}
+
+/// Fallback path to ~/.config/oxllm/config.toml
+fn dirs_fallback_config_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config").join("oxllm").join("config.toml")
+}
+
+/// Automatic quality/smartness estimation based on model parameter count & brand.
+fn calculate_default_smartness(provider: &str, models: &[String]) -> u32 {
+    let target = format!("{} {}", provider, models.join(" ")).to_lowercase();
+    if target.contains("ultra") || target.contains("550b") || target.contains("reasoner") || target.contains("r1") {
+        96
+    } else if target.contains("chat") || target.contains("v3") || target.contains("v4") || target.contains("deepseek") {
+        92
+    } else if target.contains("glm-5") || target.contains("longcat") || target.contains("1.6t") {
+        88
+    } else if target.contains("lightning") || target.contains("north") || target.contains("cohere") {
+        85
+    } else if target.contains("120b") || target.contains("70b") {
+        84
+    } else if target.contains("flash") || target.contains("27b") {
+        80
+    } else {
+        75
+    }
+}
