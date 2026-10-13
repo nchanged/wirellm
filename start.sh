@@ -17,6 +17,10 @@ mkdir -p "$HOME/.wirellm"
 # Resolve wirellm binary
 if [ -x "$HOME/.local/bin/wirellm" ]; then
   WIRELLM_BIN="$HOME/.local/bin/wirellm"
+elif [ -x "$SCRIPT_DIR/target/release/wirellm" ]; then
+  WIRELLM_BIN="$SCRIPT_DIR/target/release/wirellm"
+elif [ -x "$HOME/work/wirellm/target/release/wirellm" ]; then
+  WIRELLM_BIN="$HOME/work/wirellm/target/release/wirellm"
 elif [ -x "$HOME/work/oxllm/target/release/wirellm" ]; then
   WIRELLM_BIN="$HOME/work/oxllm/target/release/wirellm"
 elif command -v wirellm >/dev/null 2>&1; then
@@ -24,7 +28,7 @@ elif command -v wirellm >/dev/null 2>&1; then
 elif [ -x "$HOME/.local/bin/oxllm" ]; then
   WIRELLM_BIN="$HOME/.local/bin/oxllm"
 else
-  echo "❌ Error: wirellm binary not found. Build with 'cargo build --release' in ~/work/oxllm." >&2
+  echo "❌ Error: wirellm binary not found. Build with 'cargo build --release' in ~/work/wirellm." >&2
   exit 1
 fi
 
