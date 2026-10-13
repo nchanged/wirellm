@@ -150,34 +150,37 @@ export const Overview: React.FC<OverviewProps> = ({ status, onRefresh, liveEvent
       const prevText = existing ? existing.text : '';
       const newText = liveEvent.delta ? (prevText + liveEvent.delta).slice(-800) : prevText;
 
-      return {
+      const updated = {
         ...prev,
         [key]: {
           requestId: liveEvent.request_id,
-          virtualModel: liveEvent.virtual_model,
-          provider: liveEvent.provider,
-          model: liveEvent.model,
+          virtualModel: liveEvent.virtual_model || existing?.virtualModel,
+          provider: liveEvent.provider || existing?.provider || '',
+          model: liveEvent.model || existing?.model || '',
           text: newText,
           tokensSoFar: liveEvent.tokens_so_far,
           elapsedMs: liveEvent.elapsed_ms,
           isDone: liveEvent.is_done,
           error: liveEvent.error,
-          speedTokPerSec: speed,
+          speedTokPerSec: speed > 0 ? speed : (existing?.speedTokPerSec || 0),
           lastUpdated: now,
         },
       };
-    });
 
-    if (liveEvent.is_done) {
-      setTimeout(() => {
-        setActiveStreams((prev) => {
-          if (!prev[key]) return prev;
-          const copy = { ...prev };
-          delete copy[key];
-          return copy;
-        });
-      }, 7000);
-    }
+      // Retain completed streams to prevent UI jumping back and forth.
+      // Soft-prune oldest completed streams only when total entries exceed 6.
+      const entries = Object.entries(updated);
+      if (entries.length > 6) {
+        const completed = entries
+          .filter(([_, s]) => s.isDone)
+          .sort((a, b) => a[1].lastUpdated - b[1].lastUpdated);
+        if (completed.length > 0) {
+          delete updated[completed[0][0]];
+        }
+      }
+
+      return updated;
+    });
   }, [liveEvent]);
 
   const handleDismissStream = (requestId: string) => {
