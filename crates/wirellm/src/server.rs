@@ -583,7 +583,12 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
                 if !event.delta.is_empty() {
                     guard[pos].event.delta.push_str(&event.delta);
                     if guard[pos].event.delta.len() > 1000 {
-                        let start = guard[pos].event.delta.len() - 1000;
+                        let excess = guard[pos].event.delta.len() - 1000;
+                        let start = guard[pos].event.delta
+                            .char_indices()
+                            .map(|(idx, _)| idx)
+                            .find(|&idx| idx >= excess)
+                            .unwrap_or(0);
                         guard[pos].event.delta = guard[pos].event.delta[start..].to_string();
                     }
                 }
