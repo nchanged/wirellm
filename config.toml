@@ -1,6 +1,6 @@
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 8765
 otel_endpoint = "http://127.0.0.1:4318"
 upstream_timeout_secs = 30
 bind_family = "ipv4"

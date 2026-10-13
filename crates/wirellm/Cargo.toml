@@ -1,0 +1,37 @@
+[package]
+name = "wirellm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "High-performance, secure, local-first LLM router, vault & MCP server in Rust"
+
+[[bin]]
+name = "wirellm"
+path = "src/main.rs"
+
+[dependencies]
+wirellm-core = { path = "../wirellm-core", version = "0.2.0" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+socket2 = { workspace = true }
+rand = { workspace = true }
+tower-http = { version = "0.6", features = ["cors"] }
+rusqlite = { workspace = true }
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = "1"

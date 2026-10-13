@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WireLLM Real-Time Dashboard</title>
+  <!-- Tailwind CSS CDN for zero-dependency styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0fdf4',
+              500: '#22c55e',
+              600: '#16a34a',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.15); opacity: 0.3; }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+    .animate-pulse-ring {
+      animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen antialiased selection:bg-emerald-500/20 selection:text-emerald-400">
+
+  <!-- Header -->
+  <header class="border-b border-slate-800/80 bg-slate-900/70 backdrop-blur sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="h-9 w-9 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center font-bold text-slate-950 shadow-lg shadow-emerald-500/20">
+          W
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="font-bold text-lg text-slate-100 tracking-tight">WireLLM Gateway</h1>
+            <span id="connectionBadge" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              Live Proxy
+            </span>
+          </div>
+          <p class="text-xs text-slate-400 font-mono" id="serverInfo">Loading...</p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 sm:gap-3">
+        <!-- Target Host input (auto-defaults to current origin or 127.0.0.1:8080) -->
+        <div class="hidden sm:flex items-center gap-1 bg-slate-800/80 rounded-lg p-1 border border-slate-700/60 text-xs text-slate-300">
+          <span class="px-2 text-slate-400">Server:</span>
+          <input id="apiEndpoint" type="text" class="bg-slate-950 px-2 py-1 rounded text-slate-200 border border-slate-700 focus:outline-none focus:border-emerald-500 text-xs font-mono w-44">
+        </div>
+
+        <!-- Polling speed -->
+        <select id="pollInterval" class="bg-slate-800 border border-slate-700 text-xs rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer">
+          <option value="1000">1s poll</option>
+          <option value="2000" selected>2s poll</option>
+          <option value="5000">5s poll</option>
+          <option value="0">Paused</option>
+        </select>
+
+        <!-- Inspect Logs Button -->
+        <button id="openLogsBtn" onclick="openLogsModal()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 hover:border-cyan-500/50 transition flex items-center gap-1.5 shadow-sm">
+          <svg class="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+          <span>Inspect Logs</span>
+        </button>
+
+        <button id="refreshBtn" onclick="fetchStatus()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 transition flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          Refresh
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- Top Key Metrics Cards -->
+    <div class="grid grid-cols-2 sm:grid-cols-5 gap-4">
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Total Requests</div>
+        <div class="mt-2 flex items-baseline gap-2">
+          <span id="metricTotalReqs" class="text-2xl font-bold text-slate-100 font-mono">--</span>
+          <span id="metricRps" class="text-xs text-emerald-400 font-mono">0.0 rps</span>
+        </div>
+        <div class="mt-1 text-xs text-slate-500">Processed calls</div>
+      </div>
+
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider flex items-center justify-between">
+          <span>In-Flight Now</span>
+          <span id="inFlightPulseDot" class="hidden w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+        </div>
+        <div class="mt-2 flex items-baseline gap-2">
+          <span id="metricInFlight" class="text-2xl font-bold text-cyan-400 font-mono">0</span>
+          <span class="text-xs text-slate-400">active</span>
+        </div>
+        <div class="mt-1 text-xs text-slate-500" id="metricInFlightDesc">Current requests in-flight</div>
+      </div>
+
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Blocked / Degraded</div>
+        <div class="mt-2 flex items-baseline gap-2">
+          <span id="metricBlockedCount" class="text-2xl font-bold text-amber-400 font-mono">0</span>
+          <span class="text-xs text-slate-400">providers</span>
+        </div>
+        <div class="mt-1 text-xs text-slate-500" id="metricBlockedDesc">0 rate limited or open circuit</div>
+      </div>
+
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Success Rate</div>
+        <div class="mt-2 flex items-baseline gap-2">
+          <span id="metricSuccessRate" class="text-2xl font-bold text-emerald-400 font-mono">--%</span>
+          <span id="metricSuccessCount" class="text-xs text-slate-400 font-mono">(--/--)</span>
+        </div>
+        <div class="mt-1 text-xs text-slate-500">Upstream completions</div>
+      </div>
+
+      <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 shadow-sm">
+        <div class="text-xs font-medium text-slate-400 uppercase tracking-wider">Uptime</div>
+        <div class="mt-2 flex items-baseline gap-2">
+          <span id="metricUptime" class="text-2xl font-bold text-slate-100 font-mono">--</span>
+        </div>
+        <div class="mt-1 text-xs text-slate-500">Continuous runtime</div>
+      </div>
+    </div>
+
+    <!-- Active Call Banner (What is currently being called) -->
+    <div id="activeCallBanner" class="hidden bg-cyan-950/30 border border-cyan-500/40 rounded-xl p-4 transition duration-300">
+      <div class="flex items-center gap-3">
+        <span class="relative flex h-3 w-3">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
+        </span>
+        <div>
+          <h3 class="text-xs font-bold text-cyan-300 tracking-wide uppercase">Active Request In Progress</h3>
+          <p id="activeCallText" class="text-xs text-cyan-200 mt-0.5 font-mono">Routing upstream...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- PRIMARY SECTION: LIVE MODEL ROUTING LADDER & ACTIVE TARGET     -->
+    <!-- ============================================================== -->
+    <div class="bg-slate-900/70 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
+      <div class="px-5 py-4 border-b border-slate-800 bg-slate-900/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+            <h2 class="font-bold text-base text-slate-100 tracking-tight">Active Model Fallback Pipeline</h2>
+          </div>
+          <p class="text-xs text-slate-400 mt-0.5">
+            Real-time candidate resolution: traffic hits <span class="text-emerald-400 font-medium">#1</span> by default, proactively diverting to next healthy model when at capacity or burst-spacing.
+          </p>
+        </div>
+
+        <!-- Virtual Model Selector Tabs -->
+        <div class="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0" id="virtualModelTabs">
+          <!-- Dynamic Tabs: coder, orchestrator, planner, etc. -->
+        </div>
+      </div>
+
+      <!-- Active Model Callout Card -->
+      <div id="activeTargetCallout" class="p-5 border-b border-slate-800/80 bg-gradient-to-r from-slate-900/80 via-slate-900/40 to-slate-950/80">
+        <!-- Rendered dynamically -->
+      </div>
+
+      <!-- Full Fallback Ladder -->
+      <div class="p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+            Fallback Priority Chain & Health Status
+          </div>
+          <button onclick="openLogsModal()" class="text-xs text-cyan-400 hover:text-cyan-300 font-mono flex items-center gap-1">
+            <span>Inspect All Upstream Logs</span> <span>↗</span>
+          </button>
+        </div>
+        <div class="space-y-2.5" id="fallbackLadderList">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Blocked Alerts Banner -->
+    <div id="alertBanner" class="hidden bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+      <div class="flex items-start justify-between">
+        <div class="flex items-start gap-3">
+          <span class="text-xl">⚠️</span>
+          <div>
+            <h3 class="text-sm font-semibold text-amber-300">Degraded or Blocked Upstream Providers</h3>
+            <p id="alertBannerText" class="text-xs text-amber-200/80 mt-1">One or more upstream providers hit rate limits (429) or circuit breaker trip limits.</p>
+          </div>
+        </div>
+        <button onclick="openLogsModal('429')" class="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded text-xs font-mono border border-amber-500/40">
+          View 429 Logs
+        </button>
+      </div>
+    </div>
+
+    <!-- Provider Status Grid -->
+    <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl overflow-hidden shadow-sm">
+      <div class="px-5 py-4 border-b border-slate-800/80 flex items-center justify-between">
+        <div>
+          <h2 class="font-semibold text-sm text-slate-100">All Upstream Providers</h2>
+          <p class="text-xs text-slate-400">Full telemetry, circuits, proactive rate limits, burst spacing, and volumes</p>
+        </div>
+        <span id="providerCountBadge" class="text-xs px-2.5 py-1 bg-slate-800 text-slate-300 rounded-md font-mono">0 providers</span>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs border-collapse">
+          <thead>
+            <tr class="border-b border-slate-800 bg-slate-950/40 text-slate-400 uppercase font-medium text-[11px] tracking-wider">
+              <th class="py-3 px-4">Provider</th>
+              <th class="py-3 px-4">Circuit & Rate Limit</th>
+              <th class="py-3 px-4">In-Flight</th>
+              <th class="py-3 px-4">Requests / Success</th>
+              <th class="py-3 px-4">Tokens (In / Out)</th>
+              <th class="py-3 px-4">Last Called</th>
+              <th class="py-3 px-4 text-right">Quick Action</th>
+            </tr>
+          </thead>
+          <tbody id="providersTableBody" class="divide-y divide-slate-800/60 font-mono text-slate-300">
+            <tr>
+              <td colspan="7" class="py-8 text-center text-slate-500 font-sans">Connecting to WireLLM gateway...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Live Event Feed (Activity Stream) -->
+    <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl overflow-hidden shadow-sm">
+      <div class="px-5 py-4 border-b border-slate-800/80 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          <h2 class="font-semibold text-sm text-slate-100">Live Gateway Activity Feed</h2>
+        </div>
+        <button onclick="clearActivityLog()" class="text-xs text-slate-400 hover:text-slate-200">Clear</button>
+      </div>
+      <div id="activityLog" class="p-4 max-h-60 overflow-y-auto font-mono text-xs space-y-2 bg-slate-950/60 text-slate-400">
+        <div class="text-slate-500 italic">Waiting for gateway activity...</div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ============================================================== -->
+  <!-- MODAL: SERVER LOG INSPECTOR                                    -->
+  <!-- ============================================================== -->
+  <div id="logsModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6">
+    <div class="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+      <!-- Modal Header -->
+      <div class="px-5 py-3.5 border-b border-slate-800 bg-slate-950/80 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2.5">
+          <div class="h-8 w-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="font-bold text-sm text-slate-100">WireLLM Server Log Inspector</h3>
+              <span id="logCountBadge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">0 lines</span>
+            </div>
+            <p class="text-[11px] text-slate-400 font-mono" id="logPathLabel">/tmp/wirellm.log</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <!-- Auto-scroll checkbox -->
+          <label class="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none px-2 py-1 bg-slate-800/80 rounded border border-slate-700/60">
+            <input type="checkbox" id="logAutoScroll" checked class="rounded bg-slate-900 border-slate-700 text-emerald-500 focus:ring-0">
+            <span>Tail</span>
+          </label>
+
+          <!-- Auto-refresh select -->
+          <select id="logRefreshInterval" onchange="toggleLogRefresh()" class="bg-slate-800 border border-slate-700 text-xs rounded-lg px-2 py-1 text-slate-200">
+            <option value="1000">1s auto</option>
+            <option value="2000" selected>2s auto</option>
+            <option value="0">Manual</option>
+          </select>
+
+          <!-- Copy Button -->
+          <button onclick="copyLogs()" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700 transition">Copy</button>
+
+          <!-- Close Button -->
+          <button onclick="closeLogsModal()" class="px-2.5 py-1 bg-slate-800 hover:bg-rose-900/50 hover:border-rose-500/50 text-slate-300 hover:text-rose-200 text-xs rounded border border-slate-700 transition">✕</button>
+        </div>
+      </div>
+
+      <!-- Filter Controls Toolbar -->
+      <div class="px-5 py-2.5 bg-slate-950/40 border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-3 text-xs">
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="text-slate-500 font-medium">Quick Filters:</span>
+          <button onclick="setLogFilter('')" class="filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold" data-filter="">All</button>
+          <button onclick="setLogFilter('warn')" class="filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700" data-filter="warn">WARN</button>
+          <button onclick="setLogFilter('error')" class="filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700" data-filter="error">ERROR</button>
+          <button onclick="setLogFilter('429')" class="filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700" data-filter="429">429 Rate Limits</button>
+          <button onclick="setLogFilter('rate-limit')" class="filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700" data-filter="rate-limit">Rate-Limited</button>
+          <button onclick="setLogFilter('nvidia')" class="filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700" data-filter="nvidia">NVIDIA</button>
+          <button onclick="setLogFilter('routing to')" class="filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700" data-filter="routing to">Routing</button>
+        </div>
+
+        <div class="flex items-center gap-2 w-full sm:w-auto">
+          <div class="relative w-full sm:w-56">
+            <input type="text" id="logSearchInput" oninput="onLogSearchInput()" placeholder="Search logs (grep)..." class="w-full bg-slate-950 border border-slate-700/80 rounded-lg px-2.5 py-1 text-slate-200 text-xs font-mono placeholder:text-slate-600 focus:outline-none focus:border-cyan-500">
+            <button onclick="clearLogSearch()" id="logSearchClear" class="hidden absolute right-2 top-1 text-slate-500 hover:text-slate-300">✕</button>
+          </div>
+          <button onclick="fetchLogs()" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition">↻</button>
+        </div>
+      </div>
+
+      <!-- Log Terminal Content -->
+      <div id="logTerminal" class="flex-1 bg-black/95 p-4 font-mono text-xs overflow-y-auto space-y-0.5 selection:bg-cyan-500/20 leading-relaxed text-slate-300">
+        <div class="text-slate-500 italic">Loading server logs...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let lastData = null;
+    let lastTimestamp = Date.now();
+    let pollTimer = null;
+    let activityEvents = [];
+    let selectedVirtualModel = 'coder'; // Default to coder
+
+    let currentLogFilter = '';
+    let logPollTimer = null;
+    let rawLogLines = [];
+
+    // Helper: auto-discover active host or default to current origin
+    function getApiEndpoint() {
+      const input = document.getElementById('apiEndpoint');
+      if (input && input.value) return input.value.trim().replace(/\/$/, '');
+      if (window.location.protocol.startsWith('http')) {
+        return window.location.origin;
+      }
+      return 'http://127.0.0.1:8080';
+    }
+
+    // Set initial input
+    document.getElementById('apiEndpoint').value = getApiEndpoint();
+
+    async function fetchStatus() {
+      const endpoint = getApiEndpoint();
+      const badge = document.getElementById('connectionBadge');
+      
+      try {
+        const res = await fetch(`${endpoint}/status`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        
+        badge.className = "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Live Proxy`;
+
+        renderDashboard(data);
+      } catch (err) {
+        badge.className = "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20";
+        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-red-400"></span> Disconnected`;
+        document.getElementById('providersTableBody').innerHTML = `
+          <tr>
+            <td colspan="7" class="py-8 text-center text-red-400 font-sans">
+              Cannot reach WireLLM at <span class="font-mono">${endpoint}</span> (${err.message}).<br>
+              Ensure the gateway is running.
+            </td>
+          </tr>
+        `;
+      }
+    }
+
+    function renderDashboard(data) {
+      const now = Date.now();
+      const timeDeltaSec = (now - lastTimestamp) / 1000;
+
+      // 1. Calculate overall metrics
+      const totalReqs = data.total_requests || 0;
+      let rps = 0;
+      if (lastData && timeDeltaSec > 0) {
+        const reqDelta = totalReqs - (lastData.total_requests || 0);
+        rps = Math.max(0, reqDelta / timeDeltaSec);
+        if (reqDelta > 0) {
+          logEvent(`Processed +${reqDelta} request(s) (${rps.toFixed(1)} rps)`, 'call');
+        }
+      }
+
+      let totalSuccesses = 0;
+      let blockedCount = 0;
+      let blockedDetails = [];
+      let totalInFlight = 0;
+      let activeCallingProviders = [];
+
+      // Map providers by name for fast lookup
+      const providerMap = new Map();
+
+      (data.providers || []).forEach(p => {
+        providerMap.set(p.name, p);
+        totalSuccesses += (p.successes || 0);
+        const inFlight = p.in_flight || 0;
+        if (inFlight > 0) {
+          activeCallingProviders.push(`${p.name} (${inFlight})`);
+          totalInFlight += inFlight;
+        }
+
+        const isRateLimited = p.rate_limited === true;
+        const isTripped = p.circuit && !p.circuit.startsWith('Closed');
+        if (isRateLimited || isTripped) {
+          blockedCount++;
+          const reason = isRateLimited 
+            ? (p.rate_limited_until_secs ? `429 (${p.rate_limited_until_secs}s cooldown)` : '429 Rate-Limited') 
+            : p.circuit;
+          blockedDetails.push(`${p.name} [${reason}]`);
+        }
+
+        // Detect state transitions between polls
+        if (lastData) {
+          const old = (lastData.providers || []).find(op => op.name === p.name);
+          if (old) {
+            if (old.circuit !== p.circuit) {
+              logEvent(`Circuit change for ${p.name}: ${old.circuit} -> ${p.circuit}`, isTripped ? 'warn' : 'success');
+            }
+            if (old.rate_limited !== p.rate_limited && p.rate_limited) {
+              logEvent(`⚠️ Upstream ${p.name} hit 429 rate limit! Failover triggered.`, 'blocked');
+            }
+          }
+        }
+      });
+
+      const successRate = totalReqs > 0 ? ((totalSuccesses / totalReqs) * 100).toFixed(1) : 100;
+
+      // Update Top Metrics Cards
+      document.getElementById('metricTotalReqs').textContent = totalReqs.toLocaleString();
+      document.getElementById('metricRps').textContent = `${rps.toFixed(1)} rps`;
+      document.getElementById('metricSuccessRate').textContent = `${successRate}%`;
+      document.getElementById('metricSuccessCount').textContent = `(${totalSuccesses}/${totalReqs})`;
+      document.getElementById('metricUptime').textContent = formatUptime(data.uptime_secs);
+      document.getElementById('metricBlockedCount').textContent = blockedCount;
+
+      // In-flight metrics
+      document.getElementById('metricInFlight').textContent = totalInFlight;
+      const inFlightDot = document.getElementById('inFlightPulseDot');
+      const activeCallBanner = document.getElementById('activeCallBanner');
+      if (totalInFlight > 0 || activeCallingProviders.length > 0) {
+        inFlightDot.classList.remove('hidden');
+        activeCallBanner.classList.remove('hidden');
+        document.getElementById('activeCallText').textContent = 
+          `Currently calling: ${activeCallingProviders.join(', ') || 'Processing LLM request...'}`;
+      } else {
+        inFlightDot.classList.add('hidden');
+        activeCallBanner.classList.add('hidden');
+      }
+
+      // Blocked Alerts Banner
+      const alertBanner = document.getElementById('alertBanner');
+      if (blockedCount > 0) {
+        alertBanner.classList.remove('hidden');
+        document.getElementById('alertBannerText').textContent = 
+          `Active blocks: ${blockedDetails.join(' | ')}. Fallback ladder is actively serving incoming agent requests.`;
+      } else {
+        alertBanner.classList.add('hidden');
+      }
+
+      // Render Virtual Model Tabs & Fallback Ladder
+      renderVirtualModelTabs(data);
+      renderFallbackLadder(data, providerMap);
+
+      // Provider Count
+      document.getElementById('providerCountBadge').textContent = `${(data.providers || []).length} providers`;
+
+      // Render Providers Table
+      renderProvidersTable(data);
+
+      lastData = data;
+      lastTimestamp = now;
+    }
+
+    function renderVirtualModelTabs(data) {
+      const vmKeys = Object.keys(data.virtual_models || {});
+      if (!vmKeys.includes(selectedVirtualModel) && vmKeys.length > 0) {
+        selectedVirtualModel = vmKeys.includes('coder') ? 'coder' : vmKeys[0];
+      }
+
+      // Show priority models first
+      const priorityOrder = ['coder', 'orchestrator', 'planner', 'code-reviewer'];
+      const sortedKeys = [...vmKeys].sort((a, b) => {
+        const ia = priorityOrder.indexOf(a);
+        const ib = priorityOrder.indexOf(b);
+        if (ia !== -1 && ib !== -1) return ia - ib;
+        if (ia !== -1) return -1;
+        if (ib !== -1) return 1;
+        return a.localeCompare(b);
+      });
+
+      const tabsContainer = document.getElementById('virtualModelTabs');
+      tabsContainer.innerHTML = sortedKeys.map(vm => {
+        const isSelected = vm === selectedVirtualModel;
+        const targets = data.virtual_models[vm] || [];
+        const hasTripped = targets.some(t => !t.circuit.startsWith('Closed'));
+        const dotColor = hasTripped ? 'bg-amber-400' : 'bg-emerald-400';
+        
+        const btnClass = isSelected
+          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-sm font-semibold'
+          : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border-slate-700/60';
+
+        return `
+          <button onclick="selectVirtualModel('${vm}')" class="px-3 py-1.5 rounded-lg text-xs font-mono border transition flex items-center gap-1.5 whitespace-nowrap ${btnClass}">
+            <span class="w-1.5 h-1.5 rounded-full ${dotColor}"></span>
+            ${vm}
+          </button>
+        `;
+      }).join('');
+    }
+
+    function selectVirtualModel(vm) {
+      selectedVirtualModel = vm;
+      if (lastData) {
+        const providerMap = new Map((lastData.providers || []).map(p => [p.name, p]));
+        renderVirtualModelTabs(lastData);
+        renderFallbackLadder(lastData, providerMap);
+      }
+    }
+
+    function renderFallbackLadder(data, providerMap) {
+      const targets = (data.virtual_models || {})[selectedVirtualModel] || [];
+      const calloutContainer = document.getElementById('activeTargetCallout');
+      const ladderContainer = document.getElementById('fallbackLadderList');
+
+      if (targets.length === 0) {
+        calloutContainer.innerHTML = `<div class="text-sm text-slate-400">No targets configured for ${selectedVirtualModel}</div>`;
+        ladderContainer.innerHTML = '';
+        return;
+      }
+
+      // Determine which candidate is currently the ACTIVE SERVING model
+      let activeIndex = -1;
+      const targetEvaluations = targets.map((t, idx) => {
+        const p = providerMap.get(t.provider);
+        const isTripped = !t.circuit.startsWith('Closed') && !t.circuit.startsWith('Half-Open');
+        const isRateLimited = p ? p.rate_limited === true : false;
+        const rateLimitedUntilSecs = t.rate_limited_until_secs || (p ? p.rate_limited_until_secs : null);
+        const isBurstLimited = t.is_burst_limited || (p ? p.is_burst_limited : false);
+        const minIntervalMs = t.min_interval_ms || (p ? p.min_interval_ms : null);
+        const inFlight = t.in_flight !== undefined ? t.in_flight : (p ? p.in_flight : 0);
+        const maxRpm = t.max_rpm || (p && p.max_rpm) || null;
+        const currentRpm = t.current_rpm !== undefined ? t.current_rpm : (p ? p.current_rpm : 0);
+        const isRpmCapped = t.is_rpm_capped || (p && p.is_rpm_capped) || (maxRpm && currentRpm >= maxRpm) || false;
+        const isProbing = t.circuit.startsWith('Half-Open');
+        const isDead = isTripped || isRateLimited || isRpmCapped || isBurstLimited;
+
+        const isCurrentlyActive = (activeIndex === -1 && !isDead);
+        if (isCurrentlyActive) {
+          activeIndex = idx;
+        }
+
+        return {
+          ...t,
+          providerObj: p,
+          isDead,
+          isRateLimited,
+          rateLimitedUntilSecs,
+          isBurstLimited,
+          minIntervalMs,
+          inFlight,
+          isRpmCapped,
+          maxRpm,
+          currentRpm,
+          isTripped,
+          isProbing,
+          isCurrentlyActive,
+          index: idx + 1
+        };
+      });
+
+      const activeTarget = targetEvaluations.find(t => t.isCurrentlyActive) || null;
+
+      // 1. Render Active Callout Header
+      if (activeTarget) {
+        const activeRpmBadge = activeTarget.maxRpm 
+          ? `<div class="border-l border-slate-800 pl-4"><div class="text-[10px] text-slate-500 uppercase">Rate Limit</div><div class="text-cyan-400 font-bold">${activeTarget.currentRpm} / ${activeTarget.maxRpm} RPM</div></div>`
+          : `<div class="border-l border-slate-800 pl-4"><div class="text-[10px] text-slate-500 uppercase">Rate</div><div class="text-slate-300 font-bold">${activeTarget.currentRpm} RPM</div></div>`;
+
+        calloutContainer.innerHTML = `
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div class="flex items-start gap-3.5">
+              <div class="h-10 w-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                <span class="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></span>
+              </div>
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Currently Serving Requests (#${activeTarget.index})</span>
+                  <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">ACTIVE</span>
+                </div>
+                <div class="text-lg font-bold text-slate-100 font-mono mt-0.5">${activeTarget.provider}</div>
+                <div class="text-xs text-slate-400 font-mono">${activeTarget.model}</div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-4 text-xs font-mono bg-slate-950/60 px-4 py-2.5 rounded-lg border border-slate-800/80">
+              <div>
+                <div class="text-[10px] text-slate-500 uppercase">Requests</div>
+                <div class="text-slate-200 font-bold">${activeTarget.requests.toLocaleString()}</div>
+              </div>
+              <div class="border-l border-slate-800 pl-4">
+                <div class="text-[10px] text-slate-500 uppercase">Success Rate</div>
+                <div class="text-emerald-400 font-bold">${activeTarget.requests > 0 ? Math.round((activeTarget.successes / activeTarget.requests) * 100) : 100}%</div>
+              </div>
+              ${activeRpmBadge}
+              <div class="border-l border-slate-800 pl-4">
+                <div class="text-[10px] text-slate-500 uppercase">Circuit</div>
+                <div class="text-slate-300">${activeTarget.circuit}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      } else {
+        calloutContainer.innerHTML = `
+          <div class="p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg text-rose-300 text-xs flex items-center gap-2 font-mono">
+            <span>🚨 ALL TARGETS ARE CURRENTLY TRIPPED, RATE-LIMITED, OR BURST-SPACING! Incoming calls will temporarily queue or probe standby models.</span>
+          </div>
+        `;
+      }
+
+      // 2. Render Full Fallback Pipeline Ladder
+      ladderContainer.innerHTML = targetEvaluations.map(t => {
+        let statusBadge = '';
+        let cardBorder = 'border-slate-800/60 bg-slate-950/40';
+        let actionBtn = '';
+
+        if (t.isCurrentlyActive) {
+          cardBorder = 'border-emerald-500/50 bg-emerald-950/20 shadow-md shadow-emerald-950/30 ring-1 ring-emerald-500/30';
+          statusBadge = `
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              ACTIVE (Serving Now)
+            </span>
+          `;
+        } else if (t.isRateLimited) {
+          cardBorder = 'border-rose-500/40 bg-rose-950/20';
+          const cooldownStr = t.rateLimitedUntilSecs ? ` (${t.rateLimitedUntilSecs}s cooldown)` : '';
+          statusBadge = `
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">
+              ❌ 429 RATE-LIMITED${cooldownStr}
+            </span>
+          `;
+          actionBtn = `
+            <button onclick="sendAdminAction('${t.provider}', 'reset')" title="Reset circuit & clear rate limit" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] rounded border border-slate-700 transition">
+              Reset Circuit
+            </button>
+          `;
+        } else if (t.isBurstLimited) {
+          cardBorder = 'border-amber-500/40 bg-amber-950/20';
+          const intervalStr = t.minIntervalMs ? `${(t.minIntervalMs/1000).toFixed(1)}s` : '2.5s';
+          statusBadge = `
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+              🟠 BURST SPACING (Wait ${intervalStr} min interval)
+            </span>
+          `;
+        } else if (t.isRpmCapped) {
+          cardBorder = 'border-amber-500/40 bg-amber-950/20';
+          statusBadge = `
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+              🟠 AT CAPACITY (${t.currentRpm}/${t.maxRpm} RPM - Proactively Diverting)
+            </span>
+          `;
+        } else if (t.isTripped) {
+          cardBorder = 'border-rose-500/30 bg-rose-950/10 opacity-85';
+          statusBadge = `
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+              ❌ CIRCUIT OPEN (${t.circuit})
+            </span>
+          `;
+          actionBtn = `
+            <button onclick="sendAdminAction('${t.provider}', 'reset')" title="Reset circuit & clear rate limit" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] rounded border border-slate-700 transition">
+              Reset Circuit
+            </button>
+          `;
+        } else if (t.isProbing) {
+          cardBorder = 'border-amber-500/40 bg-amber-950/20';
+          statusBadge = `
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              ⚡ HALF-OPEN (Probing)
+            </span>
+          `;
+        } else {
+          // Healthy Standby
+          statusBadge = `
+            <span class="inline-flex items-center px-2 py-1 rounded-md text-[11px] font-medium bg-slate-800 text-slate-300 border border-slate-700/60">
+              READY (Standby #${t.index})
+            </span>
+          `;
+        }
+
+        const successPercent = t.requests > 0 ? Math.round((t.successes / t.requests) * 100) : 100;
+        
+        // RPM display badge
+        let rpmDisplay = '';
+        if (t.maxRpm) {
+          const ratio = t.currentRpm / t.maxRpm;
+          const color = ratio >= 1.0 ? 'text-amber-400 font-bold' : ratio >= 0.8 ? 'text-amber-300' : 'text-slate-300';
+          rpmDisplay = `<div class="text-[11px]"><span class="${color}">${t.currentRpm}</span> / ${t.maxRpm} RPM</div>`;
+        } else if (t.currentRpm > 0) {
+          rpmDisplay = `<div class="text-[11px] text-slate-400">${t.currentRpm} RPM</div>`;
+        }
+
+        return `
+          <div class="flex items-center justify-between p-3.5 rounded-xl border transition ${cardBorder}">
+            <div class="flex items-center gap-3.5 min-w-0">
+              <div class="h-7 w-7 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center font-bold text-xs text-slate-400 font-mono shrink-0">
+                #${t.index}
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="font-bold text-sm text-slate-200 font-sans truncate">${t.provider}</span>
+                  ${statusBadge}
+                  ${t.inFlight > 0 ? `<span class="inline-flex items-center gap-1 text-[10px] text-cyan-300 font-bold bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-500/40"><span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>${t.inFlight} running</span>` : ''}
+                </div>
+                <div class="text-xs text-slate-400 font-mono truncate mt-0.5" title="${t.model}">${t.model}</div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-3 shrink-0 font-mono text-xs">
+              <div class="hidden md:block text-right">
+                ${rpmDisplay}
+                <div class="text-slate-300">${t.successes} / ${t.requests} reqs</div>
+                <div class="text-[10px] text-slate-500">${successPercent}% success</div>
+              </div>
+              <div class="flex items-center gap-1.5">
+                ${actionBtn}
+                <button onclick="openLogsModal('${t.provider}')" title="Inspect logs for ${t.provider}" class="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-cyan-300 text-[11px] rounded border border-slate-800 hover:border-cyan-500/40 transition flex items-center gap-1 font-mono">
+                  <span>Logs</span>
+                  <span class="text-[9px]">↗</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderProvidersTable(data) {
+      const tbody = document.getElementById('providersTableBody');
+      const providers = data.providers || [];
+
+      if (providers.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-slate-500">No active providers configured.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = providers.map(p => {
+        let circuitBadge = '';
+        if (p.circuit.startsWith('Closed')) {
+          circuitBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Closed (Healthy)</span>`;
+        } else if (p.circuit.startsWith('Half')) {
+          circuitBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-300 border border-amber-500/20">Half-Open</span>`;
+        } else {
+          circuitBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20">${p.circuit}</span>`;
+        }
+
+        let rateLimitBadge = '';
+        if (p.rate_limited) {
+          const cooldown = p.rate_limited_until_secs ? ` (${p.rate_limited_until_secs}s)` : '';
+          rateLimitBadge = `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">429 BLOCKED${cooldown}</span>`;
+        } else if (p.is_burst_limited) {
+          rateLimitBadge = `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">BURST SPACING</span>`;
+        } else if (p.is_rpm_capped) {
+          rateLimitBadge = `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">AT CAPACITY</span>`;
+        }
+
+        const inFlightVal = p.in_flight || 0;
+        const inFlightDisplay = inFlightVal > 0 
+          ? `<span class="inline-flex items-center gap-1 text-cyan-300 font-bold bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-500/40"><span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>${inFlightVal} active</span>`
+          : `<span class="text-slate-500">0</span>`;
+
+        const successRatio = p.requests > 0 ? Math.round((p.successes / p.requests) * 100) : 100;
+        const barColor = successRatio > 90 ? 'bg-emerald-500' : successRatio > 70 ? 'bg-amber-500' : 'bg-rose-500';
+
+        return `
+          <tr class="hover:bg-slate-900/40 transition">
+            <td class="py-3 px-4">
+              <div class="font-bold text-slate-200 font-sans">${p.name}</div>
+              <div class="text-[11px] text-slate-500 font-mono truncate max-w-xs" title="${p.models}">${p.models}</div>
+            </td>
+            <td class="py-3 px-4">
+              <div class="flex flex-wrap items-center gap-1.5">
+                ${circuitBadge}
+                ${rateLimitBadge}
+              </div>
+              ${p.failures > 0 ? `<div class="text-[11px] text-rose-400 mt-1">${p.failures} consecutive failure(s)</div>` : ''}
+              ${p.max_rpm ? `<div class="text-[10px] text-slate-500 mt-0.5">${p.current_rpm} / ${p.max_rpm} RPM</div>` : ''}
+            </td>
+            <td class="py-3 px-4">
+              ${inFlightDisplay}
+            </td>
+            <td class="py-3 px-4">
+              <div class="flex items-center justify-between text-xs">
+                <span>${p.successes} / ${p.requests}</span>
+                <span class="text-slate-400 text-[11px]">${successRatio}%</span>
+              </div>
+              <div class="w-28 bg-slate-800 rounded-full h-1.5 mt-1 overflow-hidden">
+                <div class="${barColor} h-1.5 rounded-full" style="width: ${successRatio}%"></div>
+              </div>
+            </td>
+            <td class="py-3 px-4 text-slate-400">
+              <div>In: <span class="text-slate-200">${p.tokens_input.toLocaleString()}</span></div>
+              <div>Out: <span class="text-slate-200">${p.tokens_output.toLocaleString()}</span></div>
+            </td>
+            <td class="py-3 px-4 text-slate-400 font-sans">
+              ${p.last_request}
+            </td>
+            <td class="py-3 px-4 text-right">
+              <div class="flex items-center justify-end gap-1.5 font-sans">
+                <button onclick="openLogsModal('${p.name}')" title="Inspect logs" class="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded text-[11px] border border-slate-700 transition">Logs</button>
+                <button onclick="sendAdminAction('${p.name}', 'reset')" title="Reset circuit breaker & clear rate limit" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] border border-slate-700 hover:border-slate-600 transition">Reset</button>
+                <button onclick="sendAdminAction('${p.name}', 'offline')" title="Take provider offline" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-rose-300 rounded text-[11px] border border-slate-700 hover:border-slate-600 transition">Offline</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // ==============================================================
+    // LOG INSPECTOR JAVASCRIPT FUNCTIONS
+    // ==============================================================
+    function openLogsModal(filter = '') {
+      document.getElementById('logsModal').classList.remove('hidden');
+      if (filter) {
+        setLogFilter(filter);
+      } else {
+        fetchLogs();
+      }
+      startLogPolling();
+    }
+
+    function closeLogsModal() {
+      document.getElementById('logsModal').classList.add('hidden');
+      stopLogPolling();
+    }
+
+    function setLogFilter(filter) {
+      currentLogFilter = filter;
+      document.getElementById('logSearchInput').value = filter;
+      document.querySelectorAll('.filter-pill').forEach(btn => {
+        if (btn.getAttribute('data-filter') === filter) {
+          btn.className = "filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold";
+        } else {
+          btn.className = "filter-pill px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700";
+        }
+      });
+      fetchLogs();
+    }
+
+    function onLogSearchInput() {
+      const val = document.getElementById('logSearchInput').value.trim();
+      currentLogFilter = val;
+      fetchLogs();
+    }
+
+    function clearLogSearch() {
+      document.getElementById('logSearchInput').value = '';
+      setLogFilter('');
+    }
+
+    async function fetchLogs() {
+      const endpoint = getApiEndpoint();
+      const url = `${endpoint}/logs?limit=250${currentLogFilter ? `&filter=${encodeURIComponent(currentLogFilter)}` : ''}`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        rawLogLines = data.lines || [];
+        renderLogs(data);
+      } catch (e) {
+        document.getElementById('logTerminal').innerHTML = `<div class="text-rose-400">Failed to load logs: ${e.message}</div>`;
+      }
+    }
+
+    function renderLogs(data) {
+      const terminal = document.getElementById('logTerminal');
+      const countBadge = document.getElementById('logCountBadge');
+      const pathLabel = document.getElementById('logPathLabel');
+      
+      if (data.path) pathLabel.textContent = data.path;
+      countBadge.textContent = `${(data.lines || []).length} lines`;
+
+      if (!data.lines || data.lines.length === 0) {
+        terminal.innerHTML = `<div class="text-slate-500 italic">No log lines matching "${currentLogFilter || 'all'}"</div>`;
+        return;
+      }
+
+      // Strip ANSI color escape codes for clean HTML formatting
+      const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+
+      const html = data.lines.map(line => {
+        const clean = line.replace(ansiRegex, '');
+        let lineClass = 'text-slate-300';
+
+        if (clean.includes(' ERROR ')) {
+          lineClass = 'text-rose-300 bg-rose-950/20';
+        } else if (clean.includes(' WARN ')) {
+          lineClass = 'text-amber-200 bg-amber-950/10';
+        } else if (clean.includes(' 429 ') || clean.includes('Too Many Requests') || clean.includes('Rate-limited')) {
+          lineClass = 'text-amber-300 bg-amber-950/30 font-semibold';
+        } else if (clean.includes(' INFO ')) {
+          lineClass = 'text-slate-300';
+        } else if (clean.includes(' DEBUG ')) {
+          lineClass = 'text-slate-400';
+        }
+
+        // Highlight keywords
+        const formatted = escapeHtml(clean)
+          .replace(/(WARN)/g, '<span class="text-amber-400 font-bold">$1</span>')
+          .replace(/(ERROR)/g, '<span class="text-rose-400 font-bold">$1</span>')
+          .replace(/(INFO)/g, '<span class="text-emerald-400 font-medium">$1</span>')
+          .replace(/(DEBUG)/g, '<span class="text-cyan-400 font-medium">$1</span>')
+          .replace(/(status 429|429)/g, '<span class="px-1 bg-amber-500/30 text-amber-300 font-bold rounded">$1</span>')
+          .replace(/(status 503|503)/g, '<span class="px-1 bg-rose-500/30 text-rose-300 font-bold rounded">$1</span>');
+
+        return `<div class="hover:bg-slate-900/60 px-1 py-0.5 rounded break-all ${lineClass}">${formatted}</div>`;
+      }).join('');
+
+      terminal.innerHTML = html;
+
+      if (document.getElementById('logAutoScroll').checked) {
+        terminal.scrollTop = terminal.scrollHeight;
+      }
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function copyLogs() {
+      const text = rawLogLines.map(l => l.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '')).join('\n');
+      navigator.clipboard.writeText(text);
+      alert('Logs copied to clipboard!');
+    }
+
+    function startLogPolling() {
+      stopLogPolling();
+      const interval = parseInt(document.getElementById('logRefreshInterval').value, 10);
+      if (interval > 0) {
+        logPollTimer = setInterval(fetchLogs, interval);
+      }
+    }
+
+    function stopLogPolling() {
+      if (logPollTimer) {
+        clearInterval(logPollTimer);
+        logPollTimer = null;
+      }
+    }
+
+    function toggleLogRefresh() {
+      startLogPolling();
+    }
+
+    // ==============================================================
+    // ADMIN ACTIONS & ACTIVITY STREAM
+    // ==============================================================
+    async function sendAdminAction(provider, action) {
+      const endpoint = getApiEndpoint();
+      try {
+        const res = await fetch(`${endpoint}/admin/providers/${encodeURIComponent(provider)}/${action}`, {
+          method: 'POST'
+        });
+        const msg = await res.text();
+        if (res.ok) {
+          logEvent(`Admin action: ${action} on ${provider} successful`, 'admin');
+          fetchStatus();
+        } else {
+          alert(`Error: ${msg}`);
+        }
+      } catch (e) {
+        alert(`Failed to execute admin action: ${e.message}`);
+      }
+    }
+
+    function logEvent(msg, type = 'info') {
+      const time = new Date().toLocaleTimeString();
+      let colorClass = 'text-slate-400';
+      let icon = '•';
+
+      if (type === 'warn') {
+        colorClass = 'text-amber-400 font-semibold';
+        icon = '⚠️';
+      } else if (type === 'blocked') {
+        colorClass = 'text-rose-400 font-bold';
+        icon = '❌';
+      } else if (type === 'success') {
+        colorClass = 'text-emerald-400';
+        icon = '✓';
+      } else if (type === 'call') {
+        colorClass = 'text-cyan-400';
+        icon = '⚡';
+      } else if (type === 'admin') {
+        colorClass = 'text-purple-400 font-medium';
+        icon = '⚙️';
+      }
+
+      const eventItem = `<div class="${colorClass} flex items-center gap-2"><span class="text-slate-500 font-mono text-[10px]">[${time}]</span> <span>${icon} ${msg}</span></div>`;
+      activityEvents.unshift(eventItem);
+      if (activityEvents.length > 25) activityEvents.pop();
+
+      const container = document.getElementById('activityLog');
+      container.innerHTML = activityEvents.join('');
+    }
+
+    function clearActivityLog() {
+      activityEvents = [];
+      document.getElementById('activityLog').innerHTML = `<div class="text-slate-500 italic">Activity log cleared.</div>`;
+    }
+
+    function formatUptime(seconds) {
+      if (!seconds && seconds !== 0) return '--';
+      const d = Math.floor(seconds / 86400);
+      const h = Math.floor((seconds % 86400) / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (d > 0) return `${d}d ${h}h`;
+      if (h > 0) return `${h}h ${m}m`;
+      return `${m}m ${s}s`;
+    }
+
+    function setupPolling() {
+      const select = document.getElementById('pollInterval');
+      const updateInterval = () => {
+        if (pollTimer) clearInterval(pollTimer);
+        const interval = parseInt(select.value, 10);
+        if (interval > 0) {
+          pollTimer = setInterval(fetchStatus, interval);
+        }
+      };
+      select.addEventListener('change', updateInterval);
+      updateInterval();
+    }
+
+    // Initial load
+    fetchStatus();
+    setupPolling();
+  </script>
+</body>
+</html>

@@ -1,0 +1,568 @@
+use axum::{
+    body::Body,
+    extract::{ConnectInfo, State},
+    http::{header, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post, put},
+    Router,
+};
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
+use tower_http::cors::{Any, CorsLayer};
+use tracing::{error, info, warn};
+use reqwest::Url;
+use rust_embed::RustEmbed;
+
+use wirellm_core::config::Config;
+use wirellm_core::db::{get_wirellm_home, DbManager};
+use wirellm_core::state::{AppState, CircuitState, ProviderState};
+use wirellm_core::telemetry::{TelemetryClient, TelemetryWorker};
+
+use crate::admin;
+use crate::cli::resolve_config_path;
+use crate::mcp;
+use crate::routes;
+use crate::service::write_pid_file;
+
+#[derive(RustEmbed)]
+#[folder = "../../frontend/dist/"]
+pub struct Assets;
+
+pub async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
+    let mut path = uri.path().trim_start_matches('/').to_string();
+    if path.is_empty()
+        || path == "ui"
+        || path == "dashboard"
+        || path == "overview"
+        || path == "providers"
+        || path == "models"
+        || path == "analytics"
+        || path == "logs"
+    {
+        path = "index.html".to_string();
+    }
+    match Assets::get(&path) {
+        Some(content) => {
+            let mime = mime_guess::from_path(&path).first_or_octet_stream();
+            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+        },
+        None => match Assets::get("index.html") {
+            Some(content) => (
+                [(header::CONTENT_TYPE, "text/html")],
+                content.data,
+            ).into_response(),
+            None => (StatusCode::NOT_FOUND, "Not Found").into_response(),
+        },
+    }
+}
+
+#[derive(Clone)]
+pub struct Reloader {
+    pub sender: tokio::sync::watch::Sender<Arc<AppState>>,
+    pub config_path: PathBuf,
+    pub db: Arc<DbManager>,
+}
+
+impl Reloader {
+    pub fn reload(&self) -> Result<(), String> {
+        let config = match self.db.load_config() {
+            Ok(c) if !c.providers.is_empty() => c,
+            _ => Config::load_from_file(&self.config_path)
+                .map_err(|e| format!("Failed to load config file: {}", e))?,
+        };
+        config.validate().map_err(|e| format!("Config validation failed: {}", e))?;
+        let new_state = build_app_state(config)?;
+        self.sender
+            .send(Arc::new(new_state))
+            .map_err(|e| format!("Failed to update watch channel: {}", e))?;
+        info!("OxLLM state reloaded successfully");
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn test_new(sender: tokio::sync::watch::Sender<Arc<AppState>>) -> Self {
+        let p = std::env::temp_dir().join(format!("oxllm_test_{:016x}.db", rand::random::<u64>()));
+        let db = Arc::new(DbManager::new(Some(p)).unwrap());
+        Self {
+            sender,
+            config_path: PathBuf::from("config.toml"),
+            db,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ReloadableState {
+    pub app_state: tokio::sync::watch::Receiver<Arc<AppState>>,
+    pub telemetry: TelemetryClient,
+    pub start_time: Instant,
+    pub reloader: Reloader,
+    pub db: Arc<DbManager>,
+}
+
+#[cfg(test)]
+impl ReloadableState {
+    pub fn test_new(
+        app_state: tokio::sync::watch::Receiver<Arc<AppState>>,
+        telemetry: TelemetryClient,
+        reloader: Reloader,
+    ) -> Self {
+        let db = reloader.db.clone();
+        Self {
+            app_state,
+            telemetry,
+            start_time: Instant::now(),
+            reloader,
+            db,
+        }
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for Arc<DbManager> {
+    fn from_ref(state: &ReloadableState) -> Self {
+        state.db.clone()
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for Arc<AppState> {
+    fn from_ref(state: &ReloadableState) -> Self {
+        state.app_state.borrow().clone()
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for (Arc<AppState>, TelemetryClient) {
+    fn from_ref(state: &ReloadableState) -> Self {
+        (state.app_state.borrow().clone(), state.telemetry.clone())
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for Instant {
+    fn from_ref(state: &ReloadableState) -> Self {
+        state.start_time
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for (Arc<AppState>, Instant) {
+    fn from_ref(state: &ReloadableState) -> Self {
+        (state.app_state.borrow().clone(), state.start_time)
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for Reloader {
+    fn from_ref(state: &ReloadableState) -> Self {
+        state.reloader.clone()
+    }
+}
+
+pub fn build_app_state(config: Config) -> Result<AppState, String> {
+    let mut providers = Vec::new();
+    for p in config.providers {
+        if !p.enabled {
+            continue;
+        }
+        let url = Url::parse(&p.base_url).map_err(|e| {
+            format!(
+                "Invalid base URL '{}' for provider '{}': {}",
+                p.base_url, p.name, e
+            )
+        })?;
+
+        providers.push(ProviderState {
+            name: p.name,
+            base_url: url,
+            api_key: p.api_key,
+            models: p.models,
+            headers: p.headers,
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(AtomicBool::new(false)),
+            manual_disabled: AtomicBool::new(false),
+            requests: AtomicU64::new(0),
+            successes: AtomicU64::new(0),
+            tokens_input: AtomicU64::new(0),
+            tokens_output: AtomicU64::new(0),
+            max_rpm: p.rpm,
+            min_interval_ms: p.min_interval_ms,
+            max_concurrency: p.max_concurrency,
+            in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_request_time: Arc::new(RwLock::new(None)),
+        });
+    }
+
+    let http_client = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    Ok(AppState {
+        providers,
+        virtual_models: config.virtual_models,
+        http_client,
+        upstream_timeout_secs: config.server.upstream_timeout_secs,
+    })
+}
+
+/// Generates a random request ID for response correlation.
+pub fn generate_request_id() -> String {
+    format!("wirellm-{:016x}", rand::random::<u64>())
+}
+
+/// Middleware that adds an `x-request-id` header to every response.
+pub async fn add_request_id(mut req: Request<Body>, next: Next) -> Response {
+    let request_id = generate_request_id();
+    req.extensions_mut().insert(request_id.clone());
+    let mut response = next.run(req).await;
+    if !response.headers().contains_key("x-request-id") {
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_str(&request_id)
+                .expect("generated request ID contains invalid characters"),
+        );
+    }
+    response
+}
+
+pub async fn localhost_only(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let is_local = match addr.ip() {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback() || v6.to_canonical().is_loopback(),
+    };
+    if is_local {
+        next.run(req).await
+    } else {
+        warn!(target: "wirellm::security", "Blocked external attempt to access administrative route from IP: {}", addr.ip());
+        let body = serde_json::json!({
+            "error": {
+                "message": "Access denied: administrative routes are localhost-only",
+                "type": "forbidden",
+                "code": 403
+            }
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let mut response = Response::new(Body::from(bytes));
+        *response.status_mut() = StatusCode::FORBIDDEN;
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        response
+    }
+}
+
+pub async fn health_check() -> impl IntoResponse {
+    (StatusCode::OK, "OK")
+}
+
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            info!("Received SIGINT, shutting down gracefully...");
+        },
+        _ = terminate => {
+            info!("Received SIGTERM, shutting down gracefully...");
+        },
+    }
+
+    // Clean up PID files on shutdown
+    let _ = std::fs::remove_file(get_wirellm_home().join("wirellm.pid"));
+    if let Ok(content) = std::fs::read_to_string("/tmp/wirellm.pid") {
+        if content.trim() == std::process::id().to_string() {
+            let _ = std::fs::remove_file("/tmp/wirellm.pid");
+        }
+    }
+}
+
+pub async fn handle_http_reload(
+    State(reloader): State<Reloader>,
+) -> impl IntoResponse {
+    match reloader.reload() {
+        Ok(()) => {
+            let body = serde_json::json!({
+                "message": "Configuration reloaded successfully"
+            });
+            let bytes = serde_json::to_vec(&body).unwrap();
+            let mut response = Response::new(Body::from(bytes));
+            *response.status_mut() = StatusCode::OK;
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            response
+        },
+        Err(e) => {
+            let body = serde_json::json!({
+                "error": {
+                    "message": format!("Failed to reload config: {}", e),
+                    "type": "invalid_request_error",
+                    "code": 400
+                }
+            });
+            let bytes = serde_json::to_vec(&body).unwrap();
+            let mut response = Response::new(Body::from(bytes));
+            *response.status_mut() = StatusCode::BAD_REQUEST;
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            response
+        },
+    }
+}
+
+pub async fn handle_sighup(reloader: Reloader) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sig = match signal(SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to register SIGHUP handler: {}", e);
+                return;
+            },
+        };
+
+        info!("Registered SIGHUP reload listener");
+        while sig.recv().await.is_some() {
+            info!("SIGHUP received, reloading configuration...");
+            if let Err(e) = reloader.reload() {
+                error!("Failed to reload configuration during SIGHUP: {}", e);
+            }
+        }
+    }
+}
+
+pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = resolve_config_path(config_path);
+
+    // 0. Initialize SQLite database manager (~/.oxllm/oxllm.db)
+    let db = Arc::new(DbManager::new(None::<&str>)?);
+
+    // 1. Load initial config (from DB if populated, otherwise fallback to config file)
+    let mut config = match db.load_config() {
+        Ok(cfg) if !cfg.providers.is_empty() => {
+            info!("Loaded configuration with {} providers from SQLite database", cfg.providers.len());
+            if let Ok(file_cfg) = Config::load_from_file(&config_path) {
+                let mut merged = cfg;
+                merged.server = file_cfg.server;
+                merged
+            } else {
+                cfg
+            }
+        },
+        _ => {
+            let cfg = Config::load_from_file(&config_path)?;
+            cfg.validate()?;
+            cfg
+        },
+    };
+
+    if let Some(p) = cli_port {
+        config.server.port = p;
+    }
+
+    // 2. Build initial AppState
+    let app_state = Arc::new(build_app_state(config.clone())?);
+
+    // 3. Initialize watch channel
+    let (watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
+
+    // 4. Initialize telemetry channel & spawn TelemetryWorker with SQLite integration
+    let (telemetry_tx, telemetry_rx) = tokio::sync::mpsc::channel(1024);
+    let telemetry_client = TelemetryClient::new(telemetry_tx);
+    if let Err(e) = TelemetryWorker::spawn(
+        &config.server.otel_endpoint,
+        telemetry_rx,
+        Some(db.clone()),
+    ) {
+        warn!("Failed to spawn telemetry worker: {}", e);
+    }
+
+    // 5. Initialize hot-reloader & spawn SIGHUP listener
+    let reloader = Reloader {
+        sender: watch_sender.clone(),
+        config_path: config_path.clone(),
+        db: db.clone(),
+    };
+    tokio::spawn(handle_sighup(reloader.clone()));
+
+    // 6. Build Axum Router
+    let start_time = Instant::now();
+    let reloadable_state = ReloadableState {
+        app_state: watch_receiver,
+        telemetry: telemetry_client,
+        start_time,
+        reloader,
+        db,
+    };
+
+    let app = Router::new()
+        // OpenAI compatibility
+        .route("/v1/models", get(routes::list_models))
+        .route("/v1/embeddings", post(routes::create_embeddings))
+        .route(
+            "/v1/chat/completions",
+            post(routes::create_chat_completions),
+        )
+        // Admin REST API
+        .route("/api/status", get(admin::get_api_status))
+        .route(
+            "/api/providers",
+            get(admin::list_providers).post(admin::create_provider),
+        )
+        .route(
+            "/api/providers/{name}",
+            put(admin::update_provider).delete(admin::delete_provider),
+        )
+        .route("/api/providers/{name}/test", post(admin::test_provider))
+        .route("/api/virtual-models", get(admin::list_virtual_models))
+        .route(
+            "/api/virtual-models/{name}",
+            put(admin::upsert_virtual_model).delete(admin::delete_virtual_model),
+        )
+        .route("/api/analytics/daily", get(admin::get_daily_analytics))
+        .route("/api/logs", get(routes::get_logs))
+        // Model Context Protocol (MCP) Server
+        .route("/mcp/sse", get(mcp::mcp_sse_handler))
+        .route("/mcp/messages", post(mcp::mcp_messages_handler))
+        // Legacy admin and status routes
+        .route(
+            "/status",
+            get(routes::get_status).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/logs",
+            get(routes::get_logs).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/health",
+            get(health_check).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/reload",
+            post(handle_http_reload).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/admin/providers/{name}/offline",
+            post(routes::admin_offline).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/admin/providers/{name}/online",
+            post(routes::admin_online).layer(middleware::from_fn(localhost_only)),
+        )
+        .route(
+            "/admin/providers/{name}/reset",
+            post(routes::admin_reset).layer(middleware::from_fn(localhost_only)),
+        )
+        // Embedded SPA Dashboard (React + Vite)
+        .route("/", get(static_handler))
+        .route("/ui", get(static_handler))
+        .route("/dashboard", get(static_handler))
+        .route("/overview", get(static_handler))
+        .route("/providers", get(static_handler))
+        .route("/models", get(static_handler))
+        .route("/analytics", get(static_handler))
+        .route("/assets/{*file}", get(static_handler))
+        .layer(middleware::from_fn(add_request_id))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                    axum::http::Method::DELETE,
+                    axum::http::Method::OPTIONS,
+                ])
+                .allow_headers(Any),
+        )
+        .with_state(reloadable_state);
+
+    // Write PID file
+    if let Err(e) = write_pid_file() {
+        warn!("Failed to write PID file: {}", e);
+    }
+
+    // Start listening
+    let port = config.server.port;
+    let listener = match config.server.bind_family.as_str() {
+        "ipv6" => {
+            let addr = format!("[::]:{}", port);
+            info!("Listening on http://{} (IPv6 only)", addr);
+            tokio::net::TcpListener::bind(&addr).await?
+        },
+        "dual" => {
+            let addr = std::net::SocketAddr::new(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+                port,
+            );
+            let socket = socket2::Socket::new(
+                socket2::Domain::IPV6,
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            )
+            .map_err(|e| format!("Failed to create socket: {}", e))?;
+            socket
+                .set_only_v6(false)
+                .map_err(|e| format!("Failed to set dual-stack: {}", e))?;
+            socket
+                .set_reuse_address(true)
+                .map_err(|e| format!("Failed to set reuse address: {}", e))?;
+            socket
+                .bind(&addr.into())
+                .map_err(|e| format!("Failed to bind: {}", e))?;
+            socket
+                .listen(1024)
+                .map_err(|e| format!("Failed to listen: {}", e))?;
+            socket
+                .set_nonblocking(true)
+                .map_err(|e| format!("Failed to set non-blocking: {}", e))?;
+            info!("Listening on [::]:{} (dual-stack IPv4/IPv6)", port);
+            tokio::net::TcpListener::from_std(socket.into())
+                .map_err(|e| format!("Failed to create tokio listener: {}", e))?
+        },
+        _ => {
+            // Default: IPv4
+            let addr = format!("{}:{}", config.server.host, port);
+            info!("Listening on http://{} (IPv4)", addr);
+            tokio::net::TcpListener::bind(&addr).await?
+        },
+    };
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
+
+    Ok(())
+}
