@@ -107,3 +107,15 @@ export interface LogsResponse {
   count: number;
   entries: LogEntry[];
 }
+
+export interface LiveStreamEvent {
+  request_id: string;
+  virtual_model?: string;
+  provider: string;
+  model: string;
+  delta: string;
+  is_done: boolean;
+  error?: string;
+  tokens_so_far: number;
+  elapsed_ms: number;
+}

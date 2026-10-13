@@ -16,7 +16,7 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
 
     const variantClasses: Record<BadgeVariant, string> = {
       emerald: 'bg-emerald-950/60 border-emerald-800/60 text-emerald-400',
-      cyan: 'bg-cyan-950/60 border-cyan-800/60 text-cyan-300',
+      cyan: 'bg-[#00222a] border-[#00f0ff]/50 text-[#00f0ff] shadow-[0_0_8px_rgba(0,240,255,0.25)]',
       amber: 'bg-amber-950/60 border-amber-800/60 text-amber-400',
       rose: 'bg-rose-950/60 border-rose-800/60 text-rose-400',
       purple: 'bg-purple-950/60 border-purple-800/60 text-purple-300',

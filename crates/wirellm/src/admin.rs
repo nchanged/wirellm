@@ -108,10 +108,9 @@ pub struct TestConnectionResponse {
     pub error: Option<String>,
 }
 
-/// GET /api/status - Comprehensive status overview with DB and runtime metrics
-pub async fn get_api_status(
-    State(reloadable): State<ReloadableState>,
-) -> Result<Json<ApiStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
+pub async fn build_status_response(
+    reloadable: &ReloadableState,
+) -> Result<ApiStatusResponse, String> {
     let app_state = reloadable.app_state.borrow().clone();
     let uptime_secs = reloadable.start_time.elapsed().as_secs();
     let now = Instant::now();
@@ -120,7 +119,7 @@ pub async fn get_api_status(
     let db_summaries = reloadable
         .db
         .get_provider_summaries()
-        .map_err(|e| internal_error(format!("Database error: {}", e)))?;
+        .map_err(|e| format!("Database error: {}", e))?;
 
     let mut provider_details = Vec::new();
     let mut total_requests = 0u64;
@@ -260,14 +259,24 @@ pub async fn get_api_status(
         .get_virtual_models_detail()
         .unwrap_or_default();
 
-    Ok(Json(ApiStatusResponse {
+    Ok(ApiStatusResponse {
         uptime_secs,
         total_requests,
         total_input_tokens,
         total_output_tokens,
         providers: provider_details,
         virtual_models,
-    }))
+    })
+}
+
+/// GET /api/status - Comprehensive status overview with DB and runtime metrics
+pub async fn get_api_status(
+    State(reloadable): State<ReloadableState>,
+) -> Result<Json<ApiStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
+    build_status_response(&reloadable)
+        .await
+        .map(Json)
+        .map_err(|e| internal_error(e))
 }
 
 /// GET /api/providers - List all providers from DB

@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{ConnectInfo, State},
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, ConnectInfo, State},
     http::{header, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -96,6 +96,21 @@ impl Reloader {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LiveStreamEvent {
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub virtual_model: Option<String>,
+    pub provider: String,
+    pub model: String,
+    pub delta: String,
+    pub is_done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub tokens_so_far: usize,
+    pub elapsed_ms: u64,
+}
+
 #[derive(Clone)]
 pub struct ReloadableState {
     pub app_state: tokio::sync::watch::Receiver<Arc<AppState>>,
@@ -103,6 +118,7 @@ pub struct ReloadableState {
     pub start_time: Instant,
     pub reloader: Reloader,
     pub db: Arc<DbManager>,
+    pub live_tx: tokio::sync::broadcast::Sender<LiveStreamEvent>,
 }
 
 #[cfg(test)]
@@ -113,12 +129,14 @@ impl ReloadableState {
         reloader: Reloader,
     ) -> Self {
         let db = reloader.db.clone();
+        let (live_tx, _) = tokio::sync::broadcast::channel(16);
         Self {
             app_state,
             telemetry,
             start_time: Instant::now(),
             reloader,
             db,
+            live_tx,
         }
     }
 }
@@ -138,6 +156,28 @@ impl axum::extract::FromRef<ReloadableState> for Arc<AppState> {
 impl axum::extract::FromRef<ReloadableState> for (Arc<AppState>, TelemetryClient) {
     fn from_ref(state: &ReloadableState) -> Self {
         (state.app_state.borrow().clone(), state.telemetry.clone())
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState> for tokio::sync::broadcast::Sender<LiveStreamEvent> {
+    fn from_ref(state: &ReloadableState) -> Self {
+        state.live_tx.clone()
+    }
+}
+
+impl axum::extract::FromRef<ReloadableState>
+    for (
+        Arc<AppState>,
+        TelemetryClient,
+        tokio::sync::broadcast::Sender<LiveStreamEvent>,
+    )
+{
+    fn from_ref(state: &ReloadableState) -> Self {
+        (
+            state.app_state.borrow().clone(),
+            state.telemetry.clone(),
+            state.live_tx.clone(),
+        )
     }
 }
 
@@ -360,10 +400,96 @@ pub async fn handle_sighup(reloader: Reloader) {
     }
 }
 
+pub async fn ws_live_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<ReloadableState>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_live_socket(socket, state))
+}
+
+async fn handle_live_socket(
+    mut socket: WebSocket,
+    state: ReloadableState,
+) {
+    let mut rx = state.live_tx.subscribe();
+    let mut ticker = tokio::time::interval(Duration::from_millis(1000));
+    // First tick fires immediately, let's consume it
+    ticker.tick().await;
+
+    // Send initial status immediately on connection
+    if let Ok(initial_status) = crate::admin::build_status_response(&state).await {
+        let msg = serde_json::json!({
+            "type": "status",
+            "data": initial_status,
+        });
+        if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+            return;
+        }
+    }
+
+    loop {
+        tokio::select! {
+            // Live token stream broadcast
+            event_res = rx.recv() => {
+                match event_res {
+                    Ok(event) => {
+                        let msg = serde_json::json!({
+                            "type": "token",
+                            "data": event,
+                        });
+                        if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                            break;
+                        }
+                    },
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+
+            // Periodic 1-second real-time telemetry/status push
+            _ = ticker.tick() => {
+                if let Ok(current_status) = crate::admin::build_status_response(&state).await {
+                    let msg = serde_json::json!({
+                        "type": "status",
+                        "data": current_status,
+                    });
+                    if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                        break;
+                    }
+                }
+            }
+
+            // Incoming client messages (ping, refresh requests)
+            msg_res = socket.recv() => {
+                match msg_res {
+                    Some(Ok(Message::Text(text))) => {
+                        if text.contains("refresh") {
+                            if let Ok(current_status) = crate::admin::build_status_response(&state).await {
+                                let msg = serde_json::json!({
+                                    "type": "status",
+                                    "data": current_status,
+                                });
+                                let _ = socket.send(Message::Text(msg.to_string().into())).await;
+                            }
+                        }
+                    },
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    },
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<(), Box<dyn std::error::Error>> {
     let config_path = resolve_config_path(config_path);
 
-    // 0. Initialize SQLite database manager (~/.oxllm/oxllm.db)
+    // 0. Initialize SQLite database manager (~/.wirellm/wirellm.db)
     let db = Arc::new(DbManager::new(None::<&str>)?);
 
     // 1. Load initial config (from DB if populated, otherwise fallback to config file)
@@ -416,12 +542,14 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
 
     // 6. Build Axum Router
     let start_time = Instant::now();
+    let (live_tx, _) = tokio::sync::broadcast::channel(256);
     let reloadable_state = ReloadableState {
         app_state: watch_receiver,
         telemetry: telemetry_client,
         start_time,
         reloader,
         db,
+        live_tx,
     };
 
     let app = Router::new()
@@ -450,6 +578,7 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         )
         .route("/api/analytics/daily", get(admin::get_daily_analytics))
         .route("/api/logs", get(routes::get_logs))
+        .route("/ws/live", get(ws_live_handler))
         // Model Context Protocol (MCP) Server
         .route("/mcp/sse", get(mcp::mcp_sse_handler))
         .route("/mcp/messages", post(mcp::mcp_messages_handler))

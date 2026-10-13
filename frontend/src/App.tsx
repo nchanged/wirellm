@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { ApiStatusResponse } from './types';
+import React, { useEffect, useRef, useState } from 'react';
+import { ApiStatusResponse, LiveStreamEvent } from './types';
 import { fetchStatus } from './api';
 import { Overview } from './components/Overview';
 import { ProvidersStudio } from './components/ProvidersStudio';
@@ -25,6 +25,9 @@ export const App: React.FC = () => {
   const [status, setStatus] = useState<ApiStatusResponse | null>(null);
   const [isConnected, setIsConnected] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [latestLiveEvent, setLatestLiveEvent] = useState<LiveStreamEvent | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   const loadStatus = async () => {
     try {
@@ -40,11 +43,87 @@ export const App: React.FC = () => {
     }
   };
 
+  // Setup WebSocket connection to /ws/live
   useEffect(() => {
+    let unmounted = false;
+    let reconnectTimeout: any = null;
+
+    const connectWs = () => {
+      if (unmounted) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host || 'localhost:8765';
+      const wsUrl = `${protocol}//${host}/ws/live`;
+
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (unmounted) return;
+          setWsConnected(true);
+          setIsConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          if (unmounted) return;
+          try {
+            const parsed = JSON.parse(event.data);
+            if (parsed.type === 'status' && parsed.data) {
+              setStatus(parsed.data);
+              setIsConnected(true);
+            } else if (parsed.type === 'token' && parsed.data) {
+              setLatestLiveEvent(parsed.data);
+            }
+          } catch {
+            // Ignore non-json frames
+          }
+        };
+
+        ws.onclose = () => {
+          if (unmounted) return;
+          setWsConnected(false);
+          wsRef.current = null;
+          // Reconnect with 2s backoff
+          reconnectTimeout = setTimeout(connectWs, 2000);
+        };
+
+        ws.onerror = () => {
+          if (unmounted) return;
+          setWsConnected(false);
+        };
+      } catch (err) {
+        setWsConnected(false);
+        reconnectTimeout = setTimeout(connectWs, 3000);
+      }
+    };
+
+    // Initial HTTP fetch to ensure instant display even before WS handshake
     loadStatus();
-    const interval = setInterval(loadStatus, 4000);
-    return () => clearInterval(interval);
+    connectWs();
+
+    // Fallback polling only when WebSocket is NOT connected
+    const fallbackInterval = setInterval(() => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        loadStatus();
+      }
+    }, 4000);
+
+    return () => {
+      unmounted = true;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      clearInterval(fallbackInterval);
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
   }, []);
+
+  const handleManualRefresh = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ action: 'refresh' }));
+    }
+    loadStatus();
+  };
 
   const navItems = [
     { id: 'overview' as Tab, label: 'Routing Matrix', short: 'Router', icon: Workflow },
@@ -55,33 +134,33 @@ export const App: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#030508] text-slate-100 flex flex-col font-sans selection:bg-cyan-500/20 selection:text-cyan-300">
+    <div className="min-h-screen bg-[#020408] text-slate-100 flex flex-col font-sans selection:bg-cyan-500/20 selection:text-cyan-300">
       {/* Top Cybernetic Header Navbar - Pixel-aligned single-row layout */}
-      <header className="border-b border-white/[0.08] bg-[#05080f]/95 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-white/[0.08] bg-[#03060c]/95 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto h-14 px-4 sm:px-6 flex items-center justify-between gap-4">
           
           {/* Brand Logo */}
           <div className="flex items-center gap-3 shrink-0">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/20 to-indigo-500/10 border border-cyan-500/30 flex items-center justify-center shadow-[0_0_12px_rgba(6,182,212,0.25)]">
-              <Cpu className="w-4 h-4 text-cyan-400" />
+            <div className="w-8 h-8 rounded-lg bg-[#001e28] border border-[#00f0ff]/50 flex items-center justify-center shadow-[0_0_15px_rgba(0,240,255,0.4)]">
+              <Cpu className="w-4 h-4 text-[#00f0ff]" />
             </div>
 
             <div className="flex items-center gap-2">
               <span className="text-base font-bold text-white tracking-tight font-mono">
-                WIRE<span className="text-cyan-400 font-extrabold">LLM</span>
+                WIRE<span className="text-[#00f0ff] wire-text-glow font-extrabold">LLM</span>
               </span>
               <Badge variant="cyan" size="xs">
                 v0.2.1
               </Badge>
-              <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-mono text-slate-500 ml-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                &lt;2ms latency
+              <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-mono text-slate-400 ml-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] animate-pulse shadow-[0_0_8px_rgba(0,240,255,0.8)]" />
+                &lt;2ms wire latency
               </span>
             </div>
           </div>
 
           {/* Navigation Tabs */}
-          <nav className="flex items-center gap-1 bg-[#030508] p-1 rounded-xl border border-white/[0.08]">
+          <nav className="flex items-center gap-1 bg-[#010307] p-1 rounded-xl border border-white/[0.08]">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
@@ -92,11 +171,11 @@ export const App: React.FC = () => {
                   className={cn(
                     'h-8 px-3 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all select-none',
                     isActive
-                      ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 shadow-[0_0_12px_-2px_rgba(6,182,212,0.3)]'
+                      ? 'bg-[#00222a] text-[#00f0ff] border border-[#00f0ff]/50 shadow-[0_0_15px_-2px_rgba(0,240,255,0.4)] font-semibold'
                       : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] border border-transparent'
                   )}
                 >
-                  <Icon className={cn('w-3.5 h-3.5', isActive ? 'text-cyan-400' : 'text-slate-500')} />
+                  <Icon className={cn('w-3.5 h-3.5', isActive ? 'text-[#00f0ff]' : 'text-slate-500')} />
                   <span className="hidden md:inline">{item.label}</span>
                   <span className="md:hidden">{item.short}</span>
                 </button>
@@ -106,27 +185,29 @@ export const App: React.FC = () => {
 
           {/* Right Status Hub */}
           <div className="flex items-center gap-2 shrink-0">
-            {/* Live Gateway Port Badge */}
-            <div className="hidden sm:flex items-center gap-2 bg-[#030508] h-8 px-2.5 rounded-lg border border-white/[0.08] text-xs font-mono">
+            {/* Live WebSocket Status Badge */}
+            <div className="flex items-center gap-2 bg-[#010307] h-8 px-2.5 rounded-lg border border-white/[0.08] text-xs font-mono">
               <span
                 className={cn(
                   'w-2 h-2 rounded-full inline-block',
-                  isConnected
-                    ? 'bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)] animate-pulse'
+                  wsConnected
+                    ? 'bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,1)] animate-pulse'
+                    : isConnected
+                    ? 'bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.8)]'
                     : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]'
                 )}
               />
               <span className="text-slate-300 text-[11px] tracking-tight">
-                {isConnected ? `PORT :${window.location.port || '8765'}` : 'OFFLINE'}
+                {wsConnected ? 'WS LIVE' : isConnected ? `PORT :${window.location.port || '8765'}` : 'OFFLINE'}
               </span>
             </div>
 
             {/* MCP SSE Live Indicator */}
             <div
               title="Native Model Context Protocol Server active at /mcp/sse"
-              className="hidden lg:flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-mono text-indigo-300 bg-indigo-950/40 border border-indigo-800/50"
+              className="hidden lg:flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-mono text-cyan-300 bg-[#001820] border border-cyan-500/40"
             >
-              <Radio className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+              <Radio className="w-3.5 h-3.5 text-[#00f0ff] animate-pulse" />
               <span>MCP SSE</span>
             </div>
 
@@ -134,12 +215,12 @@ export const App: React.FC = () => {
             <Button
               variant="secondary"
               size="icon"
-              onClick={loadStatus}
+              onClick={handleManualRefresh}
               title="Refresh Telemetry State"
               className="h-8 w-8"
             >
               <RefreshCw
-                className={cn('w-3.5 h-3.5 text-slate-400', isRefreshing && 'animate-spin text-cyan-400')}
+                className={cn('w-3.5 h-3.5 text-slate-400', isRefreshing && 'animate-spin text-[#00f0ff]')}
               />
             </Button>
           </div>
@@ -148,9 +229,15 @@ export const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
-        {activeTab === 'overview' && <Overview status={status} onRefresh={loadStatus} />}
-        {activeTab === 'providers' && <ProvidersStudio status={status} onRefresh={loadStatus} />}
-        {activeTab === 'models' && <VirtualModelsStudio status={status} onRefresh={loadStatus} />}
+        {activeTab === 'overview' && (
+          <Overview
+            status={status}
+            onRefresh={handleManualRefresh}
+            liveEvent={latestLiveEvent}
+          />
+        )}
+        {activeTab === 'providers' && <ProvidersStudio status={status} onRefresh={handleManualRefresh} />}
+        {activeTab === 'models' && <VirtualModelsStudio status={status} onRefresh={handleManualRefresh} />}
         {activeTab === 'analytics' && <AnalyticsView />}
         {activeTab === 'logs' && <LogsView />}
       </main>
