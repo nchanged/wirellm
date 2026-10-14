@@ -48,14 +48,29 @@ pub async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
     {
         path = "index.html".to_string();
     }
+    let is_html = path == "index.html" || path.ends_with(".html");
     match Assets::get(&path) {
         Some(content) => {
             let mime = mime_guess::from_path(&path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            let cache_control = if is_html {
+                "no-cache, no-store, must-revalidate"
+            } else {
+                "public, max-age=31536000, immutable"
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_ref()),
+                    (header::CACHE_CONTROL, cache_control),
+                ],
+                content.data,
+            ).into_response()
         },
         None => match Assets::get("index.html") {
             Some(content) => (
-                [(header::CONTENT_TYPE, "text/html")],
+                [
+                    (header::CONTENT_TYPE, "text/html"),
+                    (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
+                ],
                 content.data,
             ).into_response(),
             None => (StatusCode::NOT_FOUND, "Not Found").into_response(),
