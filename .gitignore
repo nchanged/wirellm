@@ -28,6 +28,7 @@ node_modules/
 *.pdb
 **/mutants.out*/
 .antigravitycli/
+.opencode/
 config-local-test.toml
 .DS_Store
 Thumbs.db

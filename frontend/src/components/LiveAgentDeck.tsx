@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Terminal, CheckCircle2, AlertOctagon, X, Zap } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Terminal, CheckCircle2, AlertOctagon, X, Zap, Wrench } from 'lucide-react';
 import { Badge, Button, cn } from '../ui';
 
 export interface ActiveStreamState {
@@ -24,7 +24,7 @@ interface LiveAgentDeckProps {
 
 function formatTimeAgo(timestampMs: number, now: number): string {
   const diffSec = Math.max(0, Math.floor((now - timestampMs) / 1000));
-  if (diffSec < 4) return 'just now';
+  if (diffSec < 3) return 'just now';
   if (diffSec < 60) return `${diffSec}s ago`;
   const diffMin = Math.floor(diffSec / 60);
   if (diffMin < 60) return `${diffMin}m ago`;
@@ -32,147 +32,251 @@ function formatTimeAgo(timestampMs: number, now: number): string {
   return `${diffHr}h ago`;
 }
 
-const LiveStreamCard: React.FC<{
+// Color decay calculator: bright cyan -> sky blue -> slate gray -> dark gray
+function getDecayStyle(isDone: boolean, ageMs: number) {
+  if (!isDone) {
+    return {
+      glow: '#00f0ff',
+      border: 'rgba(0, 240, 255, 0.45)',
+      badge: 'bg-[#00222b] text-[#00f0ff] border-[#00f0ff]/50 shadow-[0_0_8px_rgba(0,240,255,0.3)]',
+      providerText: 'text-white',
+      modelText: 'text-cyan-200',
+      speedText: 'text-[#00f0ff]',
+      promptColor: 'text-[#00f0ff]',
+      tickerText: 'text-cyan-50',
+      activeGlow: 'shadow-[0_0_15px_rgba(0,240,255,0.12)]',
+    };
+  }
+
+  const sec = ageMs / 1000;
+  if (sec < 20) {
+    // Fresh complete (< 20s)
+    return {
+      glow: '#00d5e8',
+      border: 'rgba(0, 213, 232, 0.25)',
+      badge: 'bg-[#011822] text-cyan-300 border-cyan-500/30',
+      providerText: 'text-slate-100',
+      modelText: 'text-slate-300',
+      speedText: 'text-cyan-300',
+      promptColor: 'text-cyan-400',
+      tickerText: 'text-slate-200',
+      activeGlow: '',
+    };
+  }
+  if (sec < 60) {
+    // 20s - 60s: Sky blue transition
+    return {
+      glow: '#38bdf8',
+      border: 'rgba(56, 189, 248, 0.2)',
+      badge: 'bg-sky-950/40 text-sky-400 border-sky-600/30',
+      providerText: 'text-slate-200',
+      modelText: 'text-slate-400',
+      speedText: 'text-sky-400',
+      promptColor: 'text-sky-400',
+      tickerText: 'text-slate-300',
+      activeGlow: '',
+    };
+  }
+  if (sec < 150) {
+    // 1m - 2.5m: Slate gray
+    return {
+      glow: '#64748b',
+      border: 'rgba(100, 116, 139, 0.15)',
+      badge: 'bg-slate-900/60 text-slate-400 border-slate-700/30',
+      providerText: 'text-slate-300',
+      modelText: 'text-slate-500',
+      speedText: 'text-slate-400',
+      promptColor: 'text-slate-500',
+      tickerText: 'text-slate-400',
+      activeGlow: '',
+    };
+  }
+  // > 2.5m: Dark muted gray
+  return {
+    glow: '#334155',
+    border: 'rgba(51, 65, 85, 0.12)',
+    badge: 'bg-[#060a12] text-slate-500 border-slate-800',
+    providerText: 'text-slate-400',
+    modelText: 'text-slate-600',
+    speedText: 'text-slate-500',
+    promptColor: 'text-slate-600',
+    tickerText: 'text-slate-500',
+    activeGlow: '',
+  };
+}
+
+// Extract last non-empty line / tool call, capped at ~180 chars
+function getTailSnippet(text: string): { snippet: string; isTool: boolean; toolName?: string } {
+  if (!text) return { snippet: 'Listening for upstream tokens...', isTool: false };
+  const lines = text.trimEnd().split('\n').filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return { snippet: 'Streaming...', isTool: false };
+
+  const lastLine = lines[lines.length - 1].trim();
+  if (lastLine.startsWith('🔧 call:')) {
+    const match = lastLine.match(/🔧\s*call:\s*([a-zA-Z0-9_-]+)\((.*)\)/);
+    if (match) {
+      const argsPreview = match[2].length > 90 ? match[2].slice(0, 90) + '…' : match[2];
+      return {
+        snippet: `${match[1]}(${argsPreview})`,
+        isTool: true,
+        toolName: match[1],
+      };
+    }
+    return { snippet: lastLine.slice(0, 160), isTool: true };
+  }
+
+  let clean = lastLine;
+  if (clean.length > 170) {
+    clean = '…' + clean.slice(-165);
+  }
+  return { snippet: clean, isTool: false };
+}
+
+const LiveStreamTile: React.FC<{
   stream: ActiveStreamState;
   now: number;
   onDismiss: (requestId: string) => void;
 }> = ({ stream, now, onDismiss }) => {
-  const terminalBoxRef = useRef<HTMLDivElement | null>(null);
+  const ageMs = Math.max(0, now - stream.lastUpdated);
+  const style = getDecayStyle(stream.isDone, ageMs);
 
-  // Pure internal scroll: NEVER scroll the entire browser window
-  useEffect(() => {
-    if (terminalBoxRef.current) {
-      terminalBoxRef.current.scrollTop = terminalBoxRef.current.scrollHeight;
-    }
-  }, [stream.text]);
+  // Speed-linked border rotation speed: 100 tok/s -> 0.7s spin, 10 tok/s -> 3.5s spin
+  const speed = stream.speedTokPerSec || 0;
+  const spinDuration = speed > 0 ? Math.max(0.6, Math.min(3.8, 55 / speed)) : 2.5;
 
-  const shortRequestId = stream.requestId.length > 12
-    ? stream.requestId.slice(-8)
-    : stream.requestId;
+  const { snippet, isTool } = getTailSnippet(stream.text);
 
   return (
     <div
       className={cn(
-        'rounded-xl border transition-all duration-300 p-3.5 flex flex-col justify-between space-y-2.5 font-mono',
-        stream.isDone
-          ? 'bg-[#02050c]/90 border-white/[0.08] shadow-sm'
-          : 'bg-[#020814] border-[#00f0ff]/50 shadow-[0_0_20px_rgba(0,240,255,0.12)]'
+        'relative rounded-xl p-[1px] overflow-hidden transition-all duration-500 font-mono text-xs',
+        style.activeGlow
       )}
+      style={{
+        boxShadow: !stream.isDone ? `0 0 16px ${style.glow}20` : undefined,
+      }}
     >
-      {/* Header bar */}
-      <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] pb-2">
-        <div className="flex items-center gap-2 min-w-0">
-          {stream.virtualModel ? (
-            <span className="px-2 py-0.5 rounded text-[11px] font-bold font-mono bg-[#001c26] text-[#00f0ff] border border-[#00f0ff]/50 shadow-[0_0_8px_rgba(0,240,255,0.3)] shrink-0">
-              {stream.virtualModel}
-            </span>
-          ) : (
-            <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800/80 text-slate-300 border border-slate-700 shrink-0">
-              direct
-            </span>
-          )}
+      {/* ── Spinning Border Beam (Speed-linked animation) ──────── */}
+      {!stream.isDone && (
+        <div
+          className="absolute inset-[-150%] pointer-events-none"
+          style={{
+            background: `conic-gradient(from 0deg, transparent 0deg, ${style.glow} 40deg, transparent 80deg, transparent 360deg)`,
+            animation: `border-spin ${spinDuration.toFixed(2)}s linear infinite`,
+          }}
+        />
+      )}
 
-          <div className="flex items-center gap-1.5 text-xs truncate">
-            <span className="text-white font-semibold truncate">{stream.provider}</span>
-            <span className="text-slate-600">:</span>
-            <span className="text-slate-300 truncate" title={stream.model}>
-              {stream.model}
-            </span>
-          </div>
-        </div>
-
-        {/* Right action & badges */}
-        <div className="flex items-center gap-2 shrink-0">
-          {stream.isDone ? (
-            stream.error ? (
-              <Badge variant="rose">
-                <AlertOctagon className="w-3 h-3 text-rose-400" />
-                FAILED
-              </Badge>
-            ) : (
-              <Badge variant="neutral">
-                <CheckCircle2 className="w-3 h-3 text-slate-400" />
-                DONE
-              </Badge>
-            )
-          ) : (
-            <Badge variant="cyan" className="animate-pulse">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] animate-ping" />
-              STREAMING
-            </Badge>
-          )}
-
-          <button
-            onClick={() => onDismiss(stream.requestId)}
-            className="p-1 rounded text-slate-500 hover:text-white hover:bg-white/[0.06] transition-colors"
-            title="Dismiss stream"
-          >
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      </div>
-
-      {/* Telemetry Stats Bar: Displays speed, tokens, and stable relative update time */}
-      <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
-        <div className="flex items-center gap-3">
-          {stream.speedTokPerSec > 0 && (
-            <span className="flex items-center gap-1 text-[#00f0ff] font-semibold">
-              <Zap className="w-3 h-3" />
-              {stream.speedTokPerSec} <span className="text-[9px] font-normal text-slate-400">tok/s</span>
-            </span>
-          )}
-          <span className="text-amber-400 font-medium">
-            {stream.tokensSoFar} <span className="text-[9px] font-normal text-slate-400">tok</span>
-          </span>
-          <span className="text-slate-400">
-            {stream.isDone ? (
-              <span className="text-slate-400">
-                Fired <span className="text-slate-300 font-medium">{formatTimeAgo(stream.lastUpdated, now)}</span>
+      {/* ── Inner Compact Box (~80px total height) ─────────────── */}
+      <div
+        className="relative rounded-[11px] bg-[#02050c] p-2.5 flex flex-col justify-between h-[82px] transition-colors"
+        style={{
+          border: stream.isDone ? `1px solid ${style.border}` : '1px solid transparent',
+        }}
+      >
+        {/* Row 1: Agent Identity & Metrics Header */}
+        <div className="flex items-center justify-between gap-2">
+          {/* Identity */}
+          <div className="flex items-center gap-1.5 min-w-0">
+            {stream.virtualModel ? (
+              <span
+                className={cn(
+                  'px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 transition-colors',
+                  style.badge
+                )}
+              >
+                {stream.virtualModel}
               </span>
             ) : (
-              <span className="text-cyan-300 font-medium">
-                {(stream.elapsedMs / 1000).toFixed(1)}s <span className="text-[10px] text-slate-400 font-normal">(live)</span>
+              <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800/80 text-slate-400 border border-slate-700/50 shrink-0">
+                direct
               </span>
             )}
-          </span>
-        </div>
 
-        <div className="text-[10px] text-slate-500 font-mono" title={`Request ID: ${stream.requestId}`}>
-          #{shortRequestId}
-        </div>
-      </div>
-
-      {/* Live Stream Terminal Viewport - Internal scroll only & Tool Call Highlighting */}
-      <div
-        ref={terminalBoxRef}
-        className="relative rounded-lg bg-[#010309] border border-white/[0.06] p-3 max-h-48 min-h-[64px] overflow-y-auto text-xs font-mono leading-relaxed whitespace-pre-wrap break-words selection:bg-cyan-500/30 selection:text-white"
-      >
-        {stream.text ? (
-          <div className="space-y-0.5">
-            {stream.text.split('\n').map((line, idx, arr) => {
-              const isToolCall = line.trim().startsWith('🔧 call:');
-              return (
-                <div
-                  key={idx}
-                  className={cn(
-                    isToolCall
-                      ? 'text-amber-300 font-semibold bg-amber-500/10 px-2 py-1 rounded border border-amber-500/25 my-1 shadow-sm'
-                      : 'text-cyan-100/90'
-                  )}
-                >
-                  {line}
-                  {idx === arr.length - 1 && !stream.isDone && (
-                    <span className="inline-block w-1.5 h-3.5 bg-[#00f0ff] ml-1 animate-pulse align-middle shadow-[0_0_8px_#00f0ff]" />
-                  )}
-                </div>
-              );
-            })}
+            <div className="flex items-center gap-1 text-[11px] truncate">
+              <span className={cn('font-semibold truncate transition-colors', style.providerText)}>
+                {stream.provider}
+              </span>
+              <span className="text-slate-600">:</span>
+              <span className={cn('truncate text-[10px] transition-colors', style.modelText)} title={stream.model}>
+                {stream.model}
+              </span>
+            </div>
           </div>
-        ) : (
-          <span className="text-slate-500 italic text-[11px]">
-            {stream.isDone ? 'Empty response payload' : 'Intercepting upstream token stream...'}
-          </span>
-        )}
+
+          {/* Right Metrics: tok/s, tokens, status, dismiss */}
+          <div className="flex items-center gap-2 shrink-0 text-[10px]">
+            {/* Speed indicator */}
+            {!stream.isDone ? (
+              <span className="flex items-center gap-0.5 font-bold text-[#00f0ff]">
+                <Zap className="w-2.5 h-2.5 fill-current animate-bounce" />
+                {stream.speedTokPerSec}
+                <span className="text-[9px] font-normal text-cyan-400/80">t/s</span>
+              </span>
+            ) : stream.speedTokPerSec > 0 ? (
+              <span className={cn('flex items-center gap-0.5 font-medium', style.speedText)}>
+                <Zap className="w-2.5 h-2.5" />
+                {stream.speedTokPerSec}
+                <span className="text-[9px] font-normal text-slate-500">t/s</span>
+              </span>
+            ) : null}
+
+            {/* Token count */}
+            <span className="text-amber-400/90 font-medium">
+              {stream.tokensSoFar} <span className="text-[9px] font-normal text-slate-500">tok</span>
+            </span>
+
+            {/* Status / Relative age */}
+            {stream.isDone ? (
+              stream.error ? (
+                <Badge variant="rose" className="text-[9px] px-1 py-0 h-4">
+                  <AlertOctagon className="w-2.5 h-2.5" />
+                  ERR
+                </Badge>
+              ) : (
+                <span className="text-slate-500 text-[10px]">
+                  {formatTimeAgo(stream.lastUpdated, now)}
+                </span>
+              )
+            ) : (
+              <span className="flex items-center gap-1 text-[#00f0ff] font-semibold text-[10px] animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] animate-ping" />
+                LIVE
+              </span>
+            )}
+
+            {/* Dismiss X */}
+            <button
+              onClick={() => onDismiss(stream.requestId)}
+              className="p-0.5 rounded text-slate-500 hover:text-white hover:bg-white/[0.08] transition-colors"
+              title="Dismiss agent tile"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+
+        {/* Row 2: Compact Live Ticker (Single line snippet / tool call) */}
+        <div className="rounded-md bg-[#010308] border border-white/[0.04] px-2 py-1 flex items-center gap-1.5 overflow-hidden h-[28px]">
+          {isTool ? (
+            <div className="flex items-center gap-1 min-w-0 text-amber-300 font-medium text-[11px] truncate">
+              <Wrench className="w-3 h-3 text-amber-400 shrink-0" />
+              <span className="truncate">{snippet}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 min-w-0 w-full text-[11px]">
+              <span className={cn('font-bold shrink-0 transition-colors', style.promptColor)}>
+                &gt;
+              </span>
+              <span className={cn('truncate font-mono transition-colors', style.tickerText)}>
+                {snippet}
+              </span>
+              {!stream.isDone && (
+                <span className="inline-block w-1.5 h-3 bg-[#00f0ff] ml-0.5 shrink-0 animate-pulse" />
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -184,9 +288,9 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
   onClearCompleted,
 }) => {
   const [now, setNow] = useState<number>(Date.now());
-  const FIVE_MINUTES_MS = 5 * 60 * 1000;
+  const DECAY_WINDOW_MS = 4 * 60 * 1000; // Auto-prune cards older than 4 minutes
 
-  // Update relative timestamps smoothly every second
+  // Smooth tick for relative times and decay colors
   useEffect(() => {
     const timer = setInterval(() => {
       setNow(Date.now());
@@ -194,14 +298,14 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // 1. Filter to active streams or completed streams within the past 5 minutes
-  const recentStreams = streams.filter(
-    (s) => !s.isDone || (now - s.lastUpdated <= FIVE_MINUTES_MS)
+  // 1. Filter: Retain active streams or completed streams within the 4-minute decay window
+  const activeOrRecent = streams.filter(
+    (s) => !s.isDone || now - s.lastUpdated <= DECAY_WINDOW_MS
   );
 
-  // 2. Group by unique Agent / Target to show the latest stream for each agent fired in past 5m
+  // 2. Group by unique agent identity to show the latest state per agent
   const agentMap = new Map<string, ActiveStreamState>();
-  for (const s of recentStreams) {
+  for (const s of activeOrRecent) {
     const agentKey = s.virtualModel
       ? `${s.virtualModel}:${s.provider}`
       : `${s.provider}:${s.model}`;
@@ -213,14 +317,14 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
       if (!s.isDone && existing.isDone) {
         agentMap.set(agentKey, s);
       } else if (s.isDone && !existing.isDone) {
-        // Keep active stream
+        // keep active
       } else if (s.lastUpdated > existing.lastUpdated) {
         agentMap.set(agentKey, s);
       }
     }
   }
 
-  // 3. Sort: Active streaming cards first, then by lastUpdated descending (most recently fired first)
+  // 3. Sort: Live active streams first, then most recently updated first
   const displayedAgents = Array.from(agentMap.values()).sort((a, b) => {
     if (!a.isDone && b.isDone) return -1;
     if (a.isDone && !b.isDone) return 1;
@@ -231,46 +335,36 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
   const completedCount = displayedAgents.filter((s) => s.isDone).length;
 
   return (
-    <div className="space-y-3 rounded-2xl border border-[#00f0ff]/25 bg-[#020612]/80 backdrop-blur p-4 shadow-[0_0_30px_rgba(0,240,255,0.06)] font-mono transition-all">
-      {/* Deck Header Bar */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
-        <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
-            <Terminal className="w-4 h-4" />
+    <div className="space-y-2.5 rounded-xl border border-white/[0.08] bg-[#02050e]/75 backdrop-blur p-3 font-mono shadow-[0_0_20px_rgba(0,0,0,0.5)]">
+      {/* Compact Header */}
+      <div className="flex items-center justify-between border-b border-white/[0.05] pb-2">
+        <div className="flex items-center gap-2">
+          <div className="p-1 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+            <Terminal className="w-3.5 h-3.5" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-bold text-white tracking-wider font-mono">
-                LIVE AGENT DECK
-              </h3>
-              {activeCount > 0 && (
-                <Badge variant="cyan" className="animate-pulse">
-                  {activeCount} ACTIVE STREAM{activeCount > 1 ? 'S' : ''}
-                </Badge>
-              )}
-              {displayedAgents.length > 0 ? (
-                <Badge variant="neutral">
-                  {displayedAgents.length} AGENT{displayedAgents.length === 1 ? '' : 'S'} &bull; PAST 5 MIN
-                </Badge>
-              ) : (
-                <Badge variant="neutral">
-                  STANDBY
-                </Badge>
-              )}
-            </div>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              Real-time token streaming &amp; tool call interceptor. Shows latest output from all agents fired in the past 5 minutes.
-            </p>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-white tracking-wider">
+              LIVE AGENT DECK
+            </span>
+            {activeCount > 0 && (
+              <Badge variant="cyan" className="text-[10px] px-1.5 py-0 animate-pulse">
+                {activeCount} ACTIVE
+              </Badge>
+            )}
+            <span className="text-[11px] text-slate-500">
+              ({displayedAgents.length} {displayedAgents.length === 1 ? 'agent' : 'agents'})
+            </span>
           </div>
         </div>
 
+        {/* Clear Action */}
         <div className="flex items-center gap-2">
           {completedCount > 0 && (
             <Button
               variant="secondary"
               size="sm"
               onClick={onClearCompleted}
-              className="text-xs font-mono h-7"
+              className="text-[10px] h-6 px-2 py-0 text-slate-400 hover:text-white"
             >
               Clear Completed
             </Button>
@@ -278,29 +372,24 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
         </div>
       </div>
 
-      {/* Deck Body - Grid of all agents fired in the past 5 minutes */}
+      {/* Grid of Compact ~80px Agent Tiles */}
       {displayedAgents.length === 0 ? (
-        <div className="rounded-xl border border-white/[0.05] bg-[#01040a] p-3 text-xs text-slate-500 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+        <div className="rounded-lg border border-white/[0.04] bg-[#010308] p-2.5 text-xs text-slate-500 flex items-center justify-between">
+          <div className="flex items-center gap-2">
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00f0ff] opacity-40" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00f0ff]/60" />
             </span>
-            <span>
-              Connected to <span className="text-cyan-400 font-semibold">/ws/live</span>. Ready for incoming agent inference and tool calls.
+            <span className="text-[11px]">
+              Standing by on <span className="text-cyan-400 font-semibold">/ws/live</span>. Ready for active agent streams.
             </span>
           </div>
-          <div className="text-[10px] text-slate-600">0 Active Streams (Past 5m)</div>
+          <span className="text-[10px] text-slate-600">0 Active Streams</span>
         </div>
       ) : (
-        <div
-          className={cn(
-            'grid gap-3.5',
-            displayedAgents.length > 1 ? 'grid-cols-1 xl:grid-cols-2' : 'grid-cols-1'
-          )}
-        >
+        <div className="grid gap-2.5 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
           {displayedAgents.map((stream) => (
-            <LiveStreamCard
+            <LiveStreamTile
               key={`${stream.virtualModel || 'direct'}-${stream.provider}-${stream.requestId}`}
               stream={stream}
               now={now}
