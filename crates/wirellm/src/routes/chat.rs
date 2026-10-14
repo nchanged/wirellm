@@ -138,6 +138,38 @@ pub async fn create_chat_completions(
         payload["model"] = Value::String(target_model.clone());
         let rewritten_body = Bytes::from(serde_json::to_vec(&payload).unwrap());
 
+        let initial_status = if let Some(messages) = payload.get("messages").and_then(|m| m.as_array()) {
+            if let Some(last_msg) = messages.last() {
+                let role = last_msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                if role == "tool" {
+                    let name = last_msg.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                    format!("📥 Received tool result: {}", name)
+                } else if role == "user" {
+                    "Thinking...".to_string()
+                } else {
+                    "Processing...".to_string()
+                }
+            } else {
+                "Processing...".to_string()
+            }
+        } else {
+            "Processing...".to_string()
+        };
+
+        if live_tx.receiver_count() > 0 {
+            let _ = live_tx.send(crate::server::LiveStreamEvent {
+                request_id: request_id.clone(),
+                virtual_model: Some(requested_model.to_string()),
+                provider: selected.name.clone(),
+                model: target_model.clone(),
+                delta: initial_status,
+                is_done: false,
+                error: None,
+                tokens_so_far: 0,
+                elapsed_ms: 0,
+            });
+        }
+
         let base_str = selected.base_url.as_str().trim_end_matches('/');
         let endpoint_url = match Url::parse(&format!("{}/chat/completions", base_str)) {
             Ok(url) => url,

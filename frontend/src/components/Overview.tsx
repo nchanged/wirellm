@@ -109,29 +109,20 @@ function evaluateTarget(
     };
   }
 
-  if (inFlight > 0) {
-    return {
-      status: 'running',
-      reason: `${inFlight} req active in-flight`,
-      inFlight,
-      circuit: p.circuit,
-    };
-  }
-
   if (!isFirstHealthyFound.current) {
     isFirstHealthyFound.current = true;
     return {
       status: 'primary',
-      reason: 'Primary Healthy Route',
-      inFlight: 0,
+      reason: inFlight > 0 ? `Primary Route (${inFlight} req active)` : 'Primary Healthy Route',
+      inFlight,
       circuit: p.circuit,
     };
   }
 
   return {
     status: 'standby',
-    reason: 'Standby Cascade Target',
-    inFlight: 0,
+    reason: inFlight > 0 ? `Standby Cascade (${inFlight} req active)` : 'Standby Cascade Target',
+    inFlight,
     circuit: p.circuit,
   };
 }
@@ -550,6 +541,7 @@ export const Overview: React.FC<OverviewProps> = ({
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {filteredVirtualModels.map((vm) => {
             const isFirstHealthyFound = { current: false };
+            const now = Date.now();
 
             const evaluatedTargets = vm.targets.map((tgt) => {
               const evalRes = evaluateTarget(
@@ -559,40 +551,27 @@ export const Overview: React.FC<OverviewProps> = ({
                 isFirstHealthyFound
               );
 
-              // 1. Direct active stream match for this specific virtual model
-              const isTargetStreaming = activeStreamList.some(
-                (s) =>
-                  !s.isDone &&
-                  (s.virtualModel ? s.virtualModel === vm.name : true) &&
-                  s.provider === tgt.provider &&
-                  s.model === tgt.model
-              );
+              const isBlocked = evalRes.status === 'blocked';
 
-              // 2. Prevent cross-contamination: if another virtual model has an active stream on this provider,
-              // do NOT mark this virtual model as running!
-              const isAnotherVmRunningThisProvider = activeStreamList.some(
-                (s) =>
-                  !s.isDone &&
-                  s.virtualModel &&
-                  s.virtualModel !== vm.name &&
-                  s.provider === tgt.provider
-              );
-
-              const isTrulyRunning =
-                isTargetStreaming ||
-                (evalRes.status === 'running' && !isAnotherVmRunningThisProvider);
+              // 1. Direct active stream match STRICTLY for this virtual model (received tokens within last 10s)
+              const isTargetStreaming =
+                !isBlocked &&
+                activeStreamList.some(
+                  (s) =>
+                    !s.isDone &&
+                    (now - (s.lastUpdated || 0) <= 10_000) &&
+                    s.virtualModel === vm.name &&
+                    s.provider === tgt.provider &&
+                    s.model === tgt.model
+                );
 
               return {
                 ...tgt,
                 evaluation: {
                   ...evalRes,
-                  status: isTrulyRunning
-                    ? ('running' as const)
-                    : evalRes.status === 'running'
-                    ? ('primary' as const)
-                    : evalRes.status,
+                  status: isTargetStreaming ? ('running' as const) : evalRes.status,
                 },
-                isStreaming: isTrulyRunning,
+                isStreaming: isTargetStreaming,
               };
             });
 

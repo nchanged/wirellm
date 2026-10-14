@@ -116,28 +116,41 @@ function getThemeDecayStyle(primaryHex: string, primaryGlow: string, isDone: boo
 // Extract last non-empty line / tool call, capped at ~180 chars
 function getTailSnippet(text: string): { snippet: string; isTool: boolean; toolName?: string } {
   if (!text) return { snippet: 'Listening for upstream tokens...', isTool: false };
+
+  // 1. Search for tool call anywhere in the text (even if arguments span multiple lines)
+  const lastToolIdx = text.lastIndexOf('🔧 call:');
+  if (lastToolIdx !== -1) {
+    const toolSub = text.slice(lastToolIdx);
+    const match = toolSub.match(/🔧\s*call:\s*([a-zA-Z0-9_-]+)\s*\(([\s\S]*?)(\)|$)/);
+    if (match) {
+      const toolName = match[1];
+      const rawArgs = match[2].replace(/\s+/g, ' ').trim();
+      const argsPreview = rawArgs.length > 80 ? rawArgs.slice(0, 80) + '…' : rawArgs;
+      return {
+        snippet: `${toolName}(${argsPreview})`,
+        isTool: true,
+        toolName,
+      };
+    }
+    return { snippet: toolSub.slice(0, 160).replace(/\s+/g, ' '), isTool: true };
+  }
+
+  // 2. Check for incoming tool results or file operations
+  if (text.includes('📥 Received tool result:')) {
+    const lastResultIdx = text.lastIndexOf('📥 Received tool result:');
+    const line = text.slice(lastResultIdx).split('\n')[0].trim();
+    return { snippet: line, isTool: true };
+  }
+
+  // 3. Regular text fallback: get the last meaningful line
   const lines = text.trimEnd().split('\n').filter((l) => l.trim().length > 0);
   if (lines.length === 0) return { snippet: 'Streaming...', isTool: false };
 
-  const lastLine = lines[lines.length - 1].trim();
-  if (lastLine.startsWith('🔧 call:')) {
-    const match = lastLine.match(/🔧\s*call:\s*([a-zA-Z0-9_-]+)\((.*)\)/);
-    if (match) {
-      const argsPreview = match[2].length > 90 ? match[2].slice(0, 90) + '…' : match[2];
-      return {
-        snippet: `${match[1]}(${argsPreview})`,
-        isTool: true,
-        toolName: match[1],
-      };
-    }
-    return { snippet: lastLine.slice(0, 160), isTool: true };
+  let lastLine = lines[lines.length - 1].trim();
+  if (lastLine.length > 175) {
+    lastLine = '…' + lastLine.slice(-170);
   }
-
-  let clean = lastLine;
-  if (clean.length > 175) {
-    clean = '…' + clean.slice(-170);
-  }
-  return { snippet: clean, isTool: false };
+  return { snippet: lastLine, isTool: false };
 }
 
 const LiveStreamTile: React.FC<{
