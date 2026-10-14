@@ -6,6 +6,7 @@ import { ProvidersStudio } from './components/ProvidersStudio';
 import { VirtualModelsStudio } from './components/VirtualModelsStudio';
 import { AnalyticsView } from './components/AnalyticsView';
 import { LogsView } from './components/LogsView';
+import { ApiKeysView } from './components/ApiKeysView';
 import { ThemeSelector } from './components/ThemeSelector';
 import {
   Workflow,
@@ -18,10 +19,11 @@ import {
   Cpu,
   Shield,
   LogOut,
+  Key,
 } from 'lucide-react';
 import { Badge, Button, cn } from './ui';
 
-type Tab = 'overview' | 'providers' | 'models' | 'analytics' | 'logs';
+type Tab = 'overview' | 'providers' | 'models' | 'apikeys' | 'analytics' | 'logs';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
@@ -150,6 +152,7 @@ export const App: React.FC = () => {
     { id: 'overview' as Tab, label: 'Routing Matrix', short: 'Router', icon: Workflow },
     { id: 'providers' as Tab, label: 'Providers & Vault', short: 'Providers', icon: Server },
     { id: 'models' as Tab, label: 'Virtual Models', short: 'Models', icon: SlidersHorizontal },
+    { id: 'apikeys' as Tab, label: 'API Keys & Access', short: 'Keys', icon: Key },
     { id: 'analytics' as Tab, label: 'Token Analytics', short: 'Stats', icon: BarChart3 },
     { id: 'logs' as Tab, label: 'Live Console', short: 'Logs', icon: Terminal },
   ];
@@ -228,11 +231,12 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[var(--bg-app)] text-slate-100 flex flex-col font-sans transition-colors duration-300">
-      {/* Top Cybernetic Header Navbar - Pixel-aligned single-row layout */}
-      <header className="border-b border-[var(--border-subtle)] bg-[var(--bg-header)] backdrop-blur-md sticky top-0 z-50 transition-colors">
-        <div className="max-w-7xl mx-auto h-14 px-4 sm:px-6 flex items-center justify-between gap-4">
+      {/* Top Cybernetic Two-Tier Command Header */}
+      <header className="border-b border-white/[0.08] bg-[var(--bg-header)] backdrop-blur-md transition-colors">
+        {/* Tier 1: Brand & System Status Hub */}
+        <div className="max-w-7xl mx-auto h-13 px-4 sm:px-6 flex items-center justify-between gap-4 py-2">
           
-          {/* Brand Logo */}
+          {/* Brand Logo & Latency Pulse */}
           <div className="flex items-center gap-3 shrink-0">
             <div className="w-8 h-8 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] flex items-center justify-center shadow-[0_0_15px_var(--primary-glow)] transition-all">
               <Cpu className="w-4 h-4 text-[var(--primary)]" />
@@ -252,31 +256,7 @@ export const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Navigation Tabs */}
-          <nav className="flex items-center gap-1 bg-[#010307]/80 p-1 rounded-xl border border-white/[0.08]">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = activeTab === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => setActiveTab(item.id)}
-                  className={cn(
-                    'h-8 px-3 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all select-none',
-                    isActive
-                      ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)] shadow-[0_0_15px_-2px_var(--primary-glow-subtle)] font-semibold'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] border border-transparent'
-                  )}
-                >
-                  <Icon className={cn('w-3.5 h-3.5', isActive ? 'text-[var(--primary)]' : 'text-slate-500')} />
-                  <span className="hidden md:inline">{item.label}</span>
-                  <span className="md:hidden">{item.short}</span>
-                </button>
-              );
-            })}
-          </nav>
-
-          {/* Right Status Hub */}
+          {/* Right Status Hub: User, WS, MCP, Theme, Refresh */}
           <div className="flex items-center gap-2 shrink-0">
             {/* User Profile (Google Auth) */}
             {authStatus?.user && (
@@ -348,6 +328,49 @@ export const App: React.FC = () => {
             </Button>
           </div>
         </div>
+
+        {/* Tier 2: Dedicated Navigation Sub-Header */}
+        <div className="border-t border-white/[0.06] bg-[#020408]/90">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2 flex items-center justify-between gap-4 overflow-x-auto">
+            {/* Spacious Navigation Tabs */}
+            <nav className="flex items-center gap-1.5 bg-[#010307]/80 p-1 rounded-xl border border-white/[0.08]">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    className={cn(
+                      'h-8 px-3 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all select-none whitespace-nowrap',
+                      isActive
+                        ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)] shadow-[0_0_15px_-2px_var(--primary-glow-subtle)] font-semibold'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] border border-transparent'
+                    )}
+                  >
+                    <Icon className={cn('w-3.5 h-3.5', isActive ? 'text-[var(--primary)]' : 'text-slate-500')} />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+
+            {/* Active Topology Overview Chip */}
+            <div className="hidden lg:flex items-center gap-3 text-xs font-mono text-slate-400 shrink-0">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)]" />
+                <span className="text-slate-500">Providers:</span>
+                <span className="text-slate-200 font-semibold">{status?.providers?.length || 0}</span>
+              </span>
+              <span className="text-slate-700">&bull;</span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--secondary)]" />
+                <span className="text-slate-500">Virtual Models:</span>
+                <span className="text-slate-200 font-semibold">{status?.virtual_models?.length || 0}</span>
+              </span>
+            </div>
+          </div>
+        </div>
       </header>
 
       {/* Main Content Area */}
@@ -358,10 +381,13 @@ export const App: React.FC = () => {
             onRefresh={handleManualRefresh}
             liveEvent={latestLiveEvent}
             recentStreams={recentStreams}
+            onNavigateToProviders={() => setActiveTab('providers')}
+            isCloudOrProtected={authStatus?.api_auth_required || authStatus?.google_auth_enabled}
           />
         )}
         {activeTab === 'providers' && <ProvidersStudio status={status} onRefresh={handleManualRefresh} />}
         {activeTab === 'models' && <VirtualModelsStudio status={status} onRefresh={handleManualRefresh} />}
+        {activeTab === 'apikeys' && <ApiKeysView authStatus={authStatus} />}
         {activeTab === 'analytics' && <AnalyticsView />}
         {activeTab === 'logs' && <LogsView />}
       </main>

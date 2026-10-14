@@ -13,6 +13,8 @@ use wirellm_core::config::VirtualModelTarget;
 
 use crate::ReloadableState;
 
+pub static RECOMMENDED_SETUP_MD: &str = include_str!("../resources/recommended_setup.md");
+
 #[derive(Deserialize)]
 #[allow(dead_code)]
 pub struct McpQuery {
@@ -187,6 +189,14 @@ pub async fn mcp_messages_handler(
                                 }
                             }
                         }
+                    },
+                    {
+                        "name": "wirellm_get_setup_recommendations",
+                        "description": "Get recommended setup configurations, always-free providers (NVIDIA NIM, Groq, OpenRouter), budget options (DeepSeek), model capability ratings, rate limit pacing, and virtual model fallback ladders (coder, planner, orchestrator) as structured markdown and guidance.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
                     }
                 ]
             });
@@ -354,6 +364,9 @@ async fn handle_tool_call(
                 .map_err(|e| format!("Failed to save virtual model: {}", e))?;
             let _ = reloadable.reloader.reload();
             Ok(format!("Virtual model '{}' updated with {} targets", vm_name, targets.len()))
+        },
+        "wirellm_get_setup_recommendations" | "oxllm_get_setup_recommendations" => {
+            Ok(RECOMMENDED_SETUP_MD.to_string())
         },
         unknown => Err(format!("Unknown tool: {}", unknown)),
     }

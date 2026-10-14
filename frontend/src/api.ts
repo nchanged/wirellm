@@ -131,6 +131,14 @@ export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
   return res.json();
 }
 
+export async function fetchSetupRecommendations(): Promise<{ markdown: string }> {
+  const res = await fetch(`${API_BASE}/api/setup/recommendations`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch setup recommendations: ${res.statusText}`);
+  }
+  return res.json();
+}
+
 export async function logout(): Promise<void> {
   await fetch(`${API_BASE}/auth/logout`, { method: 'POST' }).catch(() => {});
   window.location.href = '/ui';
