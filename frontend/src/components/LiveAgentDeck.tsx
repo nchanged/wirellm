@@ -21,6 +21,7 @@ interface LiveAgentDeckProps {
   streams: ActiveStreamState[];
   onDismiss: (requestId: string) => void;
   onClearCompleted: () => void;
+  onClearAll?: () => void;
 }
 
 function formatTimeAgo(timestampMs: number, now: number): string {
@@ -145,8 +146,10 @@ const LiveStreamTile: React.FC<{
   onDismiss: (requestId: string) => void;
 }> = ({ stream, now, onDismiss }) => {
   const { currentConfig } = useTheme();
-  const ageMs = Math.max(0, now - stream.lastUpdated);
-  const style = getThemeDecayStyle(currentConfig.primary, currentConfig.glow, stream.isDone, ageMs);
+  const ageMs = Math.max(0, now - (stream.lastUpdated || 0));
+  // A stream is only TRULY live if it has received a token in the last 10 seconds
+  const isActuallyLive = !stream.isDone && ageMs <= 10_000;
+  const style = getThemeDecayStyle(currentConfig.primary, currentConfig.glow, !isActuallyLive, ageMs);
 
   // Speed-linked border rotation speed: 100 tok/s -> 0.65s spin, 15 tok/s -> 3.2s spin
   const speed = stream.speedTokPerSec || 0;
@@ -162,11 +165,11 @@ const LiveStreamTile: React.FC<{
         style.activeGlow
       )}
       style={{
-        boxShadow: !stream.isDone ? `0 0 20px ${style.glow}28` : undefined,
+        boxShadow: isActuallyLive ? `0 0 20px ${style.glow}28` : undefined,
       }}
     >
       {/* ── Spinning Border Beam (Conic Theme Gradient linked to Speed) ── */}
-      {!stream.isDone && (
+      {isActuallyLive && (
         <div
           className="absolute inset-[-150%] pointer-events-none"
           style={{
@@ -183,7 +186,7 @@ const LiveStreamTile: React.FC<{
           style.cardBg
         )}
         style={{
-          border: stream.isDone ? `1px solid ${style.border}` : '1px solid var(--primary-border)',
+          border: !isActuallyLive ? `1px solid ${style.border}` : '1px solid var(--primary-border)',
         }}
       >
         {/* Row 1: Agent Identity & Telemetry Metrics */}
@@ -219,7 +222,7 @@ const LiveStreamTile: React.FC<{
           {/* Right Metrics: Speed, Tokens, Status, Dismiss */}
           <div className="flex items-center gap-2 shrink-0 text-[10px]">
             {/* Speed indicator */}
-            {!stream.isDone ? (
+            {isActuallyLive ? (
               <span className="flex items-center gap-0.5 font-bold text-[var(--primary)] drop-shadow-[0_0_6px_var(--primary-glow)]">
                 <Zap className="w-2.5 h-2.5 fill-current animate-bounce" />
                 {stream.speedTokPerSec}
@@ -239,7 +242,7 @@ const LiveStreamTile: React.FC<{
             </span>
 
             {/* Status / Relative age */}
-            {stream.isDone ? (
+            {!isActuallyLive ? (
               stream.error ? (
                 <Badge variant="rose" className="text-[9px] px-1 py-0 h-4">
                   <AlertOctagon className="w-2.5 h-2.5" />
@@ -298,9 +301,10 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
   streams,
   onDismiss,
   onClearCompleted,
+  onClearAll,
 }) => {
   const [now, setNow] = useState<number>(Date.now());
-  const DECAY_WINDOW_MS = 4.5 * 60 * 1000; // Auto-prune cards older than 4.5 minutes
+  const DECAY_WINDOW_MS = 2 * 60 * 1000; // Auto-prune cards older than 2 minutes
 
   // Smooth tick for relative times and decay colors
   useEffect(() => {
@@ -310,9 +314,12 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
     return () => clearInterval(timer);
   }, []);
 
+  // Helper: A stream is only truly live if it received tokens within the last 10 seconds
+  const isActuallyLive = (s: ActiveStreamState) => !s.isDone && (now - (s.lastUpdated || 0) <= 10_000);
+
   // 1. Filter: Retain active streams or completed streams within the decay window
   const activeOrRecent = streams.filter(
-    (s) => !s.isDone || now - s.lastUpdated <= DECAY_WINDOW_MS
+    (s) => isActuallyLive(s) || (now - (s.lastUpdated || 0) <= DECAY_WINDOW_MS)
   );
 
   // 2. Group by unique agent identity to show the latest state per agent
@@ -326,9 +333,12 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
     if (!existing) {
       agentMap.set(agentKey, s);
     } else {
-      if (!s.isDone && existing.isDone) {
+      const sLive = isActuallyLive(s);
+      const existLive = isActuallyLive(existing);
+
+      if (sLive && !existLive) {
         agentMap.set(agentKey, s);
-      } else if (s.isDone && !existing.isDone) {
+      } else if (!sLive && existLive) {
         // keep active
       } else if (s.lastUpdated > existing.lastUpdated) {
         agentMap.set(agentKey, s);
@@ -338,13 +348,15 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
 
   // 3. Sort: Live active streams first, then most recently updated first
   const displayedAgents = Array.from(agentMap.values()).sort((a, b) => {
-    if (!a.isDone && b.isDone) return -1;
-    if (a.isDone && !b.isDone) return 1;
+    const aLive = isActuallyLive(a);
+    const bLive = isActuallyLive(b);
+    if (aLive && !bLive) return -1;
+    if (!aLive && bLive) return 1;
     return b.lastUpdated - a.lastUpdated;
   });
 
-  const activeCount = displayedAgents.filter((s) => !s.isDone).length;
-  const completedCount = displayedAgents.filter((s) => s.isDone).length;
+  const activeCount = displayedAgents.filter(isActuallyLive).length;
+  const completedCount = displayedAgents.length - activeCount;
 
   return (
     <div className="space-y-2.5 rounded-2xl border border-[var(--primary-border)] bg-[var(--bg-card)] backdrop-blur-md p-3.5 font-mono shadow-[0_0_30px_var(--primary-glow-subtle)] transition-colors">
@@ -380,6 +392,17 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               className="text-[10px] h-6 px-2.5 py-0 hover:border-[var(--primary-border)] hover:text-[var(--primary)]"
             >
               Clear Completed
+            </Button>
+          )}
+          {displayedAgents.length > 0 && onClearAll && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClearAll}
+              className="text-[10px] h-6 px-2 py-0 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10"
+              title="Clear all streams from the deck"
+            >
+              Clear All
             </Button>
           )}
         </div>
