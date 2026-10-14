@@ -2,14 +2,104 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* ==========================================================================
+   WIRELLM THEME ENGINE TOKENS
+   Default: Cyber Cyan (#00f0ff)
+   ========================================================================== */
+
+:root, [data-theme="cyan"] {
   color-scheme: dark;
-  --bg-app: #020408;
-  --bg-card: #05080f;
-  --bg-card-subtle: #080d18;
-  --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-highlight: rgba(0, 240, 255, 0.35);
-  --neon-cyan: #00f0ff;
+  --primary: #00f0ff;
+  --primary-rgb: 0, 240, 255;
+  --primary-hover: #38bdf8;
+  --primary-glow: rgba(0, 240, 255, 0.45);
+  --primary-glow-subtle: rgba(0, 240, 255, 0.14);
+  --primary-border: rgba(0, 240, 255, 0.35);
+  --primary-bg-badge: #00222a;
+  --primary-bg-badge-border: rgba(0, 240, 255, 0.5);
+  --bg-app: #020612;
+  --bg-header: rgba(3, 10, 23, 0.95);
+  --bg-card: #040c1a;
+  --bg-card-subtle: #061224;
+  --border-subtle: rgba(0, 240, 255, 0.12);
+  --radial-1: rgba(0, 240, 255, 0.08);
+  --radial-2: rgba(6, 182, 212, 0.04);
+}
+
+[data-theme="emerald"] {
+  color-scheme: dark;
+  --primary: #00ff88;
+  --primary-rgb: 0, 255, 136;
+  --primary-hover: #34d399;
+  --primary-glow: rgba(0, 255, 136, 0.45);
+  --primary-glow-subtle: rgba(0, 255, 136, 0.14);
+  --primary-border: rgba(0, 255, 136, 0.35);
+  --primary-bg-badge: #002b18;
+  --primary-bg-badge-border: rgba(0, 255, 136, 0.5);
+  --bg-app: #010c07;
+  --bg-header: rgba(2, 20, 12, 0.95);
+  --bg-card: #031c11;
+  --bg-card-subtle: #042617;
+  --border-subtle: rgba(0, 255, 136, 0.12);
+  --radial-1: rgba(0, 255, 136, 0.08);
+  --radial-2: rgba(16, 185, 129, 0.04);
+}
+
+[data-theme="amber"] {
+  color-scheme: dark;
+  --primary: #f59e0b;
+  --primary-rgb: 245, 158, 11;
+  --primary-hover: #fbbf24;
+  --primary-glow: rgba(245, 158, 11, 0.45);
+  --primary-glow-subtle: rgba(245, 158, 11, 0.14);
+  --primary-border: rgba(245, 158, 11, 0.35);
+  --primary-bg-badge: #261600;
+  --primary-bg-badge-border: rgba(245, 158, 11, 0.5);
+  --bg-app: #0c0802;
+  --bg-header: rgba(20, 13, 4, 0.95);
+  --bg-card: #1c1306;
+  --bg-card-subtle: #261a08;
+  --border-subtle: rgba(245, 158, 11, 0.15);
+  --radial-1: rgba(245, 158, 11, 0.08);
+  --radial-2: rgba(217, 119, 6, 0.04);
+}
+
+[data-theme="purple"] {
+  color-scheme: dark;
+  --primary: #c084fc;
+  --primary-rgb: 192, 132, 252;
+  --primary-hover: #d8b4fe;
+  --primary-glow: rgba(192, 132, 252, 0.45);
+  --primary-glow-subtle: rgba(192, 132, 252, 0.14);
+  --primary-border: rgba(192, 132, 252, 0.35);
+  --primary-bg-badge: #200d33;
+  --primary-bg-badge-border: rgba(192, 132, 252, 0.5);
+  --bg-app: #0a0412;
+  --bg-header: rgba(18, 8, 31, 0.95);
+  --bg-card: #1a0c2c;
+  --bg-card-subtle: #24113d;
+  --border-subtle: rgba(192, 132, 252, 0.15);
+  --radial-1: rgba(192, 132, 252, 0.08);
+  --radial-2: rgba(168, 85, 247, 0.04);
+}
+
+[data-theme="obsidian"] {
+  color-scheme: dark;
+  --primary: #e4e4e7;
+  --primary-rgb: 228, 228, 231;
+  --primary-hover: #ffffff;
+  --primary-glow: rgba(255, 255, 255, 0.25);
+  --primary-glow-subtle: rgba(255, 255, 255, 0.06);
+  --primary-border: rgba(255, 255, 255, 0.25);
+  --primary-bg-badge: #18181b;
+  --primary-bg-badge-border: rgba(255, 255, 255, 0.3);
+  --bg-app: #09090b;
+  --bg-header: rgba(18, 18, 21, 0.95);
+  --bg-card: #141417;
+  --bg-card-subtle: #1e1e24;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --radial-1: rgba(255, 255, 255, 0.04);
+  --radial-2: rgba(161, 161, 170, 0.02);
 }
 
 body {
@@ -19,10 +109,11 @@ body {
   color: #f1f5f9;
   overflow-x: hidden;
   background-image: 
-    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0, 240, 255, 0.08), transparent),
-    radial-gradient(ellipse 50% 40% at 90% 15%, rgba(6, 182, 212, 0.04), transparent),
+    radial-gradient(ellipse 80% 50% at 50% -20%, var(--radial-1), transparent),
+    radial-gradient(ellipse 50% 40% at 90% 15%, var(--radial-2), transparent),
     radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.02) 1px, transparent 0);
   background-size: 100% 100%, 100% 100%, 24px 24px;
+  transition: background-color 0.3s ease;
 }
 
 code, kbd, samp, pre, .font-mono {
@@ -36,26 +127,30 @@ code, kbd, samp, pre, .font-mono {
 }
 
 ::-webkit-scrollbar-track {
-  background: #020408;
+  background: var(--bg-app);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #151e2e;
+  background: rgba(var(--primary-rgb), 0.2);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #00f0ff;
-  box-shadow: 0 0 10px rgba(0, 240, 255, 0.8);
+  background: var(--primary);
+  box-shadow: 0 0 10px var(--primary-glow);
 }
 
-/* Cybernetic Glowing Wire Accents */
+/* Dynamic Cybernetic Accents */
+.wire-text-glow {
+  text-shadow: 0 0 12px var(--primary-glow);
+}
+
+.wire-glow-primary {
+  box-shadow: 0 0 20px -2px var(--primary-glow);
+}
+
 .wire-glow-cyan {
   box-shadow: 0 0 20px -2px rgba(0, 240, 255, 0.5);
-}
-
-.wire-text-glow {
-  text-shadow: 0 0 12px rgba(0, 240, 255, 0.6);
 }
 
 .wire-glow-amber {
@@ -64,10 +159,11 @@ code, kbd, samp, pre, .font-mono {
 
 @layer components {
   .wire-card {
-    background: #040711;
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
     border-radius: 0.75rem;
     box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.8), 0 8px 10px -6px rgba(0, 0, 0, 0.8);
+    transition: background-color 0.3s ease, border-color 0.3s ease;
   }
 
   .wire-card-hover {
@@ -75,8 +171,8 @@ code, kbd, samp, pre, .font-mono {
   }
 
   .wire-card-hover:hover {
-    border-color: rgba(0, 240, 255, 0.45);
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08), 0 12px 35px -8px rgba(0, 0, 0, 0.9), 0 0 20px -2px rgba(0, 240, 255, 0.2);
+    border-color: var(--primary-border);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08), 0 12px 35px -8px rgba(0, 0, 0, 0.9), 0 0 20px -2px var(--primary-glow-subtle);
   }
 
   .wire-btn-secondary {
@@ -89,22 +185,22 @@ code, kbd, samp, pre, .font-mono {
     font-size: 0.75rem;
     font-family: 'JetBrains Mono', monospace;
     border-radius: 0.5rem;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border-subtle);
     transition: all 0.15s ease-in-out;
     cursor: pointer;
   }
 
   .wire-btn-secondary:hover {
-    background-color: rgba(0, 240, 255, 0.08);
-    color: #00f0ff;
-    border-color: rgba(0, 240, 255, 0.5);
-    box-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
+    background-color: rgba(var(--primary-rgb), 0.1);
+    color: var(--primary);
+    border-color: var(--primary-border);
+    box-shadow: 0 0 10px var(--primary-glow-subtle);
   }
 
   .wire-input {
     width: 100%;
-    background-color: #020408;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background-color: var(--bg-card-subtle);
+    border: 1px solid var(--border-subtle);
     border-radius: 0.5rem;
     padding: 0.375rem 0.75rem;
     font-size: 0.75rem;
@@ -115,8 +211,8 @@ code, kbd, samp, pre, .font-mono {
 
   .wire-input:focus {
     outline: none;
-    border-color: #00f0ff;
-    box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
+    border-color: var(--primary);
+    box-shadow: 0 0 12px var(--primary-glow);
   }
 }
 

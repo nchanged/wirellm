@@ -39,8 +39,8 @@ export const MetricCard: React.FC<MetricCardProps> = ({
   return (
     <div
       className={cn(
-        'bg-[#070a12] border border-white/[0.07] rounded-xl p-5 shadow-2xl relative overflow-hidden transition-all group',
-        glowAccentClasses[accent],
+        'bg-[var(--bg-card)] border border-[var(--border-subtle)] rounded-xl p-5 shadow-2xl relative overflow-hidden transition-all group',
+        'hover:border-[var(--primary-border)] hover:shadow-[0_0_25px_var(--primary-glow-subtle)]',
         className
       )}
     >

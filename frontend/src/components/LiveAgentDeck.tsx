@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Terminal, CheckCircle2, AlertOctagon, X, Zap, Wrench } from 'lucide-react';
+import { Terminal, AlertOctagon, X, Zap, Wrench } from 'lucide-react';
 import { Badge, Button, cn } from '../ui';
+import { useTheme } from '../theme';
 
 export interface ActiveStreamState {
   requestId: string;
@@ -32,76 +33,82 @@ function formatTimeAgo(timestampMs: number, now: number): string {
   return `${diffHr}h ago`;
 }
 
-// Color decay calculator: bright cyan -> sky blue -> slate gray -> dark gray
-function getDecayStyle(isDone: boolean, ageMs: number) {
+// Dynamic Theme Decay Calculator
+function getThemeDecayStyle(primaryHex: string, primaryGlow: string, isDone: boolean, ageMs: number) {
   if (!isDone) {
     return {
-      glow: '#00f0ff',
-      border: 'rgba(0, 240, 255, 0.45)',
-      badge: 'bg-[#00222b] text-[#00f0ff] border-[#00f0ff]/50 shadow-[0_0_8px_rgba(0,240,255,0.3)]',
+      glow: primaryHex,
+      border: primaryGlow,
+      cardBg: 'bg-[var(--bg-card)]',
+      badge: 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border-[var(--primary-bg-badge-border)] shadow-[0_0_10px_var(--primary-glow-subtle)]',
       providerText: 'text-white',
-      modelText: 'text-cyan-200',
-      speedText: 'text-[#00f0ff]',
-      promptColor: 'text-[#00f0ff]',
-      tickerText: 'text-cyan-50',
-      activeGlow: 'shadow-[0_0_15px_rgba(0,240,255,0.12)]',
+      modelText: 'text-slate-200',
+      speedText: 'text-[var(--primary)]',
+      promptColor: 'text-[var(--primary)]',
+      tickerText: 'text-slate-100 font-medium',
+      activeGlow: 'shadow-[0_0_20px_var(--primary-glow-subtle)]',
+      cardOpacity: 'opacity-100',
     };
   }
 
   const sec = ageMs / 1000;
-  if (sec < 20) {
-    // Fresh complete (< 20s)
+  if (sec < 25) {
     return {
-      glow: '#00d5e8',
-      border: 'rgba(0, 213, 232, 0.25)',
-      badge: 'bg-[#011822] text-cyan-300 border-cyan-500/30',
+      glow: primaryHex,
+      border: 'rgba(var(--primary-rgb), 0.35)',
+      cardBg: 'bg-[var(--bg-card)]',
+      badge: 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border-[var(--primary-border)] shadow-sm',
       providerText: 'text-slate-100',
       modelText: 'text-slate-300',
-      speedText: 'text-cyan-300',
-      promptColor: 'text-cyan-400',
+      speedText: 'text-[var(--primary)]',
+      promptColor: 'text-[var(--primary)]',
       tickerText: 'text-slate-200',
-      activeGlow: '',
+      activeGlow: 'shadow-[0_0_12px_var(--primary-glow-subtle)]',
+      cardOpacity: 'opacity-100',
     };
   }
-  if (sec < 60) {
-    // 20s - 60s: Sky blue transition
+  if (sec < 75) {
     return {
-      glow: '#38bdf8',
-      border: 'rgba(56, 189, 248, 0.2)',
-      badge: 'bg-sky-950/40 text-sky-400 border-sky-600/30',
+      glow: primaryHex,
+      border: 'rgba(var(--primary-rgb), 0.25)',
+      cardBg: 'bg-[var(--bg-card)]',
+      badge: 'bg-white/[0.05] text-slate-300 border-white/[0.08]',
       providerText: 'text-slate-200',
       modelText: 'text-slate-400',
-      speedText: 'text-sky-400',
-      promptColor: 'text-sky-400',
+      speedText: 'text-slate-300',
+      promptColor: 'text-slate-400',
       tickerText: 'text-slate-300',
       activeGlow: '',
+      cardOpacity: 'opacity-95',
     };
   }
-  if (sec < 150) {
-    // 1m - 2.5m: Slate gray
+  if (sec < 180) {
     return {
-      glow: '#64748b',
-      border: 'rgba(100, 116, 139, 0.15)',
-      badge: 'bg-slate-900/60 text-slate-400 border-slate-700/30',
+      glow: 'rgba(var(--primary-rgb), 0.5)',
+      border: 'rgba(var(--primary-rgb), 0.15)',
+      cardBg: 'bg-[var(--bg-card)]',
+      badge: 'bg-white/[0.02] text-slate-400 border-white/[0.06]',
       providerText: 'text-slate-300',
       modelText: 'text-slate-500',
       speedText: 'text-slate-400',
       promptColor: 'text-slate-500',
       tickerText: 'text-slate-400',
       activeGlow: '',
+      cardOpacity: 'opacity-85',
     };
   }
-  // > 2.5m: Dark muted gray
   return {
-    glow: '#334155',
-    border: 'rgba(51, 65, 85, 0.12)',
-    badge: 'bg-[#060a12] text-slate-500 border-slate-800',
+    glow: 'transparent',
+    border: 'var(--border-subtle)',
+    cardBg: 'bg-[var(--bg-card)]',
+    badge: 'bg-white/[0.01] text-slate-500 border-white/[0.04]',
     providerText: 'text-slate-400',
     modelText: 'text-slate-600',
     speedText: 'text-slate-500',
     promptColor: 'text-slate-600',
     tickerText: 'text-slate-500',
     activeGlow: '',
+    cardOpacity: 'opacity-70',
   };
 }
 
@@ -126,8 +133,8 @@ function getTailSnippet(text: string): { snippet: string; isTool: boolean; toolN
   }
 
   let clean = lastLine;
-  if (clean.length > 170) {
-    clean = '…' + clean.slice(-165);
+  if (clean.length > 175) {
+    clean = '…' + clean.slice(-170);
   }
   return { snippet: clean, isTool: false };
 }
@@ -137,12 +144,13 @@ const LiveStreamTile: React.FC<{
   now: number;
   onDismiss: (requestId: string) => void;
 }> = ({ stream, now, onDismiss }) => {
+  const { currentConfig } = useTheme();
   const ageMs = Math.max(0, now - stream.lastUpdated);
-  const style = getDecayStyle(stream.isDone, ageMs);
+  const style = getThemeDecayStyle(currentConfig.primary, currentConfig.glow, stream.isDone, ageMs);
 
-  // Speed-linked border rotation speed: 100 tok/s -> 0.7s spin, 10 tok/s -> 3.5s spin
+  // Speed-linked border rotation speed: 100 tok/s -> 0.65s spin, 15 tok/s -> 3.2s spin
   const speed = stream.speedTokPerSec || 0;
-  const spinDuration = speed > 0 ? Math.max(0.6, Math.min(3.8, 55 / speed)) : 2.5;
+  const spinDuration = speed > 0 ? Math.max(0.65, Math.min(3.6, 50 / speed)) : 2.2;
 
   const { snippet, isTool } = getTailSnippet(stream.text);
 
@@ -150,31 +158,35 @@ const LiveStreamTile: React.FC<{
     <div
       className={cn(
         'relative rounded-xl p-[1px] overflow-hidden transition-all duration-500 font-mono text-xs',
+        style.cardOpacity,
         style.activeGlow
       )}
       style={{
-        boxShadow: !stream.isDone ? `0 0 16px ${style.glow}20` : undefined,
+        boxShadow: !stream.isDone ? `0 0 20px ${style.glow}28` : undefined,
       }}
     >
-      {/* ── Spinning Border Beam (Speed-linked animation) ──────── */}
+      {/* ── Spinning Border Beam (Conic Theme Gradient linked to Speed) ── */}
       {!stream.isDone && (
         <div
           className="absolute inset-[-150%] pointer-events-none"
           style={{
-            background: `conic-gradient(from 0deg, transparent 0deg, ${style.glow} 40deg, transparent 80deg, transparent 360deg)`,
+            background: `conic-gradient(from 0deg, transparent 0deg, var(--primary) 45deg, var(--primary-hover) 70deg, transparent 105deg, transparent 360deg)`,
             animation: `border-spin ${spinDuration.toFixed(2)}s linear infinite`,
           }}
         />
       )}
 
-      {/* ── Inner Compact Box (~80px total height) ─────────────── */}
+      {/* ── Inner Compact Box (~82px height) ────────────────── */}
       <div
-        className="relative rounded-[11px] bg-[#02050c] p-2.5 flex flex-col justify-between h-[82px] transition-colors"
+        className={cn(
+          'relative rounded-[11px] p-2.5 flex flex-col justify-between h-[82px] transition-colors',
+          style.cardBg
+        )}
         style={{
-          border: stream.isDone ? `1px solid ${style.border}` : '1px solid transparent',
+          border: stream.isDone ? `1px solid ${style.border}` : '1px solid var(--primary-border)',
         }}
       >
-        {/* Row 1: Agent Identity & Metrics Header */}
+        {/* Row 1: Agent Identity & Telemetry Metrics */}
         <div className="flex items-center justify-between gap-2">
           {/* Identity */}
           <div className="flex items-center gap-1.5 min-w-0">
@@ -188,7 +200,7 @@ const LiveStreamTile: React.FC<{
                 {stream.virtualModel}
               </span>
             ) : (
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800/80 text-slate-400 border border-slate-700/50 shrink-0">
+              <span className="px-1.5 py-0.5 rounded text-[10px] bg-white/[0.06] text-slate-300 border border-white/[0.08] shrink-0">
                 direct
               </span>
             )}
@@ -204,14 +216,14 @@ const LiveStreamTile: React.FC<{
             </div>
           </div>
 
-          {/* Right Metrics: tok/s, tokens, status, dismiss */}
+          {/* Right Metrics: Speed, Tokens, Status, Dismiss */}
           <div className="flex items-center gap-2 shrink-0 text-[10px]">
             {/* Speed indicator */}
             {!stream.isDone ? (
-              <span className="flex items-center gap-0.5 font-bold text-[#00f0ff]">
+              <span className="flex items-center gap-0.5 font-bold text-[var(--primary)] drop-shadow-[0_0_6px_var(--primary-glow)]">
                 <Zap className="w-2.5 h-2.5 fill-current animate-bounce" />
                 {stream.speedTokPerSec}
-                <span className="text-[9px] font-normal text-cyan-400/80">t/s</span>
+                <span className="text-[9px] font-normal opacity-80">t/s</span>
               </span>
             ) : stream.speedTokPerSec > 0 ? (
               <span className={cn('flex items-center gap-0.5 font-medium', style.speedText)}>
@@ -222,7 +234,7 @@ const LiveStreamTile: React.FC<{
             ) : null}
 
             {/* Token count */}
-            <span className="text-amber-400/90 font-medium">
+            <span className="font-medium text-slate-200">
               {stream.tokensSoFar} <span className="text-[9px] font-normal text-slate-500">tok</span>
             </span>
 
@@ -234,21 +246,21 @@ const LiveStreamTile: React.FC<{
                   ERR
                 </Badge>
               ) : (
-                <span className="text-slate-500 text-[10px]">
+                <span className="text-slate-400 text-[10px] font-mono">
                   {formatTimeAgo(stream.lastUpdated, now)}
                 </span>
               )
             ) : (
-              <span className="flex items-center gap-1 text-[#00f0ff] font-semibold text-[10px] animate-pulse">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] animate-ping" />
+              <span className="flex items-center gap-1 text-[var(--primary)] font-semibold text-[10px] animate-pulse bg-[var(--primary-bg-badge)] px-1.5 py-0.5 rounded border border-[var(--primary-border)]">
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] animate-ping" />
                 LIVE
               </span>
             )}
 
-            {/* Dismiss X */}
+            {/* Dismiss button */}
             <button
               onClick={() => onDismiss(stream.requestId)}
-              className="p-0.5 rounded text-slate-500 hover:text-white hover:bg-white/[0.08] transition-colors"
+              className="p-0.5 rounded text-slate-500 hover:text-[var(--primary)] hover:bg-white/[0.08] transition-colors"
               title="Dismiss agent tile"
             >
               <X className="w-3 h-3" />
@@ -257,10 +269,10 @@ const LiveStreamTile: React.FC<{
         </div>
 
         {/* Row 2: Compact Live Ticker (Single line snippet / tool call) */}
-        <div className="rounded-md bg-[#010308] border border-white/[0.04] px-2 py-1 flex items-center gap-1.5 overflow-hidden h-[28px]">
+        <div className="rounded-md bg-[#01050e]/95 border border-[var(--border-subtle)] px-2 py-1 flex items-center gap-1.5 overflow-hidden h-[28px] shadow-inner">
           {isTool ? (
-            <div className="flex items-center gap-1 min-w-0 text-amber-300 font-medium text-[11px] truncate">
-              <Wrench className="w-3 h-3 text-amber-400 shrink-0" />
+            <div className="flex items-center gap-1.5 min-w-0 font-medium text-[11px] truncate bg-[var(--primary-bg-badge)] px-1.5 py-0.5 rounded border border-[var(--primary-border)] text-[var(--primary)]">
+              <Wrench className="w-3 h-3 shrink-0" />
               <span className="truncate">{snippet}</span>
             </div>
           ) : (
@@ -272,7 +284,7 @@ const LiveStreamTile: React.FC<{
                 {snippet}
               </span>
               {!stream.isDone && (
-                <span className="inline-block w-1.5 h-3 bg-[#00f0ff] ml-0.5 shrink-0 animate-pulse" />
+                <span className="inline-block w-1.5 h-3 bg-[var(--primary)] ml-0.5 shrink-0 animate-pulse shadow-[0_0_8px_var(--primary)]" />
               )}
             </div>
           )}
@@ -288,7 +300,7 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
   onClearCompleted,
 }) => {
   const [now, setNow] = useState<number>(Date.now());
-  const DECAY_WINDOW_MS = 4 * 60 * 1000; // Auto-prune cards older than 4 minutes
+  const DECAY_WINDOW_MS = 4.5 * 60 * 1000; // Auto-prune cards older than 4.5 minutes
 
   // Smooth tick for relative times and decay colors
   useEffect(() => {
@@ -298,7 +310,7 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // 1. Filter: Retain active streams or completed streams within the 4-minute decay window
+  // 1. Filter: Retain active streams or completed streams within the decay window
   const activeOrRecent = streams.filter(
     (s) => !s.isDone || now - s.lastUpdated <= DECAY_WINDOW_MS
   );
@@ -335,23 +347,24 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
   const completedCount = displayedAgents.filter((s) => s.isDone).length;
 
   return (
-    <div className="space-y-2.5 rounded-xl border border-white/[0.08] bg-[#02050e]/75 backdrop-blur p-3 font-mono shadow-[0_0_20px_rgba(0,0,0,0.5)]">
-      {/* Compact Header */}
-      <div className="flex items-center justify-between border-b border-white/[0.05] pb-2">
-        <div className="flex items-center gap-2">
-          <div className="p-1 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
-            <Terminal className="w-3.5 h-3.5" />
+    <div className="space-y-2.5 rounded-2xl border border-[var(--primary-border)] bg-[var(--bg-card)] backdrop-blur-md p-3.5 font-mono shadow-[0_0_30px_var(--primary-glow-subtle)] transition-colors">
+      {/* Header Bar */}
+      <div className="flex items-center justify-between border-b border-[var(--border-subtle)] pb-2.5">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-[var(--primary)] shadow-[0_0_12px_var(--primary-glow-subtle)]">
+            <Terminal className="w-4 h-4" />
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-white tracking-wider">
+            <span className="text-xs font-bold text-white tracking-wider flex items-center gap-1.5">
               LIVE AGENT DECK
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] inline-block shadow-[0_0_6px_var(--primary)]" />
             </span>
             {activeCount > 0 && (
-              <Badge variant="cyan" className="text-[10px] px-1.5 py-0 animate-pulse">
+              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)] animate-pulse">
                 {activeCount} ACTIVE
-              </Badge>
+              </span>
             )}
-            <span className="text-[11px] text-slate-500">
+            <span className="text-[11px] text-slate-400 font-mono">
               ({displayedAgents.length} {displayedAgents.length === 1 ? 'agent' : 'agents'})
             </span>
           </div>
@@ -364,7 +377,7 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
               variant="secondary"
               size="sm"
               onClick={onClearCompleted}
-              className="text-[10px] h-6 px-2 py-0 text-slate-400 hover:text-white"
+              className="text-[10px] h-6 px-2.5 py-0 hover:border-[var(--primary-border)] hover:text-[var(--primary)]"
             >
               Clear Completed
             </Button>
@@ -372,19 +385,19 @@ export const LiveAgentDeck: React.FC<LiveAgentDeckProps> = ({
         </div>
       </div>
 
-      {/* Grid of Compact ~80px Agent Tiles */}
+      {/* Grid of Compact ~82px Agent Tiles */}
       {displayedAgents.length === 0 ? (
-        <div className="rounded-lg border border-white/[0.04] bg-[#010308] p-2.5 text-xs text-slate-500 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="rounded-xl border border-[var(--border-subtle)] bg-[#010814]/60 p-3 text-xs text-slate-400 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
             <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00f0ff] opacity-40" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00f0ff]/60" />
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--primary)] opacity-40" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-[var(--primary)]" />
             </span>
-            <span className="text-[11px]">
-              Standing by on <span className="text-cyan-400 font-semibold">/ws/live</span>. Ready for active agent streams.
+            <span className="text-[11px] text-slate-300">
+              Standing by on <span className="text-[var(--primary)] font-semibold">/ws/live</span>. Ready for active agent streams.
             </span>
           </div>
-          <span className="text-[10px] text-slate-600">0 Active Streams</span>
+          <span className="text-[10px] text-slate-500 font-mono">0 Active Streams</span>
         </div>
       ) : (
         <div className="grid gap-2.5 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
