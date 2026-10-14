@@ -1773,7 +1773,7 @@ use crate::server::*;
     }
 
     fn build_full_test_router(state: ReloadableState) -> axum::Router {
-        use axum::routing::{get, post, put};
+        use axum::routing::{delete, get, post, put};
         axum::Router::new()
             .route("/v1/models", get(routes::list_models))
             .route("/v1/embeddings", post(routes::create_embeddings))
@@ -1785,6 +1785,8 @@ use crate::server::*;
             .route("/api/virtual-models", get(admin::list_virtual_models))
             .route("/api/virtual-models/{name}", put(admin::upsert_virtual_model).delete(admin::delete_virtual_model))
             .route("/api/analytics/daily", get(admin::get_daily_analytics))
+            .route("/api/vault/secrets", get(admin::list_vault_secrets).post(admin::create_vault_secret))
+            .route("/api/vault/secrets/{name}", delete(admin::delete_vault_secret))
             .route("/api/logs", get(routes::get_logs))
             .route("/mcp/sse", get(mcp::mcp_sse_handler))
             .route("/mcp/messages", post(mcp::mcp_messages_handler))
@@ -2106,4 +2108,134 @@ use crate::server::*;
             res_json["choices"][0]["message"]["content"].as_str().unwrap(),
             "direct model output"
         );
+    }
+
+    /// Integration test verifying central Vault secret storage, AES-256-GCM encryption,
+    /// cross-provider template reuse (${SECRET_NAME}), alias resolution, and MCP tools.
+    #[tokio::test]
+    async fn test_central_vault_secret_reuse_and_mcp() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_app_state, rs) = build_test_state(addr);
+
+        let router = build_full_test_router(rs.clone());
+        let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = proxy_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(proxy_listener, router).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+
+        // 1. Add secret to vault once via MCP
+        let set_res = client
+            .post(format!("http://{}/mcp/messages", proxy_addr))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "wirellm_set_secret",
+                    "arguments": {
+                        "name": "NVIDIA_API_KEY",
+                        "value": "nvapi-secret-12345-very-long",
+                        "description": "Primary NVIDIA key"
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(set_res.status(), 200);
+
+        // 2. Verify masked preview via MCP, plaintext is never exposed
+        let list_res = client
+            .post(format!("http://{}/mcp/messages", proxy_addr))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "wirellm_list_secrets",
+                    "arguments": {}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(list_res.status(), 200);
+        let list_json: Value = list_res.json().await.unwrap();
+        let text_content = list_json["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text_content.contains("NVIDIA_API_KEY"));
+        assert!(text_content.contains("••••"));
+        assert!(!text_content.contains("12345"));
+
+        // 3. Verify template resolution with exact name and alias
+        let resolved = rs.db.resolve_secret_template("${NVIDIA_API_KEY}").unwrap();
+        assert_eq!(resolved, "nvapi-secret-12345-very-long");
+
+        let resolved_alias = rs.db.resolve_secret_template("${NVIDIA}").unwrap();
+        assert_eq!(resolved_alias, "nvapi-secret-12345-very-long");
+
+        // 4. Configure two providers reusing the single vault secret
+        let empty_headers = std::collections::HashMap::new();
+        rs.db.upsert_provider(
+            "nvidia-nemotron",
+            true,
+            "https://integrate.api.nvidia.com/v1/",
+            "${NVIDIA_API_KEY}",
+            &["nvidia/nemotron-3-ultra-550b-a55b".to_string()],
+            &empty_headers,
+            Some(40),
+            Some(1200),
+            Some(3),
+            Some(95),
+            None,
+        ).unwrap();
+
+        rs.db.upsert_provider(
+            "nvidia-llama",
+            true,
+            "https://integrate.api.nvidia.com/v1/",
+            "${NVIDIA}",
+            &["meta/llama-3.3-70b-instruct".to_string()],
+            &empty_headers,
+            Some(40),
+            Some(1200),
+            Some(3),
+            Some(95),
+            None,
+        ).unwrap();
+
+        // 5. Load config and verify BOTH providers successfully decrypted the same secret
+        let cfg = rs.db.load_config().unwrap();
+        let p1 = cfg.providers.iter().find(|p| p.name == "nvidia-nemotron").unwrap();
+        let p2 = cfg.providers.iter().find(|p| p.name == "nvidia-llama").unwrap();
+        assert!(p1.enabled);
+        assert_eq!(p1.api_key, "nvapi-secret-12345-very-long");
+        assert!(p2.enabled);
+        assert_eq!(p2.api_key, "nvapi-secret-12345-very-long");
+
+        // 6. Test Admin REST API endpoints: GET /api/vault/secrets and DELETE
+        let api_secrets: Vec<wirellm_core::db::VaultSecretRecord> = client
+            .get(format!("http://{}/api/vault/secrets", proxy_addr))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(api_secrets.len(), 1);
+        assert_eq!(api_secrets[0].name, "NVIDIA_API_KEY");
+        assert!(api_secrets[0].key_preview.contains("••••"));
+
+        let del_res = client
+            .delete(format!("http://{}/api/vault/secrets/NVIDIA_API_KEY", proxy_addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(del_res.status(), 200);
+
+        let after_del = rs.db.list_vault_secrets().unwrap();
+        assert_eq!(after_del.len(), 0);
     }

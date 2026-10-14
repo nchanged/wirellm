@@ -91,6 +91,15 @@ pub struct ApiKeyRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VaultSecretRecord {
+    pub name: String,
+    pub key_preview: String,
+    pub description: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 pub struct DbManager {
     db_path: PathBuf,
 }
@@ -205,12 +214,24 @@ impl DbManager {
                 key_val TEXT NOT NULL,
                 key_preview TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS vault_secrets (
+                name TEXT PRIMARY KEY,
+                encrypted_value TEXT NOT NULL,
+                key_preview TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );",
         )
         .map_err(|e| OxllmError::Internal(format!("Failed to initialize SQLite schema: {}", e)))?;
 
         // Auto-migrate column encrypted_api_key for existing databases
         let _ = conn.execute("ALTER TABLE providers ADD COLUMN encrypted_api_key TEXT DEFAULT ''", []);
+
+        // Auto-migrate any existing provider encrypted keys to central vault_secrets table
+        let _ = self.auto_migrate_provider_keys_to_vault();
 
         Ok(())
     }
@@ -417,7 +438,7 @@ impl DbManager {
             let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
             let headers: HashMap<String, String> = serde_json::from_str(&headers_json).unwrap_or_default();
 
-            // Decrypt raw API key from vault if present, otherwise expand environment variable template
+            // Decrypt raw API key from vault if present, otherwise expand environment variable / vault template
             let (api_key, enabled) = if !encrypted_api_key.trim().is_empty() {
                 match crate::vault::decrypt_key(&encrypted_api_key) {
                     Ok(k) if !k.trim().is_empty() => (k, enabled),
@@ -428,8 +449,9 @@ impl DbManager {
                     }
                 }
             } else {
-                match crate::config::expand_env_vars(&api_key_template) {
-                    Ok(k) => (k, enabled),
+                match self.resolve_secret_template(&api_key_template) {
+                    Ok(k) if !k.trim().is_empty() => (k, enabled),
+                    Ok(_) => (String::new(), false),
                     Err(e) => {
                         tracing::warn!("Provider '{}' has unresolvable api_key ({}). Disabling provider until configured.", name, e);
                         (String::new(), false)
@@ -573,8 +595,21 @@ impl DbManager {
              FROM providers p
              LEFT JOIN daily_usage d ON p.name = d.provider_name
              GROUP BY p.name
-             ORDER BY p.name ASC"
+              ORDER BY p.name ASC"
         ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let vault_names: std::collections::HashSet<String> = {
+            let mut set = std::collections::HashSet::new();
+            if let Ok(secrets) = self.list_vault_secrets() {
+                for s in secrets {
+                    if s.name.ends_with("_API_KEY") {
+                        set.insert(s.name[..s.name.len() - 8].to_string());
+                    }
+                    set.insert(s.name);
+                }
+            }
+            set
+        };
 
         let rows = stmt.query_map([], |row| {
             let name: String = row.get(0)?;
@@ -589,7 +624,15 @@ impl DbManager {
             let enc_key: String = row.get(14)?;
 
             let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
-            let has_encrypted_key = !enc_key.trim().is_empty();
+            let tmpl_var = api_key_template
+                .trim()
+                .trim_start_matches("${")
+                .trim_end_matches('}')
+                .trim_start_matches('$')
+                .to_uppercase()
+                .replace('-', "_");
+            let in_vault = vault_names.contains(&tmpl_var);
+            let has_encrypted_key = !enc_key.trim().is_empty() || in_vault;
             let key_preview = if has_encrypted_key {
                 "••••••••••••".to_string()
             } else {
@@ -651,19 +694,23 @@ impl DbManager {
                 // User provided an env var reference (e.g. $VAR or ${VAR}) -> clear encrypted key
                 (raw.to_string(), Some(String::new()))
             } else {
-                // User provided a literal secret string -> encrypt it
+                // User provided a literal secret string -> encrypt it and register in central Vault
                 let enc = crate::vault::encrypt_key(raw)?;
+                let secret_name = format!("{}_API_KEY", name.to_uppercase().replace('-', "_"));
+                let _ = self.upsert_vault_secret(&secret_name, raw, &format!("API key for provider '{}'", name));
                 let templ = if trimmed_template.starts_with('$') {
                     trimmed_template.to_string()
                 } else {
-                    format!("${{{}_API_KEY}}", name.to_uppercase().replace('-', "_"))
+                    format!("${{{}}}", secret_name)
                 };
                 (templ, Some(enc))
             }
         } else if !trimmed_template.is_empty() && !trimmed_template.starts_with('$') {
-            // Direct key entered in api_key_template field
+            // Direct key entered in api_key_template field -> encrypt and register in central Vault
             let enc = crate::vault::encrypt_key(trimmed_template)?;
-            let templ = format!("${{{}_API_KEY}}", name.to_uppercase().replace('-', "_"));
+            let secret_name = format!("{}_API_KEY", name.to_uppercase().replace('-', "_"));
+            let _ = self.upsert_vault_secret(&secret_name, trimmed_template, &format!("API key for provider '{}'", name));
+            let templ = format!("${{{}}}", secret_name);
             (templ, Some(enc))
         } else if trimmed_template.starts_with('$') {
             (trimmed_template.to_string(), Some(String::new()))
@@ -932,6 +979,268 @@ impl DbManager {
             }
         }
         Ok(res)
+    }
+
+    // =========================================================================
+    // Central Vault Secrets Management (AES-256-GCM Encrypted at Rest)
+    // =========================================================================
+
+    /// Lists all secrets stored in the central encrypted Vault (masked preview).
+    /// Plaintext secrets are never returned.
+    pub fn list_vault_secrets(&self) -> Result<Vec<VaultSecretRecord>> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare("SELECT name, key_preview, description, created_at, updated_at FROM vault_secrets ORDER BY name ASC")
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(VaultSecretRecord {
+                    name: row.get(0)?,
+                    key_preview: row.get(1)?,
+                    description: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut res = Vec::new();
+        for r in rows {
+            res.push(r.map_err(|e| OxllmError::Internal(e.to_string()))?);
+        }
+        Ok(res)
+    }
+
+    /// Stores or updates an encrypted secret in the central Vault.
+    /// Plaintext is encrypted with AES-256-GCM before writing to SQLite.
+    pub fn upsert_vault_secret(&self, name: &str, raw_value: &str, description: &str) -> Result<()> {
+        let clean_name = name.trim().to_uppercase().replace('-', "_");
+        if clean_name.is_empty() {
+            return Err(OxllmError::Internal("Vault secret name cannot be empty".to_string()));
+        }
+        let clean_val = raw_value.trim();
+        if clean_val.is_empty() {
+            return Err(OxllmError::Internal("Vault secret value cannot be empty".to_string()));
+        }
+
+        let enc = crate::vault::encrypt_key(clean_val)?;
+        let preview = crate::vault::mask_key_preview(clean_val);
+        let conn = self.connect()?;
+
+        conn.execute(
+            "INSERT INTO vault_secrets (name, encrypted_value, key_preview, description, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+             ON CONFLICT(name) DO UPDATE SET
+                 encrypted_value = ?2,
+                 key_preview = ?3,
+                 description = ?4,
+                 updated_at = CURRENT_TIMESTAMP",
+            params![clean_name, enc, preview, description.trim()],
+        )
+        .map_err(|e| OxllmError::Internal(format!("Failed to save secret to vault: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Deletes a secret from the central Vault.
+    pub fn delete_vault_secret(&self, name: &str) -> Result<()> {
+        let clean_name = name.trim().to_uppercase().replace('-', "_");
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM vault_secrets WHERE name = ?1", params![clean_name])
+            .map_err(|e| OxllmError::Internal(format!("Failed to delete vault secret: {}", e)))?;
+        Ok(())
+    }
+
+    /// Decrypts and retrieves a secret by exact name from the Vault.
+    pub fn get_vault_secret_decrypted(&self, name: &str) -> Result<Option<String>> {
+        let clean_name = name.trim().to_uppercase().replace('-', "_");
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare("SELECT encrypted_value FROM vault_secrets WHERE name = ?1")
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut rows = stmt
+            .query_map(params![clean_name], |row| row.get::<_, String>(0))
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        if let Some(r) = rows.next() {
+            let enc: String = r.map_err(|e| OxllmError::Internal(e.to_string()))?;
+            let decrypted = crate::vault::decrypt_key(&enc)?;
+            Ok(Some(decrypted))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Retrieves a secret from the central Vault checking common alias variations.
+    pub fn get_vault_secret_with_aliases(&self, name: &str) -> Result<Option<String>> {
+        let clean = name.trim().to_uppercase().replace('-', "_");
+
+        // 1. Direct name match (e.g. NVIDIA_API_KEY)
+        if let Some(val) = self.get_vault_secret_decrypted(&clean)? {
+            return Ok(Some(val));
+        }
+
+        // 2. If name ends with _API_KEY, check base name (e.g. NVIDIA_API_KEY -> NVIDIA)
+        if clean.ends_with("_API_KEY") {
+            let base = &clean[..clean.len() - 8];
+            if let Some(val) = self.get_vault_secret_decrypted(base)? {
+                return Ok(Some(val));
+            }
+        } else {
+            // Check with _API_KEY suffix (e.g. NVIDIA -> NVIDIA_API_KEY)
+            let with_suffix = format!("{}_API_KEY", clean);
+            if let Some(val) = self.get_vault_secret_decrypted(&with_suffix)? {
+                return Ok(Some(val));
+            }
+        }
+
+        // 3. If name ends with _TOKEN, check base name and with _API_KEY
+        if clean.ends_with("_TOKEN") {
+            let base = &clean[..clean.len() - 6];
+            if let Some(val) = self.get_vault_secret_decrypted(base)? {
+                return Ok(Some(val));
+            }
+            let with_api_key = format!("{}_API_KEY", base);
+            if let Some(val) = self.get_vault_secret_decrypted(&with_api_key)? {
+                return Ok(Some(val));
+            }
+        } else {
+            let with_token = format!("{}_TOKEN", clean);
+            if let Some(val) = self.get_vault_secret_decrypted(&with_token)? {
+                return Ok(Some(val));
+            }
+        }
+
+        // 4. Common provider synonym pairs
+        let synonym = match clean.as_str() {
+            "OPENROUTER_API_KEY" | "OPENROUTER" => Some("OPENROUTER_TOKEN"),
+            "OPENROUTER_TOKEN" => Some("OPENROUTER_API_KEY"),
+            "GEMINI_API_KEY" | "GEMINI" => Some("GOOGLE_API_KEY"),
+            "GOOGLE_API_KEY" => Some("GEMINI_API_KEY"),
+            "OPENCODE_GO_KEY" | "OPENCODE_ZEN_KEY" => Some("OPENCODE_API_KEY"),
+            _ => None,
+        };
+
+        if let Some(syn) = synonym {
+            if let Some(val) = self.get_vault_secret_decrypted(syn)? {
+                return Ok(Some(val));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Checks if a template string references a valid secret in the central Vault.
+    pub fn has_vault_secret(&self, template: &str) -> bool {
+        let trimmed = template.trim();
+        if trimmed.starts_with("${") && trimmed.ends_with('}') {
+            let var_name = &trimmed[2..trimmed.len() - 1];
+            self.get_vault_secret_with_aliases(var_name).unwrap_or(None).is_some()
+        } else if trimmed.starts_with('$') {
+            let var_name = &trimmed[1..];
+            self.get_vault_secret_with_aliases(var_name).unwrap_or(None).is_some()
+        } else {
+            self.get_vault_secret_with_aliases(trimmed).unwrap_or(None).is_some()
+        }
+    }
+
+    /// Resolves an API key template such as `${NVIDIA_API_KEY}` by first querying
+    /// the central encrypted `vault_secrets` store, and falling back to `std::env::var`.
+    pub fn resolve_secret_template(&self, raw_content: &str) -> Result<String> {
+        let mut expanded = String::new();
+        let mut chars = raw_content.char_indices().peekable();
+        let mut found_template = false;
+
+        while let Some((idx, ch)) = chars.next() {
+            if ch == '$' {
+                if let Some(&(_, '{')) = chars.peek() {
+                    chars.next(); // Consume '{'
+                    found_template = true;
+
+                    let mut var_name = String::new();
+                    let mut found_close = false;
+
+                    while let Some((_, var_ch)) = chars.next() {
+                        if var_ch == '}' {
+                            found_close = true;
+                            break;
+                        }
+                        var_name.push(var_ch);
+                    }
+
+                    if !found_close {
+                        return Err(OxllmError::ConfigLoad(format!(
+                            "Unclosed environment variable placeholder starting at index {}",
+                            idx
+                        )));
+                    }
+
+                    // 1. Try to fetch from central Vault secrets
+                    if let Ok(Some(secret)) = self.get_vault_secret_with_aliases(&var_name) {
+                        expanded.push_str(&secret);
+                        continue;
+                    }
+
+                    // 2. Fall back to standard environment variable resolution
+                    match crate::config::expand_env_vars(&format!("${{{}}}", var_name)) {
+                        Ok(val) => expanded.push_str(&val),
+                        Err(e) => return Err(e),
+                    }
+                    continue;
+                }
+            }
+            expanded.push(ch);
+        }
+
+        if !found_template {
+            // Check if raw string is a known secret in the Vault
+            if let Ok(Some(secret)) = self.get_vault_secret_with_aliases(raw_content.trim()) {
+                return Ok(secret);
+            }
+        }
+
+        Ok(expanded)
+    }
+
+    /// Auto-migrates existing provider encrypted keys into central vault_secrets table
+    /// if vault_secrets is currently empty.
+    pub fn auto_migrate_provider_keys_to_vault(&self) -> Result<()> {
+        let conn = self.connect()?;
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM vault_secrets", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        if count > 0 {
+            return Ok(());
+        }
+
+        let mut stmt = conn
+            .prepare("SELECT name, encrypted_api_key FROM providers WHERE encrypted_api_key IS NOT NULL AND encrypted_api_key != ''")
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        for r in rows {
+            if let Ok((prov_name, enc_key)) = r {
+                if let Ok(decrypted) = crate::vault::decrypt_key(&enc_key) {
+                    let secret_name = format!("{}_API_KEY", prov_name.to_uppercase().replace('-', "_"));
+                    let preview = crate::vault::mask_key_preview(&decrypted);
+                    let _ = conn.execute(
+                        "INSERT OR IGNORE INTO vault_secrets (name, encrypted_value, key_preview, description, created_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                        params![secret_name, enc_key, preview, format!("Migrated from provider '{}'", prov_name)],
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
