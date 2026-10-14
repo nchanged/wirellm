@@ -18,13 +18,7 @@ RUN npm run build
 # -------------------------------------------------------------------------
 # Stage 2: Rust Release Binary Builder
 # -------------------------------------------------------------------------
-FROM rust:1.85-slim-bookworm AS backend-builder
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
+FROM rust:bookworm AS backend-builder
 WORKDIR /app
 
 # Cache dependencies
@@ -47,6 +41,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

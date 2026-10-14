@@ -575,8 +575,8 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
 
     if let Some(p) = cli_port {
         config.server.port = p;
-    } else if let Ok(p_str) = std::env::var("WIRELLM_PORT").or_else(|_| std::env::var("PORT")) {
-        if let Ok(p) = p_str.trim().parse::<u16>() {
+    } else if let Ok(p_str) = std::env::var("PORT").or_else(|_| std::env::var("WIRELLM_PORT")) {
+        if let Ok(p) = crate::cli::parse_port(&p_str) {
             config.server.port = p;
         }
     }
