@@ -76,6 +76,7 @@ pub struct AuthStatusResponse {
     pub api_auth_required: bool,
     pub authenticated: bool,
     pub user: Option<SessionUser>,
+    pub is_cloud_env: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,6 +279,9 @@ pub async fn get_auth_status(
     IsLocalhost(is_local): IsLocalhost,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    let auth = &app_state.auth;
+    let is_cloud = auth.is_google_auth_enabled() || auth.public_url.is_some();
+
     if is_local {
         return Json(AuthStatusResponse {
             google_auth_enabled: false,
@@ -289,18 +293,19 @@ pub async fn get_auth_status(
                 picture: None,
                 exp: u64::MAX,
             }),
+            is_cloud_env: is_cloud,
         });
     }
 
-    let auth = &app_state.auth;
     let secret = resolve_session_secret(auth);
     let session_user = extract_session_user(&headers, &secret);
 
     let status = AuthStatusResponse {
         google_auth_enabled: auth.is_google_auth_enabled(),
-        api_auth_required: auth.is_api_auth_required(),
+        api_auth_required: is_cloud || auth.is_api_auth_required(),
         authenticated: session_user.is_some(),
         user: session_user,
+        is_cloud_env: is_cloud,
     };
 
     Json(status)
@@ -586,36 +591,51 @@ pub async fn require_api_auth(
     }
 
     let auth = &app_state.auth;
+    let is_cloud_env = auth.is_google_auth_enabled() || auth.public_url.is_some();
 
-    // If API token access is not configured, access is open (unprotected)
-    if !auth.is_api_auth_required() {
-        return next.run(req).await;
-    }
+    // In cloud environment OR if API keys are configured, remote requests must be authenticated
+    if is_cloud_env || auth.is_api_auth_required() {
+        let headers = req.headers();
 
-    let headers = req.headers();
-    if let Some(token) = extract_api_key(headers, None) {
-        if is_api_key_valid(&token, &auth.api_keys) {
+        // Check 1: API Key (Bearer token, x-api-key, or query param ?token=)
+        if let Some(token) = extract_api_key(headers, None) {
+            if is_api_key_valid(&token, &auth.api_keys) {
+                return next.run(req).await;
+            }
+        }
+
+        // Check 2: Active UI session cookie (if browsing from the web app)
+        let secret = resolve_session_secret(auth);
+        if extract_session_user(headers, &secret).is_some() {
             return next.run(req).await;
         }
+
+        let msg = if auth.api_keys.is_empty() {
+            "API access is restricted in cloud environment. Please generate an API key in the WireLLM dashboard under 'API Keys & Access'."
+        } else {
+            "Invalid or missing API key. Please provide 'Authorization: Bearer <key>' or 'x-api-key'."
+        };
+
+        warn!("Unauthorized remote API request to {}", req.uri().path());
+        let error_body = serde_json::json!({
+            "error": {
+                "message": msg,
+                "type": "authentication_error",
+                "code": 401
+            }
+        });
+
+        let bytes = serde_json::to_vec(&error_body).unwrap_or_default();
+        let mut response = Response::new(Body::from(bytes));
+        *response.status_mut() = StatusCode::UNAUTHORIZED;
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        return response;
     }
 
-    warn!("Unauthorized API request to {}", req.uri().path());
-    let error_body = serde_json::json!({
-        "error": {
-            "message": "Invalid or missing API key. Please provide 'Authorization: Bearer <key>' or 'x-api-key'.",
-            "type": "authentication_error",
-            "code": 401
-        }
-    });
-
-    let bytes = serde_json::to_vec(&error_body).unwrap_or_default();
-    let mut response = Response::new(Body::from(bytes));
-    *response.status_mut() = StatusCode::UNAUTHORIZED;
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json"),
-    );
-    response
+    next.run(req).await
 }
 
 /// Middleware for `/api/*` and management endpoints:
