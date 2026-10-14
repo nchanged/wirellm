@@ -629,3 +629,10 @@ fn internal_error(msg: String) -> (StatusCode, Json<serde_json::Value>) {
     )
 }
 
+/// GET /api/setup/recommendations - Returns bundled recommendations markdown and metadata
+pub async fn get_setup_recommendations() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "markdown": crate::mcp::RECOMMENDED_SETUP_MD,
+    }))
+}
+

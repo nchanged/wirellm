@@ -699,6 +699,7 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
             put(admin::upsert_virtual_model).delete(admin::delete_virtual_model),
         )
         .route("/api/analytics/daily", get(admin::get_daily_analytics))
+        .route("/api/setup/recommendations", get(admin::get_setup_recommendations))
         .route("/api/logs", get(routes::get_logs))
         .layer(middleware::from_fn_with_state(
             reloadable_state.clone(),

@@ -19,6 +19,7 @@ import {
   Filter,
   CircuitBoard,
   Workflow,
+  Bot,
 } from 'lucide-react';
 import { resetProviderCircuit } from '../api';
 import {
@@ -35,12 +36,15 @@ import {
   cn,
 } from '../ui';
 import { LiveAgentDeck, ActiveStreamState } from './LiveAgentDeck';
+import { AgentSetupHero } from './AgentSetupHero';
 
 interface OverviewProps {
   status: ApiStatusResponse | null;
   onRefresh: () => void;
   liveEvent?: LiveStreamEvent | null;
   recentStreams?: Array<{ event: LiveStreamEvent; timestamp_ms: number }> | null;
+  onNavigateToProviders?: () => void;
+  isCloudOrProtected?: boolean;
 }
 
 interface TargetEvaluation {
@@ -140,9 +144,12 @@ export const Overview: React.FC<OverviewProps> = ({
   onRefresh,
   liveEvent,
   recentStreams,
+  onNavigateToProviders,
+  isCloudOrProtected = false,
 }) => {
   const [selectedVmTab, setSelectedVmTab] = useState<string>('all');
   const [filterMode, setFilterMode] = useState<'all' | 'active_blocked'>('all');
+  const [showAgentSetup, setShowAgentSetup] = useState<boolean>(false);
 
   // Initialize from localStorage (pruning entries older than 5 minutes)
   const [activeStreams, setActiveStreams] = useState<Record<string, ActiveStreamState>>(() => {
@@ -347,6 +354,14 @@ export const Overview: React.FC<OverviewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* 0. Hero Onboarding: Agent Setup when 0 providers configured, or when toggled */}
+      {(status.providers.length === 0 || showAgentSetup) && (
+        <AgentSetupHero
+          onNavigateToProviders={onNavigateToProviders}
+          isCloudOrProtected={isCloudOrProtected}
+        />
+      )}
+
       {/* 1. Quick Telemetry Strip using MetricCard */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <MetricCard
@@ -477,6 +492,19 @@ export const Overview: React.FC<OverviewProps> = ({
               <Filter className="w-3 h-3 text-slate-400" />
               {filterMode === 'active_blocked' ? 'Active / Blocked Only' : 'All Targets'}
             </Button>
+
+            {status.providers.length > 0 && (
+              <Button
+                variant={showAgentSetup ? 'primary' : 'secondary'}
+                size="sm"
+                onClick={() => setShowAgentSetup(!showAgentSetup)}
+                title="Toggle Autonomous Agent MCP Setup Guide & Prompt"
+                className="font-mono text-xs"
+              >
+                <Bot className="w-3 h-3 mr-1 text-[var(--primary)]" />
+                {showAgentSetup ? 'Hide Agent Guide' : 'Agent MCP Guide'}
+              </Button>
+            )}
 
             <Button
               variant="secondary"
