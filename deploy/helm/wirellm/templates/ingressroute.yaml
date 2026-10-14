@@ -1,0 +1,19 @@
+{{- if .Values.ingressroute.enabled -}}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "wirellm.fullname" . }}
+  labels:
+    {{- include "wirellm.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+{{ toYaml .Values.ingressroute.entryPoints | indent 4 }}
+  routes:
+    - match: Host(`{{ .Values.ingressroute.host }}`)
+      kind: Rule
+      services:
+        - name: {{ include "wirellm.fullname" . }}
+          port: {{ .Values.service.port }}
+  tls:
+    secretName: {{ .Values.ingressroute.tlsSecretName }}
+{{- end }}

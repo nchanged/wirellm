@@ -1,0 +1,76 @@
+# =========================================================================
+# WireLLM - Production Cluster Deployment Example
+# Copy this file to a private location or pass via `helm install -f`
+# =========================================================================
+
+replicaCount: 1
+
+image:
+  repository: wirellm/wirellm
+  tag: latest
+  pullPolicy: Always
+
+service:
+  type: ClusterIP
+  port: 8765
+
+# Traefik IngressRoute (Oracle Cloud OKE / Traefik ingress controller)
+ingressroute:
+  enabled: true
+  entryPoints:
+    - websecure
+  host: wire.nchanged.eu
+  tlsSecretName: wire-nchanged-eu-tls
+
+# Automatic Let's Encrypt SSL/TLS Certificate
+certificate:
+  enabled: true
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+
+# SQLite WAL database persistence
+persistence:
+  enabled: true
+  mountPath: /data
+  size: 5Gi
+  # storageClass: "oci-bv"
+
+# Cluster Security & Authentication Configuration
+auth:
+  # -----------------------------------------------------------------------
+  # 1. API Token Access:
+  #    Protects /v1/chat/completions, /v1/models, /v1/embeddings, /mcp/*
+  #    Leave empty ([]) if you want open, unprotected API access.
+  # -----------------------------------------------------------------------
+  apiKeys:
+    - "sk-wire-cluster-key-prod-001"
+    - "sk-wire-agent-claude-worker"
+
+  # -----------------------------------------------------------------------
+  # 2. Google OAuth:
+  #    Protects the Web UI and Management APIs
+  # -----------------------------------------------------------------------
+  google:
+    clientId: "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com"
+    clientSecret: "GOCSPX-YOUR_GOOGLE_CLIENT_SECRET"
+    allowedEmails:
+      - "your-email@gmail.com"
+      # - "*@yourcompany.com"
+
+  # 3. Session Signing Secret
+  sessionSecret: "generate-a-secure-random-string-here"
+
+  # 4. Gateway Origin
+  publicUrl: "https://wire.nchanged.eu"
+
+  # Option B: Instead of putting keys in values, reference an existing K8s secret:
+  # existingSecret: "wirellm-cluster-secrets"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi

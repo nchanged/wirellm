@@ -136,6 +136,7 @@ use crate::server::*;
             virtual_models,
             http_client,
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (_watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -228,6 +229,7 @@ use crate::server::*;
             virtual_models,
             http_client,
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (_watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -423,6 +425,7 @@ use crate::server::*;
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -558,6 +561,7 @@ use crate::server::*;
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -653,6 +657,7 @@ use crate::server::*;
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -770,6 +775,7 @@ use crate::server::*;
             virtual_models,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -860,6 +866,7 @@ use crate::server::*;
             virtual_models: vm,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -941,6 +948,7 @@ use crate::server::*;
             virtual_models: vms,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -1035,6 +1043,7 @@ use crate::server::*;
             virtual_models: vms,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -1129,6 +1138,7 @@ use crate::server::*;
             virtual_models: vm,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
         let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
@@ -1594,6 +1604,7 @@ use crate::server::*;
             virtual_models: vms,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -1718,6 +1729,7 @@ use crate::server::*;
             virtual_models: vms,
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (_ws, wr) = tokio::sync::watch::channel(app_state.clone());
@@ -2045,6 +2057,7 @@ use crate::server::*;
             virtual_models: std::collections::HashMap::new(), // No virtual models!
             http_client: reqwest::Client::builder().build().unwrap(),
             upstream_timeout_secs: 5,
+            auth: Default::default(),
         });
 
         let (ws, wr) = tokio::sync::watch::channel(app_state.clone());

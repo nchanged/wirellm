@@ -5,6 +5,7 @@ import {
   AnalyticsResponse,
   TestConnectionResponse,
   LogsResponse,
+  AuthStatusResponse,
 } from './types';
 
 const API_BASE = '';
@@ -120,4 +121,17 @@ export async function fetchLogs(limit = 100): Promise<LogsResponse> {
     throw new Error(`Failed to fetch logs: ${res.statusText}`);
   }
   return res.json();
+}
+
+export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
+  const res = await fetch(`${API_BASE}/auth/status`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch auth status: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function logout(): Promise<void> {
+  await fetch(`${API_BASE}/auth/logout`, { method: 'POST' }).catch(() => {});
+  window.location.href = '/ui';
 }

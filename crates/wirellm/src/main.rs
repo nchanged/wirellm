@@ -2,6 +2,7 @@ use clap::Parser;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 pub mod admin;
+pub mod auth;
 pub mod cli;
 pub mod mcp;
 pub mod routes;
