@@ -393,15 +393,15 @@ export const Overview: React.FC<OverviewProps> = ({
           label="Circuit Health"
           value={
             <span className="flex items-center gap-2">
-              <span className="text-[var(--primary)] font-bold">{healthyCount}</span>
+              <span className="text-[var(--secondary)] font-bold">{healthyCount}</span>
               <span className="text-xs text-slate-500 font-normal">/ {status.providers.length} online</span>
             </span>
           }
-          icon={<CircuitBoard className="w-3.5 h-3.5 text-indigo-400" />}
-          accent="purple"
+          icon={<CircuitBoard className="w-3.5 h-3.5 text-[var(--secondary)]" />}
+          accent="secondary"
           subtext={
-            <span className="flex items-center gap-1.5 text-indigo-300">
-              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+            <span className="flex items-center gap-1.5 text-[var(--secondary)]/90">
+              <span className="w-1.5 h-1.5 rounded-full bg-[var(--secondary)] shadow-[0_0_6px_var(--secondary)]" />
               <span>Adaptive cascade active</span>
             </span>
           }
@@ -536,10 +536,10 @@ export const Overview: React.FC<OverviewProps> = ({
               <Card
                 key={vm.name}
                 hoverEffect
-                className="bg-[#040711] p-4 flex flex-col justify-between space-y-3.5"
+                className="bg-[#050814] border border-white/10 p-4 flex flex-col justify-between space-y-3.5"
               >
                 {/* Virtual Model Header Bar - Locked row height to eliminate any layout oscillation */}
-                <div className="flex items-center justify-between gap-3 border-b border-white/[0.05] pb-2.5 min-h-[46px]">
+                <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-2.5 min-h-[46px]">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-bold text-white font-mono tracking-tight flex items-center gap-1.5 whitespace-nowrap shrink-0">
                       <span className="w-2 h-2 rounded-full bg-[var(--primary)] shadow-[0_0_10px_var(--primary)] shrink-0" />
@@ -547,22 +547,22 @@ export const Overview: React.FC<OverviewProps> = ({
                     </span>
                     {activeTarget ? (
                       <span
-                        className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-slate-200 whitespace-nowrap truncate max-w-[230px] shrink-0 shadow-[0_0_12px_var(--primary-glow-subtle)] animate-pulse"
+                        className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-mono bg-gradient-to-r from-[rgba(var(--primary-rgb),0.25)] to-[rgba(var(--secondary-rgb),0.12)] border border-[var(--primary)] text-white whitespace-nowrap truncate max-w-[260px] shrink-0 shadow-[0_0_15px_var(--primary-glow-subtle)] ring-1 ring-[var(--primary)]/30"
                         title={`Active: ${activeTarget.provider}:${activeTarget.model}`}
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] shrink-0" />
-                        <span className="text-[var(--primary)] font-bold">ACTIVE: {activeTarget.provider}</span>
-                        <span className="text-slate-600">:</span>
-                        <span className="text-slate-300 truncate">{activeTarget.model}</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] shadow-[0_0_8px_var(--primary)] shrink-0 animate-ping" />
+                        <span className="text-[var(--primary)] font-extrabold tracking-wide">ACTIVE: {activeTarget.provider}</span>
+                        <span className="text-slate-500 font-bold">:</span>
+                        <span className="text-white font-semibold truncate">{activeTarget.model}</span>
                       </span>
                     ) : primaryStandbyTarget ? (
                       <span
-                        className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono bg-[#02050c] border border-white/[0.08] text-slate-400 whitespace-nowrap truncate max-w-[230px] shrink-0"
+                        className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-mono bg-[#090d18] border border-white/10 text-slate-300 whitespace-nowrap truncate max-w-[260px] shrink-0"
                         title={`Standby Next: ${primaryStandbyTarget.provider}:${primaryStandbyTarget.model}`}
                       >
-                        <ArrowRight className="w-3 h-3 text-slate-500 shrink-0" />
-                        <span className="text-slate-300 font-medium">NEXT: {primaryStandbyTarget.provider}</span>
-                        <span className="text-slate-600">:</span>
+                        <ArrowRight className="w-3 h-3 text-[var(--secondary)] shrink-0" />
+                        <span className="text-slate-200 font-semibold">NEXT: {primaryStandbyTarget.provider}</span>
+                        <span className="text-slate-500">:</span>
                         <span className="text-slate-400 truncate">{primaryStandbyTarget.model}</span>
                       </span>
                     ) : null}
@@ -571,11 +571,12 @@ export const Overview: React.FC<OverviewProps> = ({
                   {/* Summary Status Badges */}
                   <div className="flex items-center gap-1.5 text-[10px] font-mono shrink-0 whitespace-nowrap">
                     {runningCount > 0 && (
-                      <Badge variant="primary" className="animate-pulse">
+                      <Badge variant="solid-primary" className="animate-pulse shadow-[0_0_12px_var(--primary-glow)] font-black text-black">
+                        <Activity className="w-3 h-3 animate-spin text-black shrink-0" />
                         {runningCount} ACTIVE
                       </Badge>
                     )}
-                    <Badge variant="neutral">
+                    <Badge variant="neutral" className="border-white/10 text-slate-300">
                       {standbyCount} STANDBY
                     </Badge>
                     {blockedCount > 0 && (
@@ -600,27 +601,27 @@ export const Overview: React.FC<OverviewProps> = ({
                     return (
                       <div
                         key={`${tgt.provider}-${tgt.model}-${idx}`}
-                        className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs transition-all ${
+                        className={`flex items-center justify-between px-3 py-2.5 rounded-lg text-xs transition-all ${
                           isRunning
-                            ? 'bg-[var(--primary-bg-badge)] border-[var(--primary-border)] shadow-[0_0_15px_var(--primary-glow-subtle)]'
+                            ? 'bg-gradient-to-r from-[rgba(var(--primary-rgb),0.24)] via-[rgba(var(--primary-rgb),0.12)] to-[rgba(var(--secondary-rgb),0.14)] border-2 border-[var(--primary)] shadow-[0_0_22px_var(--primary-glow-subtle)] ring-1 ring-[var(--primary)]/30'
                             : isPrimary
-                            ? 'bg-[#040810] border-[var(--primary-border)] shadow-sm'
+                            ? 'bg-[#060b17] border border-[var(--primary-border)] shadow-sm'
                             : isBlocked
-                            ? 'bg-rose-950/15 border-rose-900/40 opacity-75'
-                            : 'bg-[#02050c] border-white/[0.04] hover:border-white/[0.08]'
+                            ? 'bg-rose-950/20 border border-rose-900/40 opacity-80'
+                            : 'bg-[#090d18] border border-white/10 hover:border-white/20'
                         }`}
                       >
                         {/* Step Index & Provider */}
                         <div className="flex items-center gap-2.5 min-w-0">
                           <span
-                            className={`w-5 h-5 rounded-md text-[10px] font-mono font-bold flex items-center justify-center shrink-0 ${
+                            className={`w-5 h-5 rounded-md text-[10px] font-mono flex items-center justify-center shrink-0 ${
                               isRunning
-                                ? 'bg-[var(--primary)] text-black font-extrabold shadow-[0_0_10px_var(--primary)]'
+                                ? 'bg-[var(--primary)] text-black font-black shadow-[0_0_12px_var(--primary)] ring-1 ring-white/50'
                                 : isPrimary
-                                ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)]'
+                                ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)] font-bold'
                                 : isBlocked
-                                ? 'bg-rose-950/80 text-rose-400 border border-rose-800/60'
-                                : 'bg-slate-800/60 text-slate-400'
+                                ? 'bg-rose-950/80 text-rose-400 border border-rose-800/60 font-semibold'
+                                : 'bg-white/[0.06] text-slate-400 border border-white/10 font-semibold'
                             }`}
                           >
                             {idx + 1}
@@ -629,16 +630,16 @@ export const Overview: React.FC<OverviewProps> = ({
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5">
                               <span
-                                className={`font-semibold font-mono text-xs truncate ${
-                                  isRunning || isPrimary ? 'text-white' : isBlocked ? 'text-slate-400' : 'text-slate-300'
+                                className={`font-bold font-mono text-xs truncate ${
+                                  isRunning ? 'text-white drop-shadow-[0_0_8px_var(--primary-glow-subtle)]' : isPrimary ? 'text-white' : isBlocked ? 'text-slate-400' : 'text-slate-200'
                                 }`}
                               >
                                 {tgt.provider}
                               </span>
-                              <ChevronRight className="w-3 h-3 text-slate-600 shrink-0" />
+                              <ChevronRight className={`w-3 h-3 shrink-0 ${isRunning ? 'text-[var(--secondary)]' : 'text-slate-600'}`} />
                               <span
                                 className={`font-mono text-[11px] truncate max-w-[150px] sm:max-w-[200px] ${
-                                  isRunning || isPrimary ? 'text-[var(--primary)] font-semibold' : 'text-slate-400'
+                                  isRunning ? 'text-[var(--secondary)] font-bold drop-shadow-[0_0_6px_var(--secondary-glow-subtle)]' : isPrimary ? 'text-[var(--primary)] font-semibold' : 'text-slate-400'
                                 }`}
                                 title={tgt.model}
                               >
@@ -651,8 +652,8 @@ export const Overview: React.FC<OverviewProps> = ({
                         {/* Status / Failover Tag */}
                         <div className="flex items-center gap-2 shrink-0 font-mono">
                           {isRunning && (
-                            <Badge variant="primary" className="shadow animate-pulse font-bold">
-                              <Activity className="w-3 h-3 animate-spin text-[var(--primary)]" />
+                            <Badge variant="solid-primary" className="shadow-[0_0_12px_var(--primary-glow)] animate-pulse font-black text-black">
+                              <Activity className="w-3 h-3 animate-spin text-black shrink-0" />
                               ACTIVE {ev.inFlight > 0 ? `(${ev.inFlight} req)` : ''}
                             </Badge>
                           )}
@@ -672,7 +673,7 @@ export const Overview: React.FC<OverviewProps> = ({
                           )}
 
                           {!isRunning && !isPrimary && !isBlocked && (
-                            <span className="text-[10px] text-slate-500 bg-[#010307] px-2 py-0.5 rounded border border-white/[0.04]">
+                            <span className="text-[10px] text-slate-400 bg-white/[0.04] px-2 py-0.5 rounded border border-white/10 font-mono font-medium">
                               STANDBY #{idx + 1}
                             </span>
                           )}

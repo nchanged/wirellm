@@ -14,16 +14,23 @@
   --primary-hover: #ff40a0;
   --primary-glow: rgba(255, 20, 147, 0.5);
   --primary-glow-subtle: rgba(255, 20, 147, 0.16);
-  --primary-border: rgba(255, 20, 147, 0.38);
+  --primary-border: rgba(255, 20, 147, 0.45);
   --primary-bg-badge: #2a0018;
-  --primary-bg-badge-border: rgba(255, 20, 147, 0.5);
-  --bg-app: #080206;
-  --bg-header: rgba(18, 4, 14, 0.95);
-  --bg-card: #12040e;
-  --bg-card-subtle: #1c0617;
-  --border-subtle: rgba(255, 20, 147, 0.15);
-  --radial-1: rgba(255, 20, 147, 0.09);
-  --radial-2: rgba(217, 70, 239, 0.04);
+  --primary-bg-badge-border: rgba(255, 20, 147, 0.6);
+  --secondary: #00f0ff;
+  --secondary-rgb: 0, 240, 255;
+  --secondary-hover: #38bdf8;
+  --secondary-glow: rgba(0, 240, 255, 0.5);
+  --secondary-glow-subtle: rgba(0, 240, 255, 0.15);
+  --secondary-border: rgba(0, 240, 255, 0.4);
+  --secondary-bg-badge: #00222a;
+  --bg-app: #060206;
+  --bg-header: rgba(16, 4, 14, 0.95);
+  --bg-card: #0d040b;
+  --bg-card-subtle: #160613;
+  --border-subtle: rgba(255, 255, 255, 0.10);
+  --radial-1: rgba(255, 20, 147, 0.08);
+  --radial-2: rgba(0, 240, 255, 0.04);
 }
 
 [data-theme="cyan"] {
@@ -32,17 +39,24 @@
   --primary-rgb: 0, 240, 255;
   --primary-hover: #38bdf8;
   --primary-glow: rgba(0, 240, 255, 0.45);
-  --primary-glow-subtle: rgba(0, 240, 255, 0.14);
-  --primary-border: rgba(0, 240, 255, 0.35);
+  --primary-glow-subtle: rgba(0, 240, 255, 0.16);
+  --primary-border: rgba(0, 240, 255, 0.45);
   --primary-bg-badge: #00222a;
-  --primary-bg-badge-border: rgba(0, 240, 255, 0.5);
+  --primary-bg-badge-border: rgba(0, 240, 255, 0.6);
+  --secondary: #c084fc;
+  --secondary-rgb: 192, 132, 252;
+  --secondary-hover: #d8b4fe;
+  --secondary-glow: rgba(192, 132, 252, 0.45);
+  --secondary-glow-subtle: rgba(192, 132, 252, 0.15);
+  --secondary-border: rgba(192, 132, 252, 0.4);
+  --secondary-bg-badge: #200d33;
   --bg-app: #020612;
   --bg-header: rgba(3, 10, 23, 0.95);
   --bg-card: #040c1a;
   --bg-card-subtle: #061224;
-  --border-subtle: rgba(0, 240, 255, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.10);
   --radial-1: rgba(0, 240, 255, 0.08);
-  --radial-2: rgba(6, 182, 212, 0.04);
+  --radial-2: rgba(192, 132, 252, 0.04);
 }
 
 [data-theme="synthwave"] {
@@ -51,17 +65,24 @@
   --primary-rgb: 244, 63, 94;
   --primary-hover: #fb7185;
   --primary-glow: rgba(244, 63, 94, 0.45);
-  --primary-glow-subtle: rgba(244, 63, 94, 0.14);
-  --primary-border: rgba(244, 63, 94, 0.35);
+  --primary-glow-subtle: rgba(244, 63, 94, 0.16);
+  --primary-border: rgba(244, 63, 94, 0.45);
   --primary-bg-badge: #290812;
-  --primary-bg-badge-border: rgba(244, 63, 94, 0.5);
-  --bg-app: #0c0407;
-  --bg-header: rgba(20, 6, 12, 0.95);
-  --bg-card: #18080f;
-  --bg-card-subtle: #240d18;
-  --border-subtle: rgba(244, 63, 94, 0.14);
+  --primary-bg-badge-border: rgba(244, 63, 94, 0.6);
+  --secondary: #fbbf24;
+  --secondary-rgb: 251, 191, 36;
+  --secondary-hover: #fcd34d;
+  --secondary-glow: rgba(251, 191, 36, 0.45);
+  --secondary-glow-subtle: rgba(251, 191, 36, 0.15);
+  --secondary-border: rgba(251, 191, 36, 0.4);
+  --secondary-bg-badge: #281700;
+  --bg-app: #0a0306;
+  --bg-header: rgba(18, 5, 11, 0.95);
+  --bg-card: #14060d;
+  --bg-card-subtle: #1e0a14;
+  --border-subtle: rgba(255, 255, 255, 0.10);
   --radial-1: rgba(244, 63, 94, 0.08);
-  --radial-2: rgba(168, 85, 247, 0.04);
+  --radial-2: rgba(251, 191, 36, 0.04);
 }
 
 [data-theme="emerald"] {
@@ -70,17 +91,24 @@
   --primary-rgb: 0, 255, 136;
   --primary-hover: #34d399;
   --primary-glow: rgba(0, 255, 136, 0.45);
-  --primary-glow-subtle: rgba(0, 255, 136, 0.14);
-  --primary-border: rgba(0, 255, 136, 0.35);
+  --primary-glow-subtle: rgba(0, 255, 136, 0.16);
+  --primary-border: rgba(0, 255, 136, 0.45);
   --primary-bg-badge: #002b18;
-  --primary-bg-badge-border: rgba(0, 255, 136, 0.5);
+  --primary-bg-badge-border: rgba(0, 255, 136, 0.6);
+  --secondary: #00e5ff;
+  --secondary-rgb: 0, 229, 255;
+  --secondary-hover: #38bdf8;
+  --secondary-glow: rgba(0, 229, 255, 0.45);
+  --secondary-glow-subtle: rgba(0, 229, 255, 0.15);
+  --secondary-border: rgba(0, 229, 255, 0.4);
+  --secondary-bg-badge: #00232b;
   --bg-app: #010c07;
   --bg-header: rgba(2, 20, 12, 0.95);
   --bg-card: #031c11;
   --bg-card-subtle: #042617;
-  --border-subtle: rgba(0, 255, 136, 0.12);
+  --border-subtle: rgba(255, 255, 255, 0.10);
   --radial-1: rgba(0, 255, 136, 0.08);
-  --radial-2: rgba(16, 185, 129, 0.04);
+  --radial-2: rgba(0, 229, 255, 0.04);
 }
 
 [data-theme="amber"] {
@@ -89,17 +117,24 @@
   --primary-rgb: 245, 158, 11;
   --primary-hover: #fbbf24;
   --primary-glow: rgba(245, 158, 11, 0.45);
-  --primary-glow-subtle: rgba(245, 158, 11, 0.14);
-  --primary-border: rgba(245, 158, 11, 0.35);
+  --primary-glow-subtle: rgba(245, 158, 11, 0.16);
+  --primary-border: rgba(245, 158, 11, 0.45);
   --primary-bg-badge: #261600;
-  --primary-bg-badge-border: rgba(245, 158, 11, 0.5);
-  --bg-app: #0c0802;
-  --bg-header: rgba(20, 13, 4, 0.95);
-  --bg-card: #1c1306;
-  --bg-card-subtle: #261a08;
-  --border-subtle: rgba(245, 158, 11, 0.15);
+  --primary-bg-badge-border: rgba(245, 158, 11, 0.6);
+  --secondary: #38bdf8;
+  --secondary-rgb: 56, 189, 248;
+  --secondary-hover: #7dd3fc;
+  --secondary-glow: rgba(56, 189, 248, 0.45);
+  --secondary-glow-subtle: rgba(56, 189, 248, 0.15);
+  --secondary-border: rgba(56, 189, 248, 0.4);
+  --secondary-bg-badge: #082032;
+  --bg-app: #0a0601;
+  --bg-header: rgba(18, 11, 3, 0.95);
+  --bg-card: #160e04;
+  --bg-card-subtle: #201506;
+  --border-subtle: rgba(255, 255, 255, 0.10);
   --radial-1: rgba(245, 158, 11, 0.08);
-  --radial-2: rgba(217, 119, 6, 0.04);
+  --radial-2: rgba(56, 189, 248, 0.04);
 }
 
 [data-theme="purple"] {
@@ -108,36 +143,50 @@
   --primary-rgb: 192, 132, 252;
   --primary-hover: #d8b4fe;
   --primary-glow: rgba(192, 132, 252, 0.45);
-  --primary-glow-subtle: rgba(192, 132, 252, 0.14);
-  --primary-border: rgba(192, 132, 252, 0.35);
+  --primary-glow-subtle: rgba(192, 132, 252, 0.16);
+  --primary-border: rgba(192, 132, 252, 0.45);
   --primary-bg-badge: #200d33;
-  --primary-bg-badge-border: rgba(192, 132, 252, 0.5);
-  --bg-app: #0a0412;
-  --bg-header: rgba(18, 8, 31, 0.95);
-  --bg-card: #1a0c2c;
-  --bg-card-subtle: #24113d;
-  --border-subtle: rgba(192, 132, 252, 0.15);
+  --primary-bg-badge-border: rgba(192, 132, 252, 0.6);
+  --secondary: #00ff88;
+  --secondary-rgb: 0, 255, 136;
+  --secondary-hover: #34d399;
+  --secondary-glow: rgba(0, 255, 136, 0.45);
+  --secondary-glow-subtle: rgba(0, 255, 136, 0.15);
+  --secondary-border: rgba(0, 255, 136, 0.4);
+  --secondary-bg-badge: #002b18;
+  --bg-app: #080310;
+  --bg-header: rgba(16, 7, 28, 0.95);
+  --bg-card: #130822;
+  --bg-card-subtle: #1c0d32;
+  --border-subtle: rgba(255, 255, 255, 0.10);
   --radial-1: rgba(192, 132, 252, 0.08);
-  --radial-2: rgba(168, 85, 247, 0.04);
+  --radial-2: rgba(0, 255, 136, 0.04);
 }
 
 [data-theme="obsidian"] {
   color-scheme: dark;
-  --primary: #e4e4e7;
-  --primary-rgb: 228, 228, 231;
-  --primary-hover: #ffffff;
-  --primary-glow: rgba(255, 255, 255, 0.25);
-  --primary-glow-subtle: rgba(255, 255, 255, 0.06);
-  --primary-border: rgba(255, 255, 255, 0.25);
-  --primary-bg-badge: #18181b;
-  --primary-bg-badge-border: rgba(255, 255, 255, 0.3);
-  --bg-app: #09090b;
-  --bg-header: rgba(18, 18, 21, 0.95);
-  --bg-card: #141417;
-  --bg-card-subtle: #1e1e24;
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --radial-1: rgba(255, 255, 255, 0.04);
-  --radial-2: rgba(161, 161, 170, 0.02);
+  --primary: #ffffff;
+  --primary-rgb: 255, 255, 255;
+  --primary-hover: #e4e4e7;
+  --primary-glow: rgba(255, 255, 255, 0.35);
+  --primary-glow-subtle: rgba(255, 255, 255, 0.12);
+  --primary-border: rgba(255, 255, 255, 0.4);
+  --primary-bg-badge: #1f1f23;
+  --primary-bg-badge-border: rgba(255, 255, 255, 0.5);
+  --secondary: #38bdf8;
+  --secondary-rgb: 56, 189, 248;
+  --secondary-hover: #7dd3fc;
+  --secondary-glow: rgba(56, 189, 248, 0.35);
+  --secondary-glow-subtle: rgba(56, 189, 248, 0.12);
+  --secondary-border: rgba(56, 189, 248, 0.35);
+  --secondary-bg-badge: #082032;
+  --bg-app: #08080a;
+  --bg-header: rgba(16, 16, 19, 0.95);
+  --bg-card: #111114;
+  --bg-card-subtle: #1a1a20;
+  --border-subtle: rgba(255, 255, 255, 0.10);
+  --radial-1: rgba(255, 255, 255, 0.05);
+  --radial-2: rgba(56, 189, 248, 0.03);
 }
 
 body {

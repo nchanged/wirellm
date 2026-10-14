@@ -36,10 +36,16 @@ export const ThemeSelector: React.FC = () => {
         title="Change website color theme"
       >
         <Palette className="w-3.5 h-3.5 text-[var(--primary)]" />
-        <span
-          className="w-2.5 h-2.5 rounded-full inline-block shrink-0 shadow-[0_0_8px_currentColor] border border-white/20"
-          style={{ backgroundColor: currentConfig.primary, color: currentConfig.primary }}
-        />
+        <div className="flex items-center -space-x-1 shrink-0">
+          <span
+            className="w-2.5 h-2.5 rounded-full inline-block shrink-0 shadow-[0_0_6px_currentColor] border border-white/20 z-10"
+            style={{ backgroundColor: currentConfig.primary, color: currentConfig.primary }}
+          />
+          <span
+            className="w-2.5 h-2.5 rounded-full inline-block shrink-0 shadow-[0_0_6px_currentColor] border border-white/20"
+            style={{ backgroundColor: currentConfig.secondary, color: currentConfig.secondary }}
+          />
+        </div>
         <span className="hidden sm:inline font-semibold text-white">
           {currentConfig.shortName}
         </span>
@@ -64,13 +70,19 @@ export const ThemeSelector: React.FC = () => {
                 </span>
               </div>
               <p className="text-[10px] text-slate-300 mt-0.5 font-sans font-medium">
-                High-contrast cybernetic palette
+                Dual-tone cybernetic palettes
               </p>
             </div>
-            <span
-              className="w-3 h-3 rounded-full shrink-0 shadow-[0_0_10px_currentColor] border border-white/40"
-              style={{ backgroundColor: currentConfig.primary, color: currentConfig.primary }}
-            />
+            <div className="flex items-center -space-x-1.5 shrink-0">
+              <span
+                className="w-3.5 h-3.5 rounded-full shrink-0 shadow-[0_0_10px_currentColor] border border-white/40 z-10"
+                style={{ backgroundColor: currentConfig.primary, color: currentConfig.primary }}
+              />
+              <span
+                className="w-3.5 h-3.5 rounded-full shrink-0 shadow-[0_0_10px_currentColor] border border-white/40"
+                style={{ backgroundColor: currentConfig.secondary, color: currentConfig.secondary }}
+              />
+            </div>
           </div>
 
           {/* Theme Options */}
@@ -95,13 +107,22 @@ export const ThemeSelector: React.FC = () => {
                   }}
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <span
-                      className="w-4 h-4 rounded-full inline-block shrink-0 transition-transform group-hover:scale-110 border border-white/30"
-                      style={{
-                        backgroundColor: item.primary,
-                        boxShadow: `0 0 10px ${item.glow}`,
-                      }}
-                    />
+                    <div className="flex items-center -space-x-1.5 shrink-0">
+                      <span
+                        className="w-4 h-4 rounded-full inline-block shrink-0 transition-transform group-hover:scale-110 border border-white/30 z-10"
+                        style={{
+                          backgroundColor: item.primary,
+                          boxShadow: `0 0 10px ${item.glow}`,
+                        }}
+                      />
+                      <span
+                        className="w-4 h-4 rounded-full inline-block shrink-0 transition-transform group-hover:scale-110 border border-white/30"
+                        style={{
+                          backgroundColor: item.secondary,
+                          boxShadow: `0 0 10px ${item.secondaryGlow}`,
+                        }}
+                      />
+                    </div>
                     <div className="min-w-0">
                       <div className="font-bold text-white text-xs truncate flex items-center gap-1.5">
                         <span>{item.name}</span>
