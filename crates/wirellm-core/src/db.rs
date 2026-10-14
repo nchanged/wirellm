@@ -1052,6 +1052,49 @@ impl DbManager {
         Ok(())
     }
 
+    /// Retrieves a single vault secret record (masked preview and metadata) by name or alias.
+    pub fn get_vault_secret_record(&self, name: &str) -> Result<Option<VaultSecretRecord>> {
+        let clean = name.trim().to_uppercase().replace('-', "_");
+        let conn = self.connect()?;
+
+        // Candidates: direct name, with/without _API_KEY, with/without _TOKEN
+        let mut candidates = vec![clean.clone()];
+        if clean.ends_with("_API_KEY") {
+            candidates.push(clean[..clean.len() - 8].to_string());
+        } else {
+            candidates.push(format!("{}_API_KEY", clean));
+        }
+        if clean.ends_with("_TOKEN") {
+            candidates.push(clean[..clean.len() - 6].to_string());
+        } else {
+            candidates.push(format!("{}_TOKEN", clean));
+        }
+
+        for cand in candidates {
+            let mut stmt = conn
+                .prepare("SELECT name, key_preview, description, created_at, updated_at FROM vault_secrets WHERE name = ?1")
+                .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+            let mut rows = stmt
+                .query_map(params![cand], |row| {
+                    Ok(VaultSecretRecord {
+                        name: row.get(0)?,
+                        key_preview: row.get(1)?,
+                        description: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                })
+                .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+            if let Some(r) = rows.next() {
+                return Ok(Some(r.map_err(|e| OxllmError::Internal(e.to_string()))?));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Decrypts and retrieves a secret by exact name from the Vault.
     pub fn get_vault_secret_decrypted(&self, name: &str) -> Result<Option<String>> {
         let clean_name = name.trim().to_uppercase().replace('-', "_");

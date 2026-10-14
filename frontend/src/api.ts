@@ -204,6 +204,25 @@ export async function deleteVaultSecret(name: string): Promise<void> {
   }
 }
 
+export async function discoverModels(payload: {
+  provider?: string;
+  base_url?: string;
+  vault_secret?: string;
+  api_key?: string;
+}): Promise<import('./types').DiscoverModelsResponse> {
+  const res = await fetch(`${API_BASE}/api/providers/discover-models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Failed to discover models (${res.status})`);
+  }
+  return res.json();
+}
+
+
 export async function logout(): Promise<void> {
   await fetch(`${API_BASE}/auth/logout`, { method: 'POST' }).catch(() => {});
   window.location.href = '/ui';

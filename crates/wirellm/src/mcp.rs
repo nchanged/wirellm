@@ -111,19 +111,34 @@ pub async fn mcp_messages_handler(
                     },
                     {
                         "name": "wirellm_add_provider",
-                        "description": "Add or update an LLM provider in WireLLM. The API key can be an environment variable template like '${MY_KEY}'. Changes take effect immediately.",
+                        "description": "Add or update an LLM provider in WireLLM. Connect an API key via 'vault_secret' (e.g. 'NVIDIA_API_KEY'), 'api_key_template' (e.g. '${NVIDIA_API_KEY}'), or pass 'raw_api_key' to automatically encrypt and store it in the central Vault. Changes take effect immediately.",
                         "inputSchema": {
                             "type": "object",
-                            "required": ["name", "base_url", "api_key_template", "models"],
+                            "required": ["name", "base_url", "models"],
                             "properties": {
                                 "name": { "type": "string", "description": "Unique provider identifier (e.g. nvidia, groq, cerebras)" },
                                 "base_url": { "type": "string", "description": "OpenAI-compatible base URL" },
+                                "vault_secret": { "type": "string", "description": "Name of an existing Vault secret to bind (e.g. NVIDIA_API_KEY, GROQ, OPENROUTER)" },
                                 "api_key_template": { "type": "string", "description": "API key or env var template like ${NVIDIA_API_KEY}" },
+                                "raw_api_key": { "type": "string", "description": "Raw API key to automatically encrypt (AES-256-GCM) and save into the central Vault" },
                                 "models": { "type": "array", "items": { "type": "string" }, "description": "List of model IDs supported by this provider" },
                                 "rpm": { "type": "integer", "description": "Optional rate limit in requests per minute" },
                                 "min_interval_ms": { "type": "integer", "description": "Optional proactive burst spacing in milliseconds" },
                                 "max_concurrency": { "type": "integer", "description": "Optional maximum concurrent requests" },
                                 "smartness_score": { "type": "integer", "description": "Optional model intelligence score (0-100)" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_discover_provider_models",
+                        "description": "Explore and discover live models supported by an upstream provider (queries GET /v1/models using API key from central Vault or parameters). Returns sorted model list and top recommendations for coding (coder), reasoning (planner), and fast dispatch (orchestrator).",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "provider": { "type": "string", "description": "Optional name of a configured provider (e.g. nvidia, groq, openrouter, deepseek, gemini)" },
+                                "base_url": { "type": "string", "description": "Optional OpenAI-compatible base URL (e.g. https://integrate.api.nvidia.com/v1)" },
+                                "vault_secret": { "type": "string", "description": "Optional name of the Vault secret to use for authentication (e.g. NVIDIA_API_KEY)" },
+                                "api_key": { "type": "string", "description": "Optional raw API key (if not using Vault secret)" }
                             }
                         }
                     },
@@ -208,6 +223,40 @@ pub async fn mcp_messages_handler(
                                 "name": { "type": "string", "description": "Secret identifier (e.g. NVIDIA, NVIDIA_API_KEY, GROQ, OPENROUTER, DEEPSEEK)" },
                                 "value": { "type": "string", "description": "Raw secret API key or Bearer token" },
                                 "description": { "type": "string", "description": "Optional human-readable label or description" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_set_secrets",
+                        "description": "Batch store or update multiple encrypted API keys or tokens in the WireLLM central Vault in a single call. AES-256-GCM encrypted at rest.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["secrets"],
+                            "properties": {
+                                "secrets": {
+                                    "type": "array",
+                                    "description": "List of secret objects with name, value, and optional description",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["name", "value"],
+                                        "properties": {
+                                            "name": { "type": "string", "description": "Secret identifier (e.g. NVIDIA_API_KEY, GROQ_API_KEY)" },
+                                            "value": { "type": "string", "description": "Raw secret token or key" },
+                                            "description": { "type": "string", "description": "Optional human-readable label" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_get_secret",
+                        "description": "Retrieve metadata and masked preview for a specific Vault secret by name or alias. Plaintext secrets are never returned.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": { "type": "string", "description": "Name or alias of the secret to inspect" }
                             }
                         }
                     },
@@ -312,7 +361,6 @@ async fn handle_tool_call(
         "wirellm_add_provider" | "oxllm_add_provider" => {
             let prov_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
             let base_url = args.get("base_url").and_then(|v| v.as_str()).ok_or("Missing 'base_url'")?;
-            let api_key_template = args.get("api_key_template").and_then(|v| v.as_str()).ok_or("Missing 'api_key_template'")?;
             let models_val = args.get("models").and_then(|v| v.as_array()).ok_or("Missing 'models'")?;
             let models: Vec<String> = models_val.iter().filter_map(|m| m.as_str().map(|s| s.to_string())).collect();
             let rpm = args.get("rpm").and_then(|v| v.as_u64()).map(|v| v as u32);
@@ -321,6 +369,24 @@ async fn handle_tool_call(
             let smartness_score = args.get("smartness_score").and_then(|v| v.as_u64()).map(|v| v as u32);
 
             let raw_api_key = args.get("raw_api_key").and_then(|v| v.as_str());
+            let vault_secret = args.get("vault_secret").and_then(|v| v.as_str());
+            let tmpl_opt = args.get("api_key_template").and_then(|v| v.as_str());
+
+            let api_key_template = match (tmpl_opt, vault_secret, raw_api_key) {
+                (Some(t), _, _) if !t.trim().is_empty() => t.trim().to_string(),
+                (_, Some(vs), _) if !vs.trim().is_empty() => {
+                    let clean = vs.trim().to_uppercase().replace('-', "_");
+                    if clean.starts_with('$') {
+                        clean
+                    } else {
+                        format!("${{{}}}", clean)
+                    }
+                },
+                (_, _, Some(_)) => {
+                    format!("${{{}_API_KEY}}", prov_name.to_uppercase().replace('-', "_"))
+                },
+                _ => return Err("Missing 'api_key_template', 'vault_secret', or 'raw_api_key'".to_string()),
+            };
 
             let empty_headers = HashMap::new();
             reloadable
@@ -329,7 +395,7 @@ async fn handle_tool_call(
                     prov_name,
                     true,
                     base_url,
-                    api_key_template,
+                    &api_key_template,
                     &models,
                     &empty_headers,
                     rpm,
@@ -342,6 +408,20 @@ async fn handle_tool_call(
 
             let _ = reloadable.reloader.reload();
             Ok(format!("Provider '{}' configured successfully and reloaded", prov_name))
+        },
+        "wirellm_discover_provider_models"
+        | "wirellm_explore_models"
+        | "wirellm_fetch_models"
+        | "wirellm_list_upstream_models" => {
+            let input = crate::admin::DiscoverModelsInput {
+                provider: args.get("provider").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                base_url: args.get("base_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                vault_secret: args.get("vault_secret").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                api_key: args.get("api_key").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            };
+
+            let res = crate::admin::discover_models_impl(&reloadable.db, input).await?;
+            serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
         },
         "wirellm_delete_provider" | "oxllm_delete_provider" => {
             let prov_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
@@ -400,7 +480,13 @@ async fn handle_tool_call(
         "wirellm_get_setup_recommendations" | "oxllm_get_setup_recommendations" => {
             Ok(RECOMMENDED_SETUP_MD.to_string())
         },
-        "wirellm_set_secret" | "wirellm_set_vault_secret" | "oxllm_set_secret" => {
+        "wirellm_set_secret"
+        | "wirellm_set_vault_secret"
+        | "wirellm_create_secret"
+        | "wirellm_create_vault_secret"
+        | "wirellm_add_secret"
+        | "wirellm_add_vault_secret"
+        | "oxllm_set_secret" => {
             let secret_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
             let secret_val = args.get("value").and_then(|v| v.as_str()).ok_or("Missing 'value'")?;
             let desc = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
@@ -414,14 +500,52 @@ async fn handle_tool_call(
             let _ = reloadable.reloader.reload();
             Ok(format!("Secret '{}' securely encrypted (AES-256-GCM) and saved to Vault. Reference it in any provider with '\\${{{}}}'", clean_name, clean_name))
         },
-        "wirellm_list_secrets" | "wirellm_list_vault_secrets" | "oxllm_list_secrets" => {
+        "wirellm_set_secrets"
+        | "wirellm_batch_set_secrets"
+        | "wirellm_create_secrets"
+        | "wirellm_set_vault_secrets" => {
+            let secrets_arr = args.get("secrets").and_then(|v| v.as_array()).ok_or("Missing 'secrets' array")?;
+            let mut saved_names = Vec::new();
+
+            for item in secrets_arr {
+                let name = item.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name' in secret entry")?;
+                let val = item.get("value").and_then(|v| v.as_str()).ok_or("Missing 'value' in secret entry")?;
+                let desc = item.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                let clean_name = name.trim().to_uppercase().replace('-', "_");
+                reloadable
+                    .db
+                    .upsert_vault_secret(&clean_name, val, desc)
+                    .map_err(|e| format!("Failed to save secret '{}' to vault: {}", clean_name, e))?;
+                saved_names.push(clean_name);
+            }
+
+            let _ = reloadable.reloader.reload();
+            Ok(format!("Successfully saved {} secret(s) to central Vault: {}", saved_names.len(), saved_names.join(", ")))
+        },
+        "wirellm_get_secret"
+        | "wirellm_get_vault_secret" => {
+            let secret_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
+            if let Some(record) = reloadable.db.get_vault_secret_record(secret_name).map_err(|e| e.to_string())? {
+                serde_json::to_string_pretty(&record).map_err(|e| e.to_string())
+            } else {
+                Err(format!("Secret '{}' not found in central Vault", secret_name))
+            }
+        },
+        "wirellm_list_secrets"
+        | "wirellm_list_vault_secrets"
+        | "wirellm_get_secrets"
+        | "oxllm_list_secrets" => {
             let secrets = reloadable
                 .db
                 .list_vault_secrets()
                 .map_err(|e| e.to_string())?;
             serde_json::to_string_pretty(&secrets).map_err(|e| e.to_string())
         },
-        "wirellm_delete_secret" | "wirellm_delete_vault_secret" | "oxllm_delete_secret" => {
+        "wirellm_delete_secret"
+        | "wirellm_delete_vault_secret"
+        | "wirellm_remove_secret"
+        | "wirellm_remove_vault_secret"
+        | "oxllm_delete_secret" => {
             let secret_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
             let clean_name = secret_name.trim().to_uppercase().replace('-', "_");
             reloadable

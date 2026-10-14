@@ -162,4 +162,15 @@ export interface VaultSecretInput {
   description?: string;
 }
 
+export interface DiscoverModelsResponse {
+  provider: string;
+  base_url: string;
+  total_models: number;
+  models: string[];
+  recommended_coding: string[];
+  recommended_reasoning: string[];
+  recommended_fast: string[];
+}
+
+
 

@@ -9,14 +9,16 @@ This document provides a continuously maintained reference of **always-free prov
 Copy and send this instruction to your AI coding agent:
 
 ```text
-Connect to the WireLLM MCP server at <MCP_ENDPOINT> (e.g. http://localhost:8765/mcp/sse or https://llm.example.com/mcp/sse).
+Connect to the WireLLM MCP server at <MCP_ENDPOINT> (e.g. http://localhost:8765/mcp/sse or https://<RELAY_HOST>/mcp/sse).
 NOTE: If WireLLM is running remotely in the cloud and API token access is enabled, pass your token in the Authorization header: 'Bearer <TOKEN>'.
 
-1. Inspect the available tools with 'wirellm_get_setup_recommendations'.
-2. Ask me for API keys for any providers I have (e.g. NVIDIA NIM, Groq, DeepSeek, OpenRouter).
-3. Use 'wirellm_add_provider' to register available providers with their recommended rate limits and burst spacing.
-4. Use 'wirellm_update_virtual_model' to set up the recommended fallback ladders for 'coder', 'planner', and 'orchestrator'.
-5. Verify everything is healthy with 'wirellm_get_status'.
+1. Inspect available tools with 'wirellm_get_setup_recommendations'.
+2. Check configured vault items with 'wirellm_list_secrets'.
+3. If new keys are needed, ask me for provider keys and store them with 'wirellm_set_secret' (AES-256-GCM encrypted).
+4. For any provider (e.g. NVIDIA, Groq, OpenRouter), explore live available models using 'wirellm_discover_provider_models'.
+5. Use 'wirellm_add_provider' to register providers using their 'vault_secret' (e.g. 'NVIDIA_API_KEY').
+6. Use 'wirellm_update_virtual_model' to set up the recommended fallback ladders for 'coder', 'planner', and 'orchestrator'.
+7. Verify everything is healthy with 'wirellm_get_status'.
 ```
 
 ---
@@ -97,18 +99,51 @@ WireLLM routes virtual model aliases (`coder`, `planner`, `orchestrator`) down d
 
 If calling WireLLM's MCP tools programmatically:
 
-### Register NVIDIA NIM Provider:
+### 1. Store Key in Central Vault:
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
   "method": "tools/call",
   "params": {
+    "name": "wirellm_set_secret",
+    "arguments": {
+      "name": "NVIDIA_API_KEY",
+      "value": "nvapi-...",
+      "description": "NVIDIA NIM developer token"
+    }
+  }
+}
+```
+
+### 2. Discover Live Upstream Models:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "wirellm_discover_provider_models",
+    "arguments": {
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "vault_secret": "NVIDIA_API_KEY"
+    }
+  }
+}
+```
+
+### 3. Register Provider with Vault Secret:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
     "name": "wirellm_add_provider",
     "arguments": {
       "name": "nvidia",
       "base_url": "https://integrate.api.nvidia.com/v1",
-      "api_key_template": "${NVIDIA_API_KEY}",
+      "vault_secret": "NVIDIA_API_KEY",
       "models": [
         "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3.5-lightning-30b-a3b",
@@ -123,11 +158,11 @@ If calling WireLLM's MCP tools programmatically:
 }
 ```
 
-### Register `coder` Virtual Model Ladder:
+### 4. Register `coder` Virtual Model Ladder:
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 2,
+  "id": 4,
   "method": "tools/call",
   "params": {
     "name": "wirellm_update_virtual_model",
@@ -144,3 +179,4 @@ If calling WireLLM's MCP tools programmatically:
   }
 }
 ```
+
