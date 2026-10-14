@@ -17,9 +17,9 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 
     const variantClasses: Record<ButtonVariant, string> = {
       primary:
-        'bg-gradient-to-r from-cyan-500 to-cyan-400 text-black font-bold hover:from-cyan-400 hover:to-cyan-300 shadow-[0_0_16px_rgba(6,182,212,0.35)] border border-cyan-400/40',
+        'bg-[var(--primary)] text-black font-extrabold hover:brightness-110 shadow-[0_0_16px_var(--primary-glow-subtle)] border border-[var(--primary-border)]',
       cyan:
-        'bg-gradient-to-r from-cyan-500 to-cyan-400 text-black font-bold hover:from-cyan-400 hover:to-cyan-300 shadow-[0_0_16px_rgba(6,182,212,0.35)] border border-cyan-400/40',
+        'bg-[var(--primary)] text-black font-extrabold hover:brightness-110 shadow-[0_0_16px_var(--primary-glow-subtle)] border border-[var(--primary-border)]',
       indigo:
         'bg-gradient-to-r from-indigo-500 to-indigo-400 text-white font-semibold hover:from-indigo-400 hover:to-indigo-300 shadow-[0_0_16px_rgba(99,102,241,0.35)] border border-indigo-400/40',
       secondary:

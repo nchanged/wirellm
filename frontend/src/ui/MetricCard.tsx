@@ -7,7 +7,7 @@ export interface MetricCardProps {
   icon?: React.ReactNode;
   subtext?: React.ReactNode;
   badge?: React.ReactNode;
-  accent?: 'emerald' | 'cyan' | 'amber' | 'purple' | 'slate';
+  accent?: 'primary' | 'emerald' | 'cyan' | 'amber' | 'purple' | 'slate';
   className?: string;
 }
 
@@ -17,20 +17,22 @@ export const MetricCard: React.FC<MetricCardProps> = ({
   icon,
   subtext,
   badge,
-  accent = 'cyan',
+  accent = 'primary',
   className,
 }) => {
   const iconAccentClasses = {
+    primary: 'bg-[var(--primary-bg-badge)] border-[var(--primary-border)] text-[var(--primary)]',
+    cyan: 'bg-[var(--primary-bg-badge)] border-[var(--primary-border)] text-[var(--primary)]',
     emerald: 'bg-emerald-950/40 border-emerald-800/40 text-emerald-400',
-    cyan: 'bg-cyan-950/40 border-cyan-800/40 text-cyan-400',
     amber: 'bg-amber-950/40 border-amber-800/40 text-amber-400',
     purple: 'bg-purple-950/40 border-purple-800/40 text-purple-400',
     slate: 'bg-white/[0.04] border-white/[0.08] text-slate-400',
   };
 
   const glowAccentClasses = {
+    primary: 'group-hover:border-[var(--primary-border)]',
+    cyan: 'group-hover:border-[var(--primary-border)]',
     emerald: 'group-hover:border-emerald-500/30',
-    cyan: 'group-hover:border-cyan-500/30',
     amber: 'group-hover:border-amber-500/30',
     purple: 'group-hover:border-purple-500/30',
     slate: 'group-hover:border-white/20',

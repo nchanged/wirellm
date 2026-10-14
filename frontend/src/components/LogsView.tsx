@@ -69,7 +69,7 @@ export const LogsView: React.FC = () => {
       case 'WARN':
         return 'amber';
       case 'INFO':
-        return 'cyan';
+        return 'primary';
       default:
         return 'neutral';
     }
@@ -80,13 +80,13 @@ export const LogsView: React.FC = () => {
       {/* Controls Bar */}
       <Card className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-cyan-950/40 border border-cyan-800/40 text-cyan-400 shrink-0">
+          <div className="p-2 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-[var(--primary)] shrink-0">
             <Terminal className="w-5 h-5" />
           </div>
           <div>
             <h2 className="text-sm font-bold text-white font-mono flex items-center gap-2">
               Wire Daemon Ring-Buffer Console
-              <Badge variant="cyan">IN-MEMORY</Badge>
+              <Badge variant="primary">IN-MEMORY</Badge>
             </h2>
             <p className="text-[11px] text-slate-400">Zero disk I/O lock contention during burst traffic</p>
           </div>
@@ -177,7 +177,7 @@ export const LogsView: React.FC = () => {
                 {entry.level}
               </Badge>
               {entry.provider && (
-                <span className="text-cyan-400 text-[11px] font-semibold">[{entry.provider}]</span>
+                <span className="text-[var(--primary)] text-[11px] font-semibold">[{entry.provider}]</span>
               )}
               {entry.request_id && (
                 <span className="text-sky-400 text-[11px]">({entry.request_id})</span>

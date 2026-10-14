@@ -540,7 +540,7 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
       <Card className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h2 className="text-base font-bold text-white flex items-center gap-2 font-mono">
-            <Server className="w-4 h-4 text-cyan-400" />
+            <Server className="w-4 h-4 text-[var(--primary)]" />
             PROVIDERS STUDIO &amp; VAULT
           </h2>
           <p className="text-xs text-slate-400 mt-1">
@@ -583,7 +583,7 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
             {/* Domain Group Header */}
             <div className="bg-[#04060b] px-4 py-2.5 border-b border-white/[0.05] flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Globe className="w-4 h-4 text-cyan-400" />
+                <Globe className="w-4 h-4 text-[var(--primary)]" />
                 <span className="font-mono text-xs font-bold text-slate-200 tracking-wide">
                   {domain}
                 </span>
@@ -609,7 +609,7 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
                       <div className="flex items-center gap-2">
                         <span
                           className={`w-2.5 h-2.5 rounded-full ${
-                            p.enabled ? 'bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)]' : 'bg-slate-700'
+                            p.enabled ? 'bg-[var(--primary)] shadow-[0_0_8px_var(--primary)]' : 'bg-slate-700'
                           }`}
                           title={p.enabled ? 'Enabled' : 'Disabled'}
                         />
@@ -625,11 +625,11 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
                       <div className="flex items-center gap-1.5 pt-0.5">
                         {p.has_encrypted_key ? (
                           <Badge
-                            variant="cyan"
+                            variant="primary"
                             className="px-2.5 py-1"
                             title="Stored securely in ~/.wirellm/ using AES-256-GCM + Salt"
                           >
-                            <Lock className="w-3 h-3 text-cyan-400 flex-shrink-0" />
+                            <Lock className="w-3 h-3 text-[var(--primary)] flex-shrink-0" />
                             <span>Vault Key: {p.key_preview || '••••••••'}</span>
                           </Badge>
                         ) : (
@@ -699,17 +699,17 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
                           disabled={test?.testing}
                         >
                           {test?.testing ? (
-                            <Activity className="w-3 h-3 animate-spin text-cyan-400" />
+                            <Activity className="w-3 h-3 animate-spin text-[var(--primary)]" />
                           ) : (
-                            <Play className="w-3 h-3 text-cyan-400" />
+                            <Play className="w-3 h-3 text-[var(--primary)]" />
                           )}
                           Test
                         </Button>
 
                         {test && !test.testing && (
                           test.success ? (
-                            <Badge variant="cyan" className="px-2 py-1">
-                              <CheckCircle className="w-3.5 h-3.5 text-cyan-400" />
+                            <Badge variant="primary" className="px-2 py-1">
+                              <CheckCircle className="w-3.5 h-3.5 text-[var(--primary)]" />
                               {test.latency_ms} ms
                             </Badge>
                           ) : (
@@ -765,7 +765,7 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
         onClose={() => setIsModalOpen(false)}
         title={editingProvider ? `Configure Provider "${editingProvider}"` : 'Add New Upstream Provider'}
         description="WireLLM auto-normalizes OpenAI chat completions format with intelligent failover."
-        icon={<Server className="w-4 h-4 text-cyan-400" />}
+        icon={<Server className="w-4 h-4 text-[var(--primary)]" />}
         footer={
           <>
             <Button variant="secondary" onClick={() => setIsModalOpen(false)}>
@@ -847,7 +847,7 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
               <label className="block text-xs font-mono font-medium text-slate-200">
                 API Key or Secret Vault
               </label>
-              <Badge variant="cyan">AES-256-GCM VAULT</Badge>
+              <Badge variant="primary">AES-256-GCM VAULT</Badge>
             </div>
 
             <div>
@@ -911,7 +911,7 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
               value={modelsInput}
               onChange={(e) => setModelsInput(e.target.value)}
               placeholder="deepseek-chat&#10;deepseek-reasoner"
-              className="w-full bg-[#030508] border border-white/[0.08] focus:border-cyan-500/60 rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none transition-colors"
+              className="w-full bg-[#030508] border border-white/[0.08] focus:border-[var(--primary)] rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none transition-colors"
             />
           </div>
 

@@ -303,7 +303,7 @@ export const Overview: React.FC<OverviewProps> = ({
   if (!status) {
     return (
       <Card className="p-12 text-center text-slate-500 font-mono flex flex-col items-center justify-center gap-3">
-        <Activity className="w-6 h-6 text-cyan-400 animate-spin" />
+        <Activity className="w-6 h-6 text-[var(--primary)] animate-spin" />
         <p className="text-sm">Connecting to WireLLM telemetry socket...</p>
       </Card>
     );
@@ -352,11 +352,11 @@ export const Overview: React.FC<OverviewProps> = ({
         <MetricCard
           label="Gateway Uptime"
           value={formatUptime(status.uptime_secs)}
-          icon={<Clock className="w-3.5 h-3.5 text-cyan-400" />}
-          accent="cyan"
+          icon={<Clock className="w-3.5 h-3.5 text-[var(--primary)]" />}
+          accent="primary"
           subtext={
-            <span className="text-cyan-400/90 flex items-center gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="text-[var(--primary)]/90 flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-[var(--primary)]" />
               <span>Port :{activePort} &bull; SQLite WAL</span>
             </span>
           }
@@ -371,7 +371,7 @@ export const Overview: React.FC<OverviewProps> = ({
             <span className="flex items-center gap-1.5">
               <span className="text-amber-300 font-medium">{formatTokens(status.total_input_tokens)} in</span>
               <span className="text-slate-600">&bull;</span>
-              <span className="text-cyan-300 font-medium">{formatTokens(status.total_output_tokens)} out</span>
+              <span className="text-[var(--primary)] font-medium">{formatTokens(status.total_output_tokens)} out</span>
             </span>
           }
         />
@@ -379,11 +379,11 @@ export const Overview: React.FC<OverviewProps> = ({
         <MetricCard
           label="Requests Routed"
           value={status.total_requests.toLocaleString()}
-          icon={<Activity className="w-3.5 h-3.5 text-cyan-400" />}
-          accent="cyan"
+          icon={<Activity className="w-3.5 h-3.5 text-[var(--primary)]" />}
+          accent="primary"
           subtext={
-            <span className="text-cyan-400 flex items-center gap-1.5">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+            <span className="text-[var(--primary)] flex items-center gap-1.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--primary)] animate-pulse" />
               <span>&lt;2ms wire overhead</span>
             </span>
           }
@@ -393,7 +393,7 @@ export const Overview: React.FC<OverviewProps> = ({
           label="Circuit Health"
           value={
             <span className="flex items-center gap-2">
-              <span className="text-cyan-400">{healthyCount}</span>
+              <span className="text-[var(--primary)] font-bold">{healthyCount}</span>
               <span className="text-xs text-slate-500 font-normal">/ {status.providers.length} online</span>
             </span>
           }
@@ -424,14 +424,14 @@ export const Overview: React.FC<OverviewProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.06] pb-4">
           <div>
             <div className="flex items-center gap-2.5">
-              <div className="p-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+              <div className="p-1.5 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-[var(--primary)] shadow-[0_0_10px_var(--primary-glow-subtle)]">
                 <Workflow className="w-4 h-4" />
               </div>
               <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2 font-mono">
                 ROUTING LADDERS <span className="text-slate-500 font-normal text-xs">(Virtual Models)</span>
               </h2>
-              <Badge variant="cyan">
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+              <Badge variant="primary">
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] animate-ping" />
                 Live Wire
               </Badge>
             </div>
@@ -447,7 +447,7 @@ export const Overview: React.FC<OverviewProps> = ({
                 onClick={() => setSelectedVmTab('all')}
                 className={`px-3 py-1 rounded-md font-mono text-[11px] font-medium transition-all ${
                   selectedVmTab === 'all'
-                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                    ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)] font-bold shadow-[0_0_10px_var(--primary-glow-subtle)]'
                     : 'text-slate-400 hover:text-white border border-transparent'
                 }`}
               >
@@ -459,7 +459,7 @@ export const Overview: React.FC<OverviewProps> = ({
                   onClick={() => setSelectedVmTab(vm.name)}
                   className={`px-3 py-1 rounded-md font-mono text-[11px] transition-all ${
                     selectedVmTab === vm.name
-                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                      ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)] font-bold shadow-[0_0_10px_var(--primary-glow-subtle)]'
                       : 'text-slate-400 hover:text-white border border-transparent'
                   }`}
                 >
@@ -542,16 +542,16 @@ export const Overview: React.FC<OverviewProps> = ({
                 <div className="flex items-center justify-between gap-3 border-b border-white/[0.05] pb-2.5 min-h-[46px]">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-bold text-white font-mono tracking-tight flex items-center gap-1.5 whitespace-nowrap shrink-0">
-                      <span className="w-2 h-2 rounded-full bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,0.9)] shrink-0" />
+                      <span className="w-2 h-2 rounded-full bg-[var(--primary)] shadow-[0_0_10px_var(--primary)] shrink-0" />
                       {vm.name}
                     </span>
                     {activeTarget ? (
                       <span
-                        className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono bg-[#00222a] border border-[#00f0ff]/60 text-slate-200 whitespace-nowrap truncate max-w-[230px] shrink-0 shadow-[0_0_12px_rgba(0,240,255,0.3)] animate-pulse"
+                        className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-slate-200 whitespace-nowrap truncate max-w-[230px] shrink-0 shadow-[0_0_12px_var(--primary-glow-subtle)] animate-pulse"
                         title={`Active: ${activeTarget.provider}:${activeTarget.model}`}
                       >
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] shrink-0" />
-                        <span className="text-[#00f0ff] font-bold">ACTIVE: {activeTarget.provider}</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] shrink-0" />
+                        <span className="text-[var(--primary)] font-bold">ACTIVE: {activeTarget.provider}</span>
                         <span className="text-slate-600">:</span>
                         <span className="text-slate-300 truncate">{activeTarget.model}</span>
                       </span>
@@ -571,7 +571,7 @@ export const Overview: React.FC<OverviewProps> = ({
                   {/* Summary Status Badges */}
                   <div className="flex items-center gap-1.5 text-[10px] font-mono shrink-0 whitespace-nowrap">
                     {runningCount > 0 && (
-                      <Badge variant="cyan" className="animate-pulse">
+                      <Badge variant="primary" className="animate-pulse">
                         {runningCount} ACTIVE
                       </Badge>
                     )}
@@ -602,9 +602,9 @@ export const Overview: React.FC<OverviewProps> = ({
                         key={`${tgt.provider}-${tgt.model}-${idx}`}
                         className={`flex items-center justify-between px-3 py-2.5 rounded-lg border text-xs transition-all ${
                           isRunning
-                            ? 'bg-[#001c24]/40 border-[#00f0ff]/60 shadow-[0_0_15px_rgba(0,240,255,0.25)]'
+                            ? 'bg-[var(--primary-bg-badge)] border-[var(--primary-border)] shadow-[0_0_15px_var(--primary-glow-subtle)]'
                             : isPrimary
-                            ? 'bg-[#040810] border-cyan-500/40 shadow-sm'
+                            ? 'bg-[#040810] border-[var(--primary-border)] shadow-sm'
                             : isBlocked
                             ? 'bg-rose-950/15 border-rose-900/40 opacity-75'
                             : 'bg-[#02050c] border-white/[0.04] hover:border-white/[0.08]'
@@ -615,9 +615,9 @@ export const Overview: React.FC<OverviewProps> = ({
                           <span
                             className={`w-5 h-5 rounded-md text-[10px] font-mono font-bold flex items-center justify-center shrink-0 ${
                               isRunning
-                                ? 'bg-[#00f0ff] text-slate-950 font-extrabold shadow-[0_0_10px_rgba(0,240,255,0.9)]'
+                                ? 'bg-[var(--primary)] text-black font-extrabold shadow-[0_0_10px_var(--primary)]'
                                 : isPrimary
-                                ? 'bg-[#00222a] text-[#00f0ff] border border-[#00f0ff]/50'
+                                ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)]'
                                 : isBlocked
                                 ? 'bg-rose-950/80 text-rose-400 border border-rose-800/60'
                                 : 'bg-slate-800/60 text-slate-400'
@@ -638,7 +638,7 @@ export const Overview: React.FC<OverviewProps> = ({
                               <ChevronRight className="w-3 h-3 text-slate-600 shrink-0" />
                               <span
                                 className={`font-mono text-[11px] truncate max-w-[150px] sm:max-w-[200px] ${
-                                  isRunning || isPrimary ? 'text-[#00f0ff] font-medium' : 'text-slate-400'
+                                  isRunning || isPrimary ? 'text-[var(--primary)] font-semibold' : 'text-slate-400'
                                 }`}
                                 title={tgt.model}
                               >
@@ -651,15 +651,15 @@ export const Overview: React.FC<OverviewProps> = ({
                         {/* Status / Failover Tag */}
                         <div className="flex items-center gap-2 shrink-0 font-mono">
                           {isRunning && (
-                            <Badge variant="cyan" className="shadow animate-pulse font-bold">
-                              <Activity className="w-3 h-3 animate-spin text-[#00f0ff]" />
+                            <Badge variant="primary" className="shadow animate-pulse font-bold">
+                              <Activity className="w-3 h-3 animate-spin text-[var(--primary)]" />
                               ACTIVE {ev.inFlight > 0 ? `(${ev.inFlight} req)` : ''}
                             </Badge>
                           )}
 
                           {isPrimary && !isRunning && (
-                            <Badge variant={idx === 0 ? 'cyan' : 'amber'}>
-                              <CheckCircle2 className={`w-3 h-3 ${idx === 0 ? 'text-[#00f0ff]' : 'text-amber-400'}`} />
+                            <Badge variant={idx === 0 ? 'primary' : 'amber'}>
+                              <CheckCircle2 className={`w-3 h-3 ${idx === 0 ? 'text-[var(--primary)]' : 'text-amber-400'}`} />
                               {idx === 0 ? 'PRIMARY READY' : `FAILOVER READY (#${idx + 1})`}
                             </Badge>
                           )}
@@ -694,7 +694,7 @@ export const Overview: React.FC<OverviewProps> = ({
         <div className="flex items-center justify-between mb-4 border-b border-white/[0.06] pb-3">
           <div>
             <h2 className="text-base font-bold text-white flex items-center gap-2 font-mono">
-              <CircuitBoard className="w-4 h-4 text-cyan-400" />
+              <CircuitBoard className="w-4 h-4 text-[var(--primary)]" />
               PROVIDER CIRCUITS &amp; LIVE METERS
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
@@ -730,9 +730,9 @@ export const Overview: React.FC<OverviewProps> = ({
                       <span
                         className={`w-2 h-2 rounded-full inline-block ${
                           p.in_flight > 0
-                            ? 'bg-cyan-400 animate-ping'
+                            ? 'bg-[var(--primary)] animate-ping'
                             : isHealthy
-                            ? 'bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)]'
+                            ? 'bg-[var(--primary)] shadow-[0_0_8px_var(--primary)]'
                             : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]'
                         }`}
                       />
@@ -746,8 +746,8 @@ export const Overview: React.FC<OverviewProps> = ({
 
                   <TableCell>
                     {isHealthy && (
-                      <Badge variant="cyan">
-                        <CheckCircle2 className="w-3 h-3 text-cyan-400" />
+                      <Badge variant="primary">
+                        <CheckCircle2 className="w-3 h-3 text-[var(--primary)]" />
                         Healthy
                       </Badge>
                     )}
@@ -769,7 +769,7 @@ export const Overview: React.FC<OverviewProps> = ({
                     <div className="flex items-center gap-2">
                       <div className="w-12 bg-white/[0.05] h-1.5 rounded-full overflow-hidden">
                         <div
-                          className="bg-cyan-400 h-full rounded-full"
+                          className="bg-[var(--primary)] h-full rounded-full"
                           style={{ width: `${Math.min(100, p.smartness_score)}%` }}
                         />
                       </div>
@@ -793,7 +793,7 @@ export const Overview: React.FC<OverviewProps> = ({
                         <div className="w-20 bg-white/[0.05] h-1.5 rounded-full overflow-hidden">
                           <div
                             className={`h-full rounded-full transition-all duration-300 ${
-                              p.is_rpm_capped ? 'bg-amber-500' : 'bg-cyan-500'
+                              p.is_rpm_capped ? 'bg-amber-500' : 'bg-[var(--primary)]'
                             }`}
                             style={{ width: `${Math.min(100, (p.current_rpm / p.max_rpm) * 100)}%` }}
                           />
@@ -809,7 +809,7 @@ export const Overview: React.FC<OverviewProps> = ({
                       p.is_burst_limited ? (
                         <span className="text-amber-400 font-medium text-[11px]">Spacing ({p.min_interval_ms}ms)</span>
                       ) : (
-                        <span className="text-cyan-400 text-[11px]">Ready ({p.min_interval_ms}ms)</span>
+                        <span className="text-[var(--primary)] text-[11px]">Ready ({p.min_interval_ms}ms)</span>
                       )
                     ) : (
                       <span className="text-slate-500 text-[11px]">None</span>
@@ -817,7 +817,7 @@ export const Overview: React.FC<OverviewProps> = ({
                   </TableCell>
 
                   <TableCell>
-                    <span className={p.in_flight > 0 ? 'text-cyan-400 font-bold animate-pulse' : 'text-slate-400'}>
+                    <span className={p.in_flight > 0 ? 'text-[var(--primary)] font-bold animate-pulse' : 'text-slate-400'}>
                       {p.in_flight}
                     </span>
                   </TableCell>

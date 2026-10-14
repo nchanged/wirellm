@@ -55,7 +55,7 @@ export const Modal: React.FC<ModalProps> = ({
         <div className="p-5 pb-3 border-b border-white/[0.07] flex items-center justify-between">
           <div className="flex items-center gap-3">
             {icon && (
-              <div className="p-2 rounded-lg bg-cyan-950/50 border border-cyan-800/50 text-cyan-400 shrink-0">
+              <div className="p-2 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-[var(--primary)] shrink-0 shadow-[0_0_10px_var(--primary-glow-subtle)]">
                 {icon}
               </div>
             )}
