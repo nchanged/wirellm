@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export type ThemeId = 'cyan' | 'emerald' | 'amber' | 'purple' | 'obsidian';
+export type ThemeId = 'magenta' | 'cyan' | 'synthwave' | 'emerald' | 'amber' | 'purple' | 'obsidian';
 
 export interface ThemeConfig {
   id: ThemeId;
@@ -14,13 +14,40 @@ export interface ThemeConfig {
 
 export const THEMES: ThemeConfig[] = [
   {
+    id: 'magenta',
+    name: 'Neon Magenta',
+    shortName: 'Magenta',
+    primary: '#ff1493',
+    previewColor: '#ff1493',
+    glow: 'rgba(255, 20, 147, 0.5)',
+    description: 'Electric Hot Magenta on Cyber-Night Obsidian (Default)',
+  },
+  {
     id: 'cyan',
     name: 'Cyber Cyan',
     shortName: 'Cyan',
     primary: '#00f0ff',
     previewColor: '#00f0ff',
     glow: 'rgba(0, 240, 255, 0.45)',
-    description: 'Electric Tron Neon Cyan on Deep Cyber-Obsidian (Default)',
+    description: 'Electric Tron Neon Cyan on Deep Cyber-Obsidian',
+  },
+  {
+    id: 'synthwave',
+    name: 'Synthwave Sunset',
+    shortName: 'Synthwave',
+    primary: '#f43f5e',
+    previewColor: '#f43f5e',
+    glow: 'rgba(244, 63, 94, 0.45)',
+    description: 'Vibrant hot rose & neon twilight',
+  },
+  {
+    id: 'purple',
+    name: 'Acid Violet',
+    shortName: 'Violet',
+    primary: '#c084fc',
+    previewColor: '#c084fc',
+    glow: 'rgba(192, 132, 252, 0.45)',
+    description: 'Cyberpunk electric violet & neon lavender',
   },
   {
     id: 'emerald',
@@ -39,15 +66,6 @@ export const THEMES: ThemeConfig[] = [
     previewColor: '#fbbf24',
     glow: 'rgba(245, 158, 11, 0.45)',
     description: 'Retro mainframe CRT amber on dark carbon',
-  },
-  {
-    id: 'purple',
-    name: 'Synth Violet',
-    shortName: 'Violet',
-    primary: '#c084fc',
-    previewColor: '#c084fc',
-    glow: 'rgba(192, 132, 252, 0.45)',
-    description: 'Cyberpunk electric violet & neon magenta',
   },
   {
     id: 'obsidian',
@@ -69,7 +87,7 @@ export function getStoredTheme(): ThemeId {
       return saved as ThemeId;
     }
   } catch (_) {}
-  return 'cyan'; // Default to Cyber Cyan
+  return 'magenta'; // Default to Neon Magenta!
 }
 
 export function applyTheme(theme: ThemeId): void {

@@ -86,8 +86,8 @@ export const ThemeSelector: React.FC = () => {
                     <div className="min-w-0">
                       <div className="font-semibold truncate flex items-center gap-1.5">
                         <span>{item.name}</span>
-                        {item.id === 'cyan' && (
-                          <span className="text-[9px] px-1 rounded bg-[#00222a] text-[#00f0ff] border border-[#00f0ff]/40">
+                        {item.id === 'magenta' && (
+                          <span className="text-[9px] px-1 rounded bg-[#2a0018] text-[#ff1493] border border-[#ff1493]/40">
                             DEFAULT
                           </span>
                         )}

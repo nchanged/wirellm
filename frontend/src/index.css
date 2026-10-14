@@ -7,7 +7,26 @@
    Default: Cyber Cyan (#00f0ff)
    ========================================================================== */
 
-:root, [data-theme="cyan"] {
+:root, [data-theme="magenta"] {
+  color-scheme: dark;
+  --primary: #ff1493;
+  --primary-rgb: 255, 20, 147;
+  --primary-hover: #ff40a0;
+  --primary-glow: rgba(255, 20, 147, 0.5);
+  --primary-glow-subtle: rgba(255, 20, 147, 0.16);
+  --primary-border: rgba(255, 20, 147, 0.38);
+  --primary-bg-badge: #2a0018;
+  --primary-bg-badge-border: rgba(255, 20, 147, 0.5);
+  --bg-app: #080206;
+  --bg-header: rgba(18, 4, 14, 0.95);
+  --bg-card: #12040e;
+  --bg-card-subtle: #1c0617;
+  --border-subtle: rgba(255, 20, 147, 0.15);
+  --radial-1: rgba(255, 20, 147, 0.09);
+  --radial-2: rgba(217, 70, 239, 0.04);
+}
+
+[data-theme="cyan"] {
   color-scheme: dark;
   --primary: #00f0ff;
   --primary-rgb: 0, 240, 255;
@@ -24,6 +43,25 @@
   --border-subtle: rgba(0, 240, 255, 0.12);
   --radial-1: rgba(0, 240, 255, 0.08);
   --radial-2: rgba(6, 182, 212, 0.04);
+}
+
+[data-theme="synthwave"] {
+  color-scheme: dark;
+  --primary: #f43f5e;
+  --primary-rgb: 244, 63, 94;
+  --primary-hover: #fb7185;
+  --primary-glow: rgba(244, 63, 94, 0.45);
+  --primary-glow-subtle: rgba(244, 63, 94, 0.14);
+  --primary-border: rgba(244, 63, 94, 0.35);
+  --primary-bg-badge: #290812;
+  --primary-bg-badge-border: rgba(244, 63, 94, 0.5);
+  --bg-app: #0c0407;
+  --bg-header: rgba(20, 6, 12, 0.95);
+  --bg-card: #18080f;
+  --bg-card-subtle: #240d18;
+  --border-subtle: rgba(244, 63, 94, 0.14);
+  --radial-1: rgba(244, 63, 94, 0.08);
+  --radial-2: rgba(168, 85, 247, 0.04);
 }
 
 [data-theme="emerald"] {

@@ -1,17 +1,23 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en" class="dark" data-theme="magenta">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2322c55e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polygon points='13 2 3 14 12 14 11 22 21 10 12 10 13 2'/></svg>" />
+    <script>
+      try {
+        var t = localStorage.getItem('wirellm_theme');
+        if (t) document.documentElement.setAttribute('data-theme', t);
+      } catch (_) {}
+    </script>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ff1493' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polygon points='13 2 3 14 12 14 11 22 21 10 12 10 13 2'/></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WireLLM &bull; Autonomous Gateway & MCP</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script type="module" crossorigin src="/assets/index-CDA6Ao9B.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CxPnIjCu.css">
+    <script type="module" crossorigin src="/assets/index-Czb6y4-k.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CfxUu-E5.css">
   </head>
-  <body class="bg-[#04060a] text-slate-100 min-h-screen selection:bg-emerald-500/30 selection:text-emerald-300 font-sans antialiased">
+  <body class="bg-[var(--bg-app,#080206)] text-slate-100 min-h-screen font-sans antialiased selection:bg-[var(--primary)]/30 selection:text-white">
     <div id="root"></div>
   </body>
 </html>
