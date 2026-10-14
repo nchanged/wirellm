@@ -265,43 +265,58 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
   }, [secrets, search]);
 
   return (
-    <div className="space-y-4">
-      {/* Clean Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/[0.08]">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-base font-bold font-mono tracking-tight text-white flex items-center gap-2">
-              <Lock className="w-4 h-4 text-[var(--primary)]" />
-              Central Vault Secrets
-            </h1>
-            <Badge variant="solid-primary" size="xs">
-              AES-256-GCM
-            </Badge>
-            <span className="text-xs font-mono text-slate-500">
-              ({secrets.length} {secrets.length === 1 ? 'key' : 'keys'})
-            </span>
+    <div className="space-y-3">
+      {/* Concise Header Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-white/[0.08]">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 rounded-md bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-[var(--primary)]">
+            <Lock className="w-4 h-4" />
           </div>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Encrypted keys available across all providers via <code className="text-[var(--primary)] font-mono">${`{NAME}`}</code>
-          </p>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-bold font-mono tracking-tight text-white">
+                Central Vault
+              </h1>
+              <Badge variant="solid-primary" size="xs">AES-256-GCM</Badge>
+              <span className="text-[11px] font-mono text-slate-500">
+                ({secrets.length} {secrets.length === 1 ? 'secret' : 'secrets'})
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Reusable encrypted secrets injected via <code className="text-[var(--primary)] font-mono">${`{KEY}`}</code>
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Filter Search */}
+          <div className="relative w-44 sm:w-56">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter keys..."
+              className="w-full pl-8 pr-2.5 h-7 text-xs font-mono bg-[#030612] border border-white/10 rounded-md text-white placeholder-slate-500 focus:outline-none focus:border-[var(--primary)]"
+            />
+          </div>
+
           <Button
             variant="secondary"
             size="sm"
             onClick={loadSecrets}
             disabled={loading}
-            className="h-8 text-xs font-mono"
+            className="h-7 px-2.5 text-xs font-mono"
+            title="Refresh Vault secrets"
           >
-            <RefreshCw className={cn('w-3 h-3 mr-1.5', loading && 'animate-spin text-[var(--primary)]')} />
-            Refresh
+            <RefreshCw className={cn('w-3 h-3', loading && 'animate-spin text-[var(--primary)]')} />
           </Button>
+
           <Button
             variant="primary"
             size="sm"
             onClick={() => handleOpenAddModal()}
-            className="h-8 text-xs font-mono font-bold shadow-[0_0_15px_var(--primary-glow)]"
+            className="h-7 px-3 text-xs font-mono font-bold shadow-[0_0_12px_var(--primary-glow)]"
           >
             <Plus className="w-3.5 h-3.5 mr-1" />
             Add Secret
@@ -309,9 +324,9 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
         </div>
       </div>
 
-      {/* Quick Preset Chips Row */}
-      <div className="flex items-center gap-1.5 overflow-x-auto py-1 text-xs font-mono">
-        <span className="text-slate-500 text-[11px] shrink-0 mr-1">Quick Add:</span>
+      {/* Quick Add Presets Bar */}
+      <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 text-xs font-mono">
+        <span className="text-slate-500 text-[10px] uppercase tracking-wider shrink-0 mr-1">Quick Add:</span>
         {VAULT_PRESETS.map((p) => {
           const isConfigured = secrets.some(
             (s) => s.name === p.secretName || s.name === p.id.toUpperCase()
@@ -321,7 +336,7 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
               key={p.id}
               onClick={() => handleOpenAddModal(p)}
               className={cn(
-                'h-6 px-2 rounded text-[11px] font-mono flex items-center gap-1 transition-all shrink-0 border select-none',
+                'h-5 px-2 rounded text-[10px] font-mono flex items-center gap-1 transition-all shrink-0 border select-none',
                 isConfigured
                   ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:border-emerald-500/40'
                   : 'bg-white/[0.03] text-slate-400 border-white/[0.08] hover:text-white hover:border-white/20'
@@ -334,26 +349,15 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
         })}
       </div>
 
-      {/* Search Filter Bar */}
-      <div className="relative">
-        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Filter secrets by name..."
-          className="pl-9 h-8 text-xs font-mono bg-[#030612] border-white/10"
-        />
-      </div>
-
-      {/* Simple, Highly Readable List View */}
+      {/* Concise, Clean Secrets Table */}
       {loading ? (
-        <div className="p-8 text-center text-xs font-mono text-slate-500 space-y-2">
+        <div className="p-8 text-center text-xs font-mono text-slate-500 space-y-2 border border-white/10 rounded-lg bg-[#02050f]/80">
           <RefreshCw className="w-4 h-4 animate-spin mx-auto text-[var(--primary)]" />
-          <span>Loading Vault secrets...</span>
+          <span>Loading secrets...</span>
         </div>
       ) : filteredSecrets.length === 0 ? (
-        <div className="p-8 rounded-xl border border-dashed border-white/10 text-center space-y-2 bg-white/[0.01]">
-          <p className="text-xs text-slate-400">No secrets found in the Vault.</p>
+        <div className="p-8 rounded-lg border border-dashed border-white/10 text-center space-y-2 bg-[#02050f]/40">
+          <p className="text-xs text-slate-400 font-mono">No secrets found in the Vault.</p>
           <Button
             variant="primary"
             size="sm"
@@ -361,35 +365,53 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
             className="h-7 text-xs font-mono"
           >
             <Plus className="w-3 h-3 mr-1" />
-            Add Secret
+            Add First Secret
           </Button>
         </div>
       ) : (
-        <div className="rounded-xl border border-white/[0.08] bg-[#02050f]/80 overflow-hidden">
-          <div className="divide-y divide-white/[0.06]">
-            {filteredSecrets.map((secret) => {
-              const templatePill = `\${${secret.name}}`;
-              const linkedProviders = providerUsageMap[secret.name] || [];
-              const isCopied = copiedKey === secret.name;
+        <div className="overflow-x-auto rounded-lg border border-white/10 bg-[#02050f]/90 shadow-sm">
+          <table className="w-full text-left border-collapse text-xs font-mono">
+            <thead>
+              <tr className="border-b border-white/10 bg-white/[0.03] text-slate-400 text-[10px] uppercase tracking-wider">
+                <th className="py-2.5 px-3 font-semibold">Key Identifier</th>
+                <th className="py-2.5 px-3 font-semibold">Template Variable</th>
+                <th className="py-2.5 px-3 font-semibold">Linked Providers</th>
+                <th className="py-2.5 px-3 font-semibold hidden md:table-cell">Preview</th>
+                <th className="py-2.5 px-3 font-semibold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.06]">
+              {filteredSecrets.map((secret) => {
+                const templatePill = `\${${secret.name}}`;
+                const linkedProviders = providerUsageMap[secret.name] || [];
+                const isCopied = copiedKey === secret.name;
 
-              return (
-                <div
-                  key={secret.name}
-                  className="px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-white/[0.02] transition-colors"
-                >
-                  {/* Left: Name, Description, and Linked Provider */}
-                  <div className="space-y-1 min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono font-bold text-xs text-white">
-                        {secret.name}
-                      </span>
+                return (
+                  <tr
+                    key={secret.name}
+                    className="hover:bg-white/[0.02] transition-colors group"
+                  >
+                    {/* Key Identifier & Description */}
+                    <td className="py-2 px-3 align-middle">
+                      <div className="flex flex-col">
+                        <span className="font-bold text-white text-xs tracking-tight">
+                          {secret.name}
+                        </span>
+                        {secret.description && (
+                          <span className="text-[10px] text-slate-500 font-sans truncate max-w-xs">
+                            {secret.description}
+                          </span>
+                        )}
+                      </div>
+                    </td>
 
-                      {/* Template Pill with 1-click Copy */}
+                    {/* Template Variable with 1-click Copy */}
+                    <td className="py-2 px-3 align-middle whitespace-nowrap">
                       <button
                         onClick={() => handleCopy(templatePill, secret.name)}
-                        title="Click to copy template variable"
+                        title="Click to copy template"
                         className={cn(
-                          'h-5 px-1.5 rounded text-[10px] font-mono flex items-center gap-1 transition-all border',
+                          'h-5 px-1.5 rounded text-[10px] font-mono inline-flex items-center gap-1 transition-all border',
                           isCopied
                             ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
                             : 'bg-white/[0.04] text-[var(--primary)] border-white/10 hover:border-[var(--primary-border)] hover:bg-[var(--primary-bg-badge)]'
@@ -407,11 +429,12 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
                           </>
                         )}
                       </button>
+                    </td>
 
-                      {/* Linked Provider Badge */}
+                    {/* Linked Providers */}
+                    <td className="py-2 px-3 align-middle">
                       {linkedProviders.length > 0 ? (
-                        <div className="flex items-center gap-1">
-                          <span className="text-[10px] text-slate-500 font-mono">provider:</span>
+                        <div className="flex items-center gap-1 flex-wrap max-w-md">
                           {linkedProviders.map((p) => (
                             <span
                               key={p}
@@ -426,46 +449,43 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
                           (standby)
                         </span>
                       )}
-                    </div>
+                    </td>
 
-                    {secret.description && (
-                      <p className="text-[11px] text-slate-400 truncate">
-                        {secret.description}
-                      </p>
-                    )}
-                  </div>
+                    {/* Key Preview */}
+                    <td className="py-2 px-3 align-middle whitespace-nowrap hidden md:table-cell">
+                      <span className="text-slate-500 text-[11px] font-mono tracking-widest">
+                        {secret.key_preview || '••••••••••••'}
+                      </span>
+                    </td>
 
-                  {/* Right: Key Preview & Actions */}
-                  <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
-                    <span className="text-slate-500 text-[11px] font-mono tracking-widest hidden md:inline">
-                      {secret.key_preview || '••••••••••••'}
-                    </span>
+                    {/* Actions */}
+                    <td className="py-2 px-3 align-middle text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => handleOpenDiscovery(secret)}
+                          title="Query live models upstream using this secret"
+                          className="h-6 px-2 text-[10px] font-mono text-slate-300 hover:text-[var(--primary)]"
+                        >
+                          <Cpu className="w-2.5 h-2.5 mr-1 text-[var(--primary)]" />
+                          Explore Models
+                        </Button>
 
-                    <div className="flex items-center gap-1">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => handleOpenDiscovery(secret)}
-                        title="Query live models upstream using this secret"
-                        className="h-7 px-2 text-[11px] font-mono text-slate-300 hover:text-[var(--primary)]"
-                      >
-                        <Cpu className="w-3 h-3 mr-1 text-[var(--primary)]" />
-                        Explore Models
-                      </Button>
-
-                      <button
-                        onClick={() => handleDeleteSecret(secret.name)}
-                        title={`Delete ${secret.name}`}
-                        className="h-7 w-7 rounded flex items-center justify-center text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/30 transition-all"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                        <button
+                          onClick={() => handleDeleteSecret(secret.name)}
+                          title={`Delete ${secret.name}`}
+                          className="h-6 w-6 rounded flex items-center justify-center text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/30 transition-all"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       )}
 
