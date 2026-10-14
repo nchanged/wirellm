@@ -751,6 +751,23 @@ pub async fn create_vault_secret(
     })))
 }
 
+/// GET /api/vault/secrets/{name} - Retrieves a single Vault secret by name (masked)
+pub async fn get_vault_secret(
+    State(reloadable): State<ReloadableState>,
+    Path(name): Path<String>,
+) -> Result<Json<VaultSecretRecord>, (StatusCode, Json<serde_json::Value>)> {
+    match reloadable.db.get_vault_secret_record(&name) {
+        Ok(Some(rec)) => Ok(Json(rec)),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("Secret '{}' not found in central Vault", name)
+            })),
+        )),
+        Err(e) => Err(internal_error(e.to_string())),
+    }
+}
+
 /// DELETE /api/vault/secrets/{name} - Deletes a secret from the central Vault
 pub async fn delete_vault_secret(
     State(reloadable): State<ReloadableState>,
@@ -768,4 +785,187 @@ pub async fn delete_vault_secret(
         "message": format!("Secret '{}' removed from central Vault", name)
     })))
 }
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct DiscoverModelsInput {
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub vault_secret: Option<String>,
+    pub api_key: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DiscoverModelsResult {
+    pub provider: String,
+    pub base_url: String,
+    pub total_models: usize,
+    pub models: Vec<String>,
+    pub recommended_coding: Vec<String>,
+    pub recommended_reasoning: Vec<String>,
+    pub recommended_fast: Vec<String>,
+}
+
+/// Query upstream provider's /models endpoint to discover live available models
+pub async fn discover_models_impl(
+    db: &wirellm_core::db::DbManager,
+    input: DiscoverModelsInput,
+) -> Result<DiscoverModelsResult, String> {
+    let (prov_name, base_url, api_key) = if let Some(ref p_name) = input.provider {
+        let full_cfg = db.load_config().map_err(|e| e.to_string())?;
+        let prov = full_cfg
+            .providers
+            .into_iter()
+            .find(|p| p.name.eq_ignore_ascii_case(p_name))
+            .ok_or_else(|| format!("Provider '{}' not found in database", p_name))?;
+        (
+            prov.name,
+            prov.base_url,
+            prov.api_key,
+        )
+    } else if let Some(ref url) = input.base_url {
+        let key = if let Some(ref vs) = input.vault_secret {
+            db.get_vault_secret_with_aliases(vs)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("Vault secret '{}' not found", vs))?
+        } else if let Some(ref raw) = input.api_key {
+            raw.clone()
+        } else {
+            // Attempt automatic vault secret guessing from base_url
+            let url_lower = url.to_lowercase();
+            let guess_secret = if url_lower.contains("nvidia") {
+                Some("NVIDIA_API_KEY")
+            } else if url_lower.contains("groq") {
+                Some("GROQ_API_KEY")
+            } else if url_lower.contains("openrouter") {
+                Some("OPENROUTER_TOKEN")
+            } else if url_lower.contains("deepseek") {
+                Some("DEEPSEEK_API_KEY")
+            } else if url_lower.contains("cerebras") {
+                Some("CEREBRAS_API_KEY")
+            } else if url_lower.contains("generativelanguage") || url_lower.contains("google") {
+                Some("GEMINI_API_KEY")
+            } else {
+                None
+            };
+
+            if let Some(s_name) = guess_secret {
+                db.get_vault_secret_with_aliases(s_name)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        };
+        ("custom".to_string(), url.clone(), key)
+    } else {
+        return Err("Must provide either 'provider' name or 'base_url'".to_string());
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let clean_url = base_url.trim_end_matches('/');
+    let target_models_url = format!("{}/models", clean_url);
+
+    let mut req = client.get(&target_models_url);
+    if !api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
+    }
+
+    let resp = req.send().await.map_err(|e| format!("Failed to connect to {}: {}", target_models_url, e))?;
+    let status = resp.status();
+
+    let json_val: serde_json::Value = if status.is_success() {
+        resp.json().await.map_err(|e| format!("Failed to parse JSON response: {}", e))?
+    } else if status.as_u16() == 404 && !clean_url.ends_with("/v1") {
+        // Retry with /v1/models
+        let v1_url = format!("{}/v1/models", clean_url);
+        let mut req2 = client.get(&v1_url);
+        if !api_key.trim().is_empty() {
+            req2 = req2.header("Authorization", format!("Bearer {}", api_key.trim()));
+        }
+        let resp2 = req2.send().await.map_err(|e| format!("Failed to connect to {}: {}", v1_url, e))?;
+        if resp2.status().is_success() {
+            resp2.json().await.map_err(|e| format!("Failed to parse JSON response: {}", e))?
+        } else {
+            return Err(format!("Upstream returned HTTP {} when querying models at {}", resp2.status(), v1_url));
+        }
+    } else {
+        return Err(format!("Upstream returned HTTP {} when querying models at {}", status, target_models_url));
+    };
+
+    // Extract models
+    let mut extracted_models = Vec::new();
+    if let Some(arr) = json_val.get("data").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                extracted_models.push(id.to_string());
+            }
+        }
+    } else if let Some(arr) = json_val.get("models").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(id) = item.get("id").or_else(|| item.get("name")).and_then(|v| v.as_str()) {
+                extracted_models.push(id.to_string());
+            }
+        }
+    } else if let Some(arr) = json_val.as_array() {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                extracted_models.push(id.to_string());
+            } else if let Some(s) = item.as_str() {
+                extracted_models.push(s.to_string());
+            }
+        }
+    }
+
+    extracted_models.sort();
+    extracted_models.dedup();
+
+    let mut recommended_coding = Vec::new();
+    let mut recommended_reasoning = Vec::new();
+    let mut recommended_fast = Vec::new();
+
+    for m in &extracted_models {
+        let m_lower = m.to_lowercase();
+        if m_lower.contains("nemotron-3-ultra") || m_lower.contains("deepseek-r1") || m_lower.contains("reasoner") || m_lower.contains("o1") || m_lower.contains("o3") {
+            recommended_reasoning.push(m.clone());
+        }
+        if m_lower.contains("coder") || m_lower.contains("code") || m_lower.contains("nemotron") || m_lower.contains("gpt-oss-120b") || m_lower.contains("deepseek-chat") || m_lower.contains("v3") || m_lower.contains("llama-3.3-70b") || m_lower.contains("qwen") {
+            recommended_coding.push(m.clone());
+        }
+        if m_lower.contains("lightning") || m_lower.contains("flash") || m_lower.contains("8b") || m_lower.contains("20b") || m_lower.contains("mini") || m_lower.contains("turbo") {
+            recommended_fast.push(m.clone());
+        }
+    }
+
+    recommended_coding.truncate(8);
+    recommended_reasoning.truncate(8);
+    recommended_fast.truncate(8);
+
+    Ok(DiscoverModelsResult {
+        provider: prov_name,
+        base_url,
+        total_models: extracted_models.len(),
+        models: extracted_models,
+        recommended_coding,
+        recommended_reasoning,
+        recommended_fast,
+    })
+}
+
+/// POST /api/providers/discover-models - Discovers models from an upstream provider or base_url
+pub async fn discover_models_endpoint(
+    State(reloadable): State<ReloadableState>,
+    Json(input): Json<DiscoverModelsInput>,
+) -> Result<Json<DiscoverModelsResult>, (StatusCode, Json<serde_json::Value>)> {
+    discover_models_impl(&reloadable.db, input)
+        .await
+        .map(Json)
+        .map_err(|e| internal_error(e))
+}
+
+
 

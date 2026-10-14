@@ -3,6 +3,7 @@ import { ApiStatusResponse, LiveStreamEvent, AuthStatusResponse } from './types'
 import { fetchStatus, fetchAuthStatus, logout } from './api';
 import { Overview } from './components/Overview';
 import { ProvidersStudio } from './components/ProvidersStudio';
+import { VaultStudio } from './components/VaultStudio';
 import { VirtualModelsStudio } from './components/VirtualModelsStudio';
 import { AnalyticsView } from './components/AnalyticsView';
 import { LogsView } from './components/LogsView';
@@ -20,10 +21,11 @@ import {
   Shield,
   LogOut,
   Key,
+  Lock,
 } from 'lucide-react';
 import { Badge, Button, cn } from './ui';
 
-type Tab = 'overview' | 'providers' | 'models' | 'apikeys' | 'analytics' | 'logs';
+type Tab = 'overview' | 'providers' | 'vault' | 'models' | 'apikeys' | 'analytics' | 'logs';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
@@ -150,7 +152,8 @@ export const App: React.FC = () => {
 
   const navItems = [
     { id: 'overview' as Tab, label: 'Routing Matrix', short: 'Router', icon: Workflow },
-    { id: 'providers' as Tab, label: 'Providers & Vault', short: 'Providers', icon: Server },
+    { id: 'providers' as Tab, label: 'Providers', short: 'Providers', icon: Server },
+    { id: 'vault' as Tab, label: 'Central Vault', short: 'Vault', icon: Lock },
     { id: 'models' as Tab, label: 'Virtual Models', short: 'Models', icon: SlidersHorizontal },
     { id: 'apikeys' as Tab, label: 'API Keys & Access', short: 'Keys', icon: Key },
     { id: 'analytics' as Tab, label: 'Token Analytics', short: 'Stats', icon: BarChart3 },
@@ -386,6 +389,13 @@ export const App: React.FC = () => {
           />
         )}
         {activeTab === 'providers' && <ProvidersStudio status={status} onRefresh={handleManualRefresh} />}
+        {activeTab === 'vault' && (
+          <VaultStudio
+            status={status}
+            onRefresh={handleManualRefresh}
+            onNavigateToProviders={() => setActiveTab('providers')}
+          />
+        )}
         {activeTab === 'models' && <VirtualModelsStudio status={status} onRefresh={handleManualRefresh} />}
         {activeTab === 'apikeys' && <ApiKeysView authStatus={authStatus} />}
         {activeTab === 'analytics' && <AnalyticsView />}

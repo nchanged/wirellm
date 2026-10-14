@@ -714,6 +714,7 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
             put(admin::update_provider).delete(admin::delete_provider),
         )
         .route("/api/providers/{name}/test", post(admin::test_provider))
+        .route("/api/providers/discover-models", post(admin::discover_models_endpoint))
         .route("/api/virtual-models", get(admin::list_virtual_models))
         .route(
             "/api/virtual-models/{name}",
@@ -724,7 +725,7 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         .route("/api/keys", get(admin::list_api_keys).post(admin::create_api_key))
         .route("/api/keys/{id}", delete(admin::delete_api_key))
         .route("/api/vault/secrets", get(admin::list_vault_secrets).post(admin::create_vault_secret))
-        .route("/api/vault/secrets/{name}", delete(admin::delete_vault_secret))
+        .route("/api/vault/secrets/{name}", get(admin::get_vault_secret).delete(admin::delete_vault_secret))
         .route("/api/logs", get(routes::get_logs))
         .layer(middleware::from_fn_with_state(
             reloadable_state.clone(),
