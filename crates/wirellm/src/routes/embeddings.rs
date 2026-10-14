@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
+use reqwest::Url;
 
 use wirellm_core::router::{AdaptivePriorityStrategy, RoutingStrategy};
 use wirellm_core::state::{AppState, ProviderState};
@@ -93,7 +94,8 @@ pub async fn create_embeddings(
         let rewritten_body = Bytes::from(serde_json::to_vec(&payload).unwrap());
 
         // 2. Safely parse base URL and join embeddings path (Url::joinTrailingSlashes mitigation)
-        let endpoint_url = match selected.base_url.join("embeddings") {
+        let base_str = selected.base_url.as_str().trim_end_matches('/');
+        let endpoint_url = match Url::parse(&format!("{}/embeddings", base_str)) {
             Ok(url) => url,
             Err(e) => {
                 error!("Invalid base URL path join for {}: {}", selected.name, e);

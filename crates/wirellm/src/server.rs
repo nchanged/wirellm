@@ -239,7 +239,11 @@ pub fn build_app_state(config: Config) -> Result<AppState, String> {
         if !p.enabled {
             continue;
         }
-        let url = Url::parse(&p.base_url).map_err(|e| {
+        let mut clean_url = p.base_url.trim().to_string();
+        if !clean_url.ends_with('/') {
+            clean_url.push('/');
+        }
+        let url = Url::parse(&clean_url).map_err(|e| {
             format!(
                 "Invalid base URL '{}' for provider '{}': {}",
                 p.base_url, p.name, e
