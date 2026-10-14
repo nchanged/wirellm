@@ -6,6 +6,7 @@ import {
   TestConnectionResponse,
   LogsResponse,
   AuthStatusResponse,
+  ApiKeyRecord,
 } from './types';
 
 const API_BASE = '';
@@ -137,6 +138,37 @@ export async function fetchSetupRecommendations(): Promise<{ markdown: string }>
     throw new Error(`Failed to fetch setup recommendations: ${res.statusText}`);
   }
   return res.json();
+}
+
+export async function fetchApiKeys(): Promise<ApiKeyRecord[]> {
+  const res = await fetch(`${API_BASE}/api/keys`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch API keys: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function createApiKey(name: string, key?: string): Promise<ApiKeyRecord> {
+  const res = await fetch(`${API_BASE}/api/keys`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, key: key?.trim() || undefined }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `Failed to create API key (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function deleteApiKey(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/keys/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `Failed to revoke API key (${res.status})`);
+  }
 }
 
 export async function logout(): Promise<void> {

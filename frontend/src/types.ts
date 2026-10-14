@@ -137,6 +137,15 @@ export interface AuthStatusResponse {
   api_auth_required: boolean;
   authenticated: boolean;
   user?: SessionUser | null;
+  is_cloud_env?: boolean;
+}
+
+export interface ApiKeyRecord {
+  id: string;
+  name: string;
+  key_preview: string;
+  full_key?: string;
+  created_at: string;
 }
 
 

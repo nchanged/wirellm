@@ -4,7 +4,7 @@ use axum::{
     http::{header, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::collections::VecDeque;
@@ -87,11 +87,19 @@ pub struct Reloader {
 
 impl Reloader {
     pub fn reload(&self) -> Result<(), String> {
-        let config = match self.db.load_config() {
+        let mut config = match self.db.load_config() {
             Ok(c) if !c.providers.is_empty() => c,
             _ => Config::load_from_file(&self.config_path)
                 .map_err(|e| format!("Failed to load config file: {}", e))?,
         };
+        // Merge dynamic database API keys into active auth config
+        if let Ok(db_keys) = self.db.get_active_api_keys() {
+            for k in db_keys {
+                if !config.auth.api_keys.contains(&k) {
+                    config.auth.api_keys.push(k);
+                }
+            }
+        }
         config.validate().map_err(|e| format!("Config validation failed: {}", e))?;
         let new_state = build_app_state(config)?;
         self.sender
@@ -587,6 +595,15 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         }
     }
 
+    // Merge active database API keys into active auth config
+    if let Ok(db_keys) = db.get_active_api_keys() {
+        for k in db_keys {
+            if !config.auth.api_keys.contains(&k) {
+                config.auth.api_keys.push(k);
+            }
+        }
+    }
+
     // 2. Build initial AppState
     let app_state = Arc::new(build_app_state(config.clone())?);
 
@@ -700,6 +717,8 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         )
         .route("/api/analytics/daily", get(admin::get_daily_analytics))
         .route("/api/setup/recommendations", get(admin::get_setup_recommendations))
+        .route("/api/keys", get(admin::list_api_keys).post(admin::create_api_key))
+        .route("/api/keys/{id}", delete(admin::delete_api_key))
         .route("/api/logs", get(routes::get_logs))
         .layer(middleware::from_fn_with_state(
             reloadable_state.clone(),

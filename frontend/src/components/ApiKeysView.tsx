@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Key,
   Shield,
@@ -6,18 +6,22 @@ import {
   ShieldCheck,
   Copy,
   Check,
-  Terminal,
-  Code,
-  Globe,
+  Plus,
+  Trash2,
   Lock,
   Unlock,
-  AlertTriangle,
+  Globe,
   Cpu,
-  Server,
-  ExternalLink,
+  Code,
+  AlertCircle,
+  Eye,
+  CheckCircle2,
+  RefreshCw,
+  Sparkles,
 } from 'lucide-react';
-import { Card, MetricCard, Badge, Button, cn } from '../ui';
-import { AuthStatusResponse } from '../types';
+import { Card, Badge, Button, Modal, Input, Table, TableHeader, TableBody, TableRow, TableHead, TableCell, cn } from '../ui';
+import { AuthStatusResponse, ApiKeyRecord } from '../types';
+import { fetchApiKeys, createApiKey, deleteApiKey } from '../api';
 
 interface ApiKeysViewProps {
   authStatus: AuthStatusResponse | null;
@@ -27,9 +31,37 @@ export const ApiKeysView: React.FC<ApiKeysViewProps> = ({ authStatus }) => {
   const [activeSnippetTab, setActiveSnippetTab] = useState<'agents' | 'python' | 'node' | 'curl'>('agents');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
+  // Dynamic Keys State
+  const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
+  const [loadingKeys, setLoadingKeys] = useState<boolean>(true);
+  const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
+  const [newKeyName, setNewKeyName] = useState<string>('');
+  const [newCustomKey, setNewCustomKey] = useState<string>('');
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [createdKeyResult, setCreatedKeyResult] = useState<ApiKeyRecord | null>(null);
+
   const originUrl = window.location.origin;
-  const isApiProtected = authStatus?.api_auth_required ?? false;
+  const isCloud = authStatus?.is_cloud_env ?? (authStatus?.google_auth_enabled || window.location.hostname !== 'localhost');
+  const hasKeys = keys.length > 0;
+  const isApiProtected = isCloud || hasKeys || (authStatus?.api_auth_required ?? false);
   const isGoogleProtected = authStatus?.google_auth_enabled ?? false;
+
+  const loadKeys = async () => {
+    try {
+      setLoadingKeys(true);
+      const data = await fetchApiKeys();
+      setKeys(data);
+    } catch (err: any) {
+      console.warn('Failed to load API keys:', err);
+    } finally {
+      setLoadingKeys(false);
+    }
+  };
+
+  useEffect(() => {
+    loadKeys();
+  }, []);
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -37,17 +69,55 @@ export const ApiKeysView: React.FC<ApiKeysViewProps> = ({ authStatus }) => {
     setTimeout(() => setCopiedKey(null), 2000);
   };
 
+  const handleCreateKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newKeyName.trim()) {
+      setErrorMsg('Please enter a key name');
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setErrorMsg(null);
+      const res = await createApiKey(newKeyName.trim(), newCustomKey.trim() || undefined);
+      setCreatedKeyResult(res);
+      setNewKeyName('');
+      setNewCustomKey('');
+      setShowCreateModal(false);
+      await loadKeys();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to create API key');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDeleteKey = async (id: string, name: string) => {
+    if (!confirm(`Are you sure you want to revoke API key "${name}"? Any agent using this key will immediately lose access.`)) {
+      return;
+    }
+    try {
+      await deleteApiKey(id);
+      await loadKeys();
+    } catch (err: any) {
+      alert(err.message || 'Failed to revoke API key');
+    }
+  };
+
+  // Generate a sample active key or placeholder
+  const activeKeySample = keys.length > 0 ? keys[0].key_preview : 'sk-wire-prod-12345678';
+
   const agentSnippet = `{
   "models": {
     "coder": {
       "provider": "openai-compatible",
       "baseURL": "${originUrl}/v1",
-      "apiKey": "${isApiProtected ? 'YOUR_WIRELLM_API_KEY' : 'unprotected'}"
+      "apiKey": "${keys.length > 0 ? 'YOUR_GENERATED_API_KEY' : 'sk-wire-...'}"
     },
     "planner": {
       "provider": "openai-compatible",
       "baseURL": "${originUrl}/v1",
-      "apiKey": "${isApiProtected ? 'YOUR_WIRELLM_API_KEY' : 'unprotected'}"
+      "apiKey": "${keys.length > 0 ? 'YOUR_GENERATED_API_KEY' : 'sk-wire-...'}"
     }
   }
 }`;
@@ -57,7 +127,7 @@ export const ApiKeysView: React.FC<ApiKeysViewProps> = ({ authStatus }) => {
 # Connect to WireLLM Gateway
 client = OpenAI(
     base_url="${originUrl}/v1",
-    api_key="${isApiProtected ? 'YOUR_WIRELLM_API_KEY' : 'unprotected'}"
+    api_key="${keys.length > 0 ? 'YOUR_GENERATED_API_KEY' : 'sk-wire-...'}"
 )
 
 # Route to virtual model (auto-cascades through healthy providers)
@@ -77,7 +147,7 @@ print(response.choices[0].message.content)`;
 // Connect to WireLLM Gateway
 const client = new OpenAI({
   baseURL: '${originUrl}/v1',
-  apiKey: '${isApiProtected ? 'YOUR_WIRELLM_API_KEY' : 'unprotected'}',
+  apiKey: '${keys.length > 0 ? 'YOUR_GENERATED_API_KEY' : 'sk-wire-...'}',
 });
 
 async function main() {
@@ -93,7 +163,7 @@ main().catch(console.error);`;
 
   const curlSnippet = `curl -X POST "${originUrl}/v1/chat/completions" \\
   -H "Content-Type: application/json" \\
-  ${isApiProtected ? '-H "Authorization: Bearer YOUR_WIRELLM_API_KEY" \\' : '# -H "Authorization: Bearer <key>" (Optional: API is currently open) \\'}
+  -H "Authorization: Bearer ${keys.length > 0 ? 'YOUR_GENERATED_API_KEY' : 'sk-wire-...'}" \\
   -d '{
     "model": "coder",
     "messages": [
@@ -103,22 +173,37 @@ main().catch(console.error);`;
 
   return (
     <div className="space-y-6">
-      {/* 1. Header Overview & Security Matrix */}
-      <div>
-        <div className="flex items-center gap-2.5 mb-1">
-          <div className="p-1.5 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-[var(--primary)] shadow-[0_0_10px_var(--primary-glow-subtle)]">
-            <Key className="w-4 h-4" />
+      {/* 1. Header Overview & Primary Call-to-Action */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2.5 mb-1 flex-wrap">
+            <div className="p-1.5 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-[var(--primary)] shadow-[0_0_10px_var(--primary-glow-subtle)]">
+              <Key className="w-4 h-4" />
+            </div>
+            <h1 className="text-xl font-black text-white font-mono tracking-tight">
+              API ACCESS &amp; CREDENTIAL KEYS
+            </h1>
+            <Badge variant={isApiProtected ? 'solid-primary' : 'amber'} size="sm">
+              {isApiProtected ? 'PROTECTED (TOKEN REQUIRED)' : 'PUBLIC PROXY MODE'}
+            </Badge>
           </div>
-          <h1 className="text-xl font-black text-white font-mono tracking-tight">
-            API ACCESS &amp; CREDENTIAL KEYS
-          </h1>
-          <Badge variant={isApiProtected ? 'solid-primary' : 'amber'} size="sm">
-            {isApiProtected ? 'TOKEN PROTECTED' : 'PUBLIC PROXY MODE'}
-          </Badge>
+          <p className="text-xs text-slate-400">
+            Generate and revoke client Bearer tokens for AI coding agents (OpenCode, Cursor, Claude Code, Antigravity).
+          </p>
         </div>
-        <p className="text-xs text-slate-400">
-          Manage gateway authentication, client Bearer tokens, Google OAuth sessions, and integration snippets for AI coding agents.
-        </p>
+
+        {/* Primary CREATE API KEY Button */}
+        <Button
+          variant="primary"
+          onClick={() => {
+            setErrorMsg(null);
+            setShowCreateModal(true);
+          }}
+          className="shrink-0 shadow-[0_0_20px_var(--primary-glow)] font-mono text-xs font-bold"
+        >
+          <Plus className="w-4 h-4 mr-1.5" />
+          Create API Key
+        </Button>
       </div>
 
       {/* Security Status Cards */}
@@ -127,9 +212,9 @@ main().catch(console.error);`;
         <Card className="p-4 flex flex-col justify-between">
           <div className="flex items-start justify-between">
             <div>
-              <span className="text-[11px] font-mono text-slate-400">API Proxy Access</span>
+              <span className="text-[11px] font-mono text-slate-400">Cloud Proxy Access</span>
               <h3 className="text-sm font-bold text-white font-mono mt-1">
-                {isApiProtected ? 'Protected' : 'Open / Unprotected'}
+                {isApiProtected ? 'Restricted / Protected' : 'Open / Unprotected'}
               </h3>
             </div>
             <div className={cn('p-2 rounded-lg', isApiProtected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20')}>
@@ -138,7 +223,7 @@ main().catch(console.error);`;
           </div>
           <p className="text-[11px] text-slate-400 mt-2">
             {isApiProtected
-              ? 'Requests to /v1/* require a valid Bearer token or x-api-key header.'
+              ? 'Requests to /v1/* in cloud require a valid Bearer key or x-api-key.'
               : 'Requests to /v1/* can be executed without an API token.'}
           </p>
         </Card>
@@ -156,14 +241,8 @@ main().catch(console.error);`;
               <ShieldCheck className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-2 text-[11px] font-mono text-slate-400">
-            {authStatus?.user ? (
-              <span className="text-slate-200 truncate block" title={authStatus.user.email}>
-                User: {authStatus.user.email}
-              </span>
-            ) : (
-              <span>Loopback / Local Admin</span>
-            )}
+          <div className="mt-2 text-[11px] font-mono text-slate-400 truncate" title={authStatus?.user?.email || 'Localhost'}>
+            {authStatus?.user ? `User: ${authStatus.user.email}` : 'Localhost Administrator'}
           </div>
         </Card>
 
@@ -181,7 +260,7 @@ main().catch(console.error);`;
             </div>
           </div>
           <p className="text-[11px] text-slate-400 mt-2">
-            Requests originating from 127.0.0.1 or ::1 automatically bypass all authentication checks for instant CLI &amp; local agent work.
+            Requests from 127.0.0.1 or ::1 automatically bypass all authentication for instant local dev &amp; CLI.
           </p>
         </Card>
 
@@ -211,64 +290,101 @@ main().catch(console.error);`;
         </Card>
       </div>
 
-      {/* 2. API Key Configuration & Instructions */}
+      {/* 2. ACTIVE API KEYS TABLE */}
       <Card className="p-5 space-y-4">
         <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
           <div className="flex items-center gap-2">
             <Key className="w-4 h-4 text-[var(--primary)]" />
             <h2 className="text-sm font-bold text-white font-mono">
-              HOW TO CONFIGURE API TOKENS
+              ACTIVE API KEYS ({keys.length})
             </h2>
           </div>
-          <Badge variant="primary">Cluster &amp; Gateway Security</Badge>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={loadKeys}
+            title="Refresh keys list"
+            className="h-7 px-2 text-xs"
+          >
+            <RefreshCw className={cn('w-3 h-3', loadingKeys && 'animate-spin text-[var(--primary)]')} />
+          </Button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-          {/* Method A: Kubernetes / Helm */}
-          <div className="p-4 rounded-xl bg-black/40 border border-white/[0.08] space-y-2">
-            <div className="flex items-center justify-between text-white font-mono font-bold">
-              <span>Option A: Helm Cluster Deployment</span>
-              <Badge variant="neutral" size="xs">values.yaml</Badge>
+        {keys.length === 0 ? (
+          <div className="py-8 text-center space-y-3 bg-black/30 rounded-xl border border-dashed border-white/10 p-6">
+            <div className="w-10 h-10 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
+              <Key className="w-5 h-5" />
             </div>
-            <p className="text-slate-400 text-[11px] leading-relaxed">
-              Define the API keys list under <code className="text-[var(--primary)]">auth.apiKeys</code> in your Helm values file:
-            </p>
-            <pre className="p-2.5 rounded-lg bg-[#030508] border border-white/10 font-mono text-[11px] text-slate-300 overflow-x-auto">
-{`auth:
-  apiKeys:
-    - "sk-wire-my-secret-key-1"
-    - "sk-wire-agent-worker-2"`}
-            </pre>
-          </div>
-
-          {/* Method B: Environment Variable */}
-          <div className="p-4 rounded-xl bg-black/40 border border-white/[0.08] space-y-2">
-            <div className="flex items-center justify-between text-white font-mono font-bold">
-              <span>Option B: Environment Variable</span>
-              <Badge variant="neutral" size="xs">Docker / CLI</Badge>
+            <div>
+              <p className="text-sm font-bold text-white font-mono">No API Keys Generated Yet</p>
+              <p className="text-xs text-slate-400 max-w-md mx-auto mt-1 leading-relaxed">
+                In cloud environments, remote requests to <code className="text-slate-200">/v1/*</code> are restricted until you generate an API key. Click below to create your first key.
+              </p>
             </div>
-            <p className="text-slate-400 text-[11px] leading-relaxed">
-              Pass a comma-separated list of accepted Bearer keys via <code className="text-[var(--primary)]">WIRELLM_API_KEYS</code>:
-            </p>
-            <pre className="p-2.5 rounded-lg bg-[#030508] border border-white/10 font-mono text-[11px] text-slate-300 overflow-x-auto">
-{`export WIRELLM_API_KEYS="sk-wire-my-secret-key-1,sk-wire-agent-worker-2"
-wirellm start`}
-            </pre>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setShowCreateModal(true)}
+              className="font-mono text-xs"
+            >
+              <Plus className="w-3.5 h-3.5 mr-1" />
+              Generate First API Key
+            </Button>
           </div>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] flex items-start gap-3 text-xs">
-          <ShieldAlert className="w-4 h-4 text-[var(--primary)] shrink-0 mt-0.5" />
-          <div className="space-y-1 text-slate-300">
-            <p className="font-semibold text-white">How Clients Authenticate</p>
-            <p className="text-[11px] text-slate-400">
-              Clients can authenticate using standard HTTP headers:
-              <code className="text-[var(--primary)] mx-1">Authorization: Bearer &lt;key&gt;</code> or
-              <code className="text-[var(--primary)] mx-1">x-api-key: &lt;key&gt;</code>.
-              For WebSocket and SSE endpoints (such as <code className="text-[var(--primary)]">/ws/live</code> or <code className="text-[var(--primary)]">/mcp/sse</code>), clients can also pass <code className="text-[var(--primary)]">?token=&lt;key&gt;</code>.
-            </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Key Name / Label</TableHead>
+                  <TableHead>Key Identifier</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {keys.map((k) => (
+                  <TableRow key={k.id}>
+                    <TableCell className="font-semibold text-white font-mono">
+                      {k.name}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2 font-mono text-xs text-[var(--primary)]">
+                        <span>{k.key_preview}</span>
+                        <button
+                          onClick={() => handleCopy(k.key_preview, k.id)}
+                          title="Copy Key Identifier"
+                          className="text-slate-500 hover:text-white"
+                        >
+                          {copiedKey === k.id ? (
+                            <Check className="w-3 h-3 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3 h-3" />
+                          )}
+                        </button>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-xs text-slate-400 font-mono">
+                      {k.created_at}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleDeleteKey(k.id, k.name)}
+                        className="h-7 px-2.5 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border-rose-500/20"
+                        title="Revoke this API Key"
+                      >
+                        <Trash2 className="w-3 h-3 mr-1" />
+                        Revoke
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
-        </div>
+        )}
       </Card>
 
       {/* 3. Integration Code Snippets */}
@@ -280,7 +396,7 @@ wirellm start`}
               CLIENT INTEGRATION SNIPPETS
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Drop-in OpenAI SDK &amp; agent configurations to immediately start using WireLLM.
+              Copy-pasteable configs for AI agents and OpenAI SDKs.
             </p>
           </div>
 
@@ -349,6 +465,120 @@ wirellm start`}
           </Button>
         </div>
       </Card>
+
+      {/* CREATE API KEY MODAL */}
+      <Modal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        title="Create New API Key"
+        description="Generate an access key for coding agents (OpenCode, Cursor, Claude Code) or scripts."
+      >
+        <form onSubmit={handleCreateKey} className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-xs font-mono text-slate-300">Key Name / Identifier *</label>
+            <Input
+              placeholder="e.g. claude-code-dev, cursor-ide, agent-worker"
+              value={newKeyName}
+              onChange={(e) => setNewKeyName(e.target.value)}
+              required
+              autoFocus
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-mono text-slate-300">Custom Secret Key (Optional)</label>
+            <Input
+              placeholder="Leave blank to auto-generate a secure random sk-wire-... key"
+              value={newCustomKey}
+              onChange={(e) => setNewCustomKey(e.target.value)}
+              mono
+            />
+          </div>
+
+          {errorMsg && (
+            <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-white/10">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setShowCreateModal(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={submitting}
+              className="font-mono text-xs"
+            >
+              {submitting ? 'Generating...' : 'Create Key'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* NEW KEY SUCCESS MODAL */}
+      <Modal
+        isOpen={!!createdKeyResult}
+        onClose={() => setCreatedKeyResult(null)}
+        title="API Key Created Successfully"
+        description="Save your secret key now. For security purposes, you will not be able to view the full key again."
+      >
+        {createdKeyResult && (
+          <div className="space-y-4">
+            <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+              <span>Key <strong>{createdKeyResult.name}</strong> is now active and ready to use!</span>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-mono text-slate-400">Your Secret Key:</label>
+              <div className="p-3 rounded-xl bg-black border border-[var(--primary-border)] font-mono text-xs text-[var(--primary)] flex items-center justify-between gap-2 shadow-[0_0_15px_var(--primary-glow-subtle)]">
+                <span className="truncate select-all font-bold">
+                  {createdKeyResult.full_key || createdKeyResult.key_preview}
+                </span>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => handleCopy(createdKeyResult.full_key || createdKeyResult.key_preview, 'new_secret')}
+                  className="h-7 px-3 text-xs shrink-0"
+                >
+                  {copiedKey === 'new_secret' ? (
+                    <>
+                      <Check className="w-3 h-3 mr-1 text-emerald-300" />
+                      Copied!
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3 mr-1" />
+                      Copy Key
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-200 text-[11px] leading-relaxed">
+              Pass this key in your client headers: <code className="text-amber-300 font-mono">Authorization: Bearer {createdKeyResult.key_preview}</code>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => setCreatedKeyResult(null)}
+                className="font-mono text-xs"
+              >
+                I Have Saved My Key
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };

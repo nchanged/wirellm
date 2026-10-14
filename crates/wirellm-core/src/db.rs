@@ -81,6 +81,16 @@ pub struct VirtualModelDetail {
     pub targets: Vec<VirtualModelTarget>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ApiKeyRecord {
+    pub id: String,
+    pub name: String,
+    pub key_preview: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_key: Option<String>,
+    pub created_at: String,
+}
+
 pub struct DbManager {
     db_path: PathBuf,
 }
@@ -187,6 +197,14 @@ impl DbManager {
                 total_output_tokens INTEGER DEFAULT 0,
                 total_duration_ms INTEGER DEFAULT 0,
                 PRIMARY KEY(date, provider_name, model_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                key_val TEXT NOT NULL,
+                key_preview TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );",
         )
         .map_err(|e| OxllmError::Internal(format!("Failed to initialize SQLite schema: {}", e)))?;
@@ -822,6 +840,98 @@ impl DbManager {
         conn.execute("DELETE FROM virtual_models WHERE name = ?1", params![name])
             .map_err(|e| OxllmError::Internal(format!("Failed to delete virtual model: {}", e)))?;
         Ok(())
+    }
+
+    /// List all registered API keys (without full secret value)
+    pub fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, key_preview, created_at FROM api_keys ORDER BY created_at DESC")
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ApiKeyRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    key_preview: row.get(2)?,
+                    full_key: None,
+                    created_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut res = Vec::new();
+        for r in rows {
+            if let Ok(item) = r {
+                res.push(item);
+            }
+        }
+        Ok(res)
+    }
+
+    /// Create and persist a new API key, returning the record with the full secret key
+    pub fn create_api_key(&self, name: &str, raw_key: Option<&str>) -> Result<ApiKeyRecord> {
+        let conn = self.connect()?;
+        let id = format!("key_{:012x}", rand::random::<u64>());
+        let key_str = match raw_key {
+            Some(k) if !k.trim().is_empty() => k.trim().to_string(),
+            _ => format!("sk-wire-{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>()),
+        };
+
+        let key_preview = if key_str.len() <= 12 {
+            key_str.clone()
+        } else {
+            let prefix = &key_str[..8];
+            let suffix = &key_str[key_str.len() - 4..];
+            format!("{}...{}", prefix, suffix)
+        };
+
+        conn.execute(
+            "INSERT INTO api_keys (id, name, key_val, key_preview) VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, key_str, key_preview],
+        )
+        .map_err(|e| OxllmError::Internal(format!("Failed to insert API key: {}", e)))?;
+
+        let created_at: String = conn
+            .query_row("SELECT created_at FROM api_keys WHERE id = ?1", params![id], |row| row.get(0))
+            .unwrap_or_else(|_| "Just now".to_string());
+
+        Ok(ApiKeyRecord {
+            id,
+            name: name.to_string(),
+            key_preview,
+            full_key: Some(key_str),
+            created_at,
+        })
+    }
+
+    /// Deletes an API key by ID
+    pub fn delete_api_key(&self, id: &str) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute("DELETE FROM api_keys WHERE id = ?1", params![id])
+            .map_err(|e| OxllmError::Internal(format!("Failed to delete API key: {}", e)))?;
+        Ok(())
+    }
+
+    /// Returns all active secret keys stored in SQLite
+    pub fn get_active_api_keys(&self) -> Result<Vec<String>> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare("SELECT key_val FROM api_keys")
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut res = Vec::new();
+        for r in rows {
+            if let Ok(key) = r {
+                res.push(key);
+            }
+        }
+        Ok(res)
     }
 }
 

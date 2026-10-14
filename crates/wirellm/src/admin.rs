@@ -636,3 +636,63 @@ pub async fn get_setup_recommendations() -> Json<serde_json::Value> {
     }))
 }
 
+#[derive(Deserialize)]
+pub struct CreateApiKeyInput {
+    pub name: String,
+    pub key: Option<String>,
+}
+
+/// GET /api/keys - List all registered API keys
+pub async fn list_api_keys(
+    State(reloadable): State<ReloadableState>,
+) -> Result<Json<Vec<wirellm_core::db::ApiKeyRecord>>, (StatusCode, Json<serde_json::Value>)> {
+    let keys = reloadable.db.list_api_keys().map_err(|e| internal_error(e.to_string()))?;
+    Ok(Json(keys))
+}
+
+/// POST /api/keys - Create a new API key
+pub async fn create_api_key(
+    State(reloadable): State<ReloadableState>,
+    Json(input): Json<CreateApiKeyInput>,
+) -> Result<Json<wirellm_core::db::ApiKeyRecord>, (StatusCode, Json<serde_json::Value>)> {
+    if input.name.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "Key name cannot be empty",
+                    "type": "invalid_request_error",
+                    "code": 400
+                }
+            })),
+        ));
+    }
+
+    let record = reloadable
+        .db
+        .create_api_key(&input.name, input.key.as_deref())
+        .map_err(|e| internal_error(e.to_string()))?;
+
+    let _ = reloadable.reloader.reload();
+
+    Ok(Json(record))
+}
+
+/// DELETE /api/keys/{id} - Delete/revoke an API key
+pub async fn delete_api_key(
+    State(reloadable): State<ReloadableState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    reloadable
+        .db
+        .delete_api_key(&id)
+        .map_err(|e| internal_error(e.to_string()))?;
+
+    let _ = reloadable.reloader.reload();
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("API key '{}' revoked successfully", id)
+    })))
+}
+
