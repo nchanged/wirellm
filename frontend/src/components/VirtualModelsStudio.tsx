@@ -104,21 +104,21 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
       {/* Header Bar */}
       <Card className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-start gap-3.5">
-          <div className="p-2.5 rounded-lg bg-cyan-950/40 border border-cyan-800/40 text-cyan-400 shrink-0">
+          <div className="p-2.5 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-[var(--primary)] shrink-0">
             <Boxes className="w-5 h-5" />
           </div>
           <div>
             <h2 className="text-base font-bold text-white tracking-wide flex items-center gap-2">
               Virtual Models &amp; Dynamic Ladders
-              <Badge variant="cyan">L2 MATRIX</Badge>
+              <Badge variant="primary">L2 MATRIX</Badge>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Aggregate upstream LLMs into unified virtual endpoints like <code className="text-cyan-400 font-mono font-semibold">smart</code> or <code className="text-cyan-400 font-mono font-semibold">fast</code>. Automated failover triggers within 2ms if upstream throws 429/5xx.
+              Aggregate upstream LLMs into unified virtual endpoints like <code className="text-[var(--primary)] font-mono font-semibold">smart</code> or <code className="text-[var(--primary)] font-mono font-semibold">fast</code>. Automated failover triggers within 2ms if upstream throws 429/5xx.
             </p>
           </div>
         </div>
 
-        <Button variant="cyan" size="md" onClick={openAddModal}>
+        <Button variant="primary" size="md" onClick={openAddModal}>
           <Plus className="w-4 h-4 stroke-[2.5]" />
           Create Virtual Alias
         </Button>
@@ -133,7 +133,7 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
               <div className="flex items-start justify-between">
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-white font-mono tracking-tight group-hover:text-cyan-400 transition-colors">
+                    <span className="text-sm font-bold text-white font-mono tracking-tight group-hover:text-[var(--primary)] transition-colors">
                       {vm.name}
                     </span>
                     <Badge variant="neutral">{vm.targets.length} targets</Badge>
@@ -165,10 +165,10 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
                 </div>
                 <div className="space-y-0.5 border-x border-white/[0.04]">
                   <div className="text-[10px] text-slate-500 uppercase tracking-wider flex items-center justify-center gap-1">
-                    <Zap className="w-2.5 h-2.5 text-cyan-400/80" />
+                    <Zap className="w-2.5 h-2.5 text-[var(--primary)]/80" />
                     Speed
                   </div>
-                  <div className="text-xs font-mono font-bold text-cyan-400">
+                  <div className="text-xs font-mono font-bold text-[var(--primary)]">
                     {(vm.weight_speed * 100).toFixed(0)}%
                   </div>
                 </div>
@@ -221,7 +221,7 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
             {/* Quick Curl Endpoint Helper */}
             <div className="pt-3 border-t border-white/[0.05] flex items-center justify-between text-[11px] text-slate-500 font-mono">
               <span>Endpoint:</span>
-              <code className="text-cyan-400/90 text-[11px] bg-black/40 px-2 py-0.5 rounded border border-white/[0.04]">
+              <code className="text-[var(--primary)]/90 text-[11px] bg-black/40 px-2 py-0.5 rounded border border-white/[0.04]">
                 "model": "{vm.name}"
               </code>
             </div>
@@ -235,7 +235,7 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
             <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
               Create a unified model alias to give your agents ultra-reliable fallback chains across Groq, Nvidia NIM, Anthropic, and OpenAI.
             </p>
-            <Button variant="cyan" size="md" onClick={openAddModal} className="mt-4">
+            <Button variant="primary" size="md" onClick={openAddModal} className="mt-4">
               <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
               Create First Virtual Model
             </Button>
@@ -255,7 +255,7 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
             <Button variant="secondary" onClick={() => setIsModalOpen(false)}>
               Cancel
             </Button>
-            <Button variant="cyan" onClick={handleSave}>
+            <Button variant="primary" onClick={handleSave}>
               Save Virtual Model
             </Button>
           </>
@@ -314,7 +314,7 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
 
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-cyan-400 flex items-center gap-1 font-mono">
+                <span className="text-[var(--primary)] flex items-center gap-1 font-mono">
                   <Zap className="w-3 h-3" /> Speed
                 </span>
                 <span className="font-mono text-white text-xs">{(weightSpeed * 100).toFixed(0)}%</span>
@@ -326,7 +326,7 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
                 step="0.05"
                 value={weightSpeed}
                 onChange={(e) => setWeightSpeed(parseFloat(e.target.value))}
-                className="w-full accent-cyan-400 h-1 bg-white/[0.1] rounded cursor-pointer"
+                className="w-full accent-[var(--primary)] h-1 bg-white/[0.1] rounded cursor-pointer"
               />
             </div>
 
@@ -358,7 +358,7 @@ export const VirtualModelsStudio: React.FC<VirtualModelsStudioProps> = ({ status
               <button
                 type="button"
                 onClick={handleAddTarget}
-                className="text-xs text-cyan-400 hover:text-cyan-300 font-mono font-medium flex items-center gap-1 transition-colors"
+                className="text-xs text-[var(--primary)] hover:brightness-110 font-mono font-medium flex items-center gap-1 transition-colors"
               >
                 <PlusCircle className="w-3.5 h-3.5" />
                 Add Candidate

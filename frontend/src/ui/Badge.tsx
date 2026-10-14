@@ -1,7 +1,7 @@
 import React from 'react';
 import { cn } from './cn';
 
-export type BadgeVariant = 'emerald' | 'cyan' | 'amber' | 'rose' | 'purple' | 'neutral' | 'outline';
+export type BadgeVariant = 'primary' | 'emerald' | 'cyan' | 'amber' | 'rose' | 'purple' | 'neutral' | 'outline';
 export type BadgeSize = 'xs' | 'sm';
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
@@ -15,8 +15,9 @@ export const Badge = React.forwardRef<HTMLSpanElement, BadgeProps>(
       'inline-flex items-center gap-1 font-mono font-medium rounded border select-none transition-colors shrink-0';
 
     const variantClasses: Record<BadgeVariant, string> = {
+      primary: 'bg-[var(--primary-bg-badge)] border-[var(--primary-border)] text-[var(--primary)] shadow-[0_0_8px_var(--primary-glow-subtle)]',
+      cyan: 'bg-[var(--primary-bg-badge)] border-[var(--primary-border)] text-[var(--primary)] shadow-[0_0_8px_var(--primary-glow-subtle)]',
       emerald: 'bg-emerald-950/60 border-emerald-800/60 text-emerald-400',
-      cyan: 'bg-[#00222a] border-[#00f0ff]/50 text-[#00f0ff] shadow-[0_0_8px_rgba(0,240,255,0.25)]',
       amber: 'bg-amber-950/60 border-amber-800/60 text-amber-400',
       rose: 'bg-rose-950/60 border-rose-800/60 text-rose-400',
       purple: 'bg-purple-950/60 border-purple-800/60 text-purple-300',
