@@ -530,21 +530,40 @@ export const Overview: React.FC<OverviewProps> = ({
                 isFirstHealthyFound
               );
 
+              // 1. Direct active stream match for this specific virtual model
               const isTargetStreaming = activeStreamList.some(
                 (s) =>
                   !s.isDone &&
-                  (s.virtualModel === vm.name || (!s.virtualModel && s.provider === tgt.provider && s.model === tgt.model)) &&
+                  (s.virtualModel ? s.virtualModel === vm.name : true) &&
                   s.provider === tgt.provider &&
                   s.model === tgt.model
               );
+
+              // 2. Prevent cross-contamination: if another virtual model has an active stream on this provider,
+              // do NOT mark this virtual model as running!
+              const isAnotherVmRunningThisProvider = activeStreamList.some(
+                (s) =>
+                  !s.isDone &&
+                  s.virtualModel &&
+                  s.virtualModel !== vm.name &&
+                  s.provider === tgt.provider
+              );
+
+              const isTrulyRunning =
+                isTargetStreaming ||
+                (evalRes.status === 'running' && !isAnotherVmRunningThisProvider);
 
               return {
                 ...tgt,
                 evaluation: {
                   ...evalRes,
-                  status: (evalRes.status === 'running' || isTargetStreaming) ? ('running' as const) : evalRes.status,
+                  status: isTrulyRunning
+                    ? ('running' as const)
+                    : evalRes.status === 'running'
+                    ? ('primary' as const)
+                    : evalRes.status,
                 },
-                isStreaming: isTargetStreaming,
+                isStreaming: isTrulyRunning,
               };
             });
 
@@ -633,7 +652,7 @@ export const Overview: React.FC<OverviewProps> = ({
                           isRunning
                             ? 'bg-gradient-to-r from-[rgba(var(--primary-rgb),0.24)] via-[rgba(var(--primary-rgb),0.12)] to-[rgba(var(--secondary-rgb),0.14)] border-2 border-[var(--primary)] shadow-[0_0_22px_var(--primary-glow-subtle)] ring-1 ring-[var(--primary)]/30'
                             : isPrimary
-                            ? 'bg-[#060b17] border border-[var(--primary-border)] shadow-sm'
+                            ? 'bg-[#060b17] border border-white/15 hover:border-white/25 shadow-sm'
                             : isBlocked
                             ? 'bg-rose-950/20 border border-rose-900/40 opacity-80'
                             : 'bg-[#090d18] border border-white/10 hover:border-white/20'
@@ -646,7 +665,7 @@ export const Overview: React.FC<OverviewProps> = ({
                               isRunning
                                 ? 'bg-[var(--primary)] text-black font-black shadow-[0_0_12px_var(--primary)] ring-1 ring-white/50'
                                 : isPrimary
-                                ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)] font-bold'
+                                ? 'bg-white/[0.08] text-white border border-white/15 font-bold'
                                 : isBlocked
                                 ? 'bg-rose-950/80 text-rose-400 border border-rose-800/60 font-semibold'
                                 : 'bg-white/[0.06] text-slate-400 border border-white/10 font-semibold'
@@ -667,7 +686,7 @@ export const Overview: React.FC<OverviewProps> = ({
                               <ChevronRight className={`w-3 h-3 shrink-0 ${isRunning ? 'text-[var(--secondary)]' : 'text-slate-600'}`} />
                               <span
                                 className={`font-mono text-[11px] truncate max-w-[150px] sm:max-w-[200px] ${
-                                  isRunning ? 'text-[var(--secondary)] font-bold drop-shadow-[0_0_6px_var(--secondary-glow-subtle)]' : isPrimary ? 'text-[var(--primary)] font-semibold' : 'text-slate-400'
+                                  isRunning ? 'text-[var(--secondary)] font-bold drop-shadow-[0_0_6px_var(--secondary-glow-subtle)]' : isPrimary ? 'text-slate-300 font-medium' : 'text-slate-400'
                                 }`}
                                 title={tgt.model}
                               >
@@ -687,9 +706,9 @@ export const Overview: React.FC<OverviewProps> = ({
                           )}
 
                           {isPrimary && !isRunning && (
-                            <Badge variant={idx === 0 ? 'primary' : 'amber'}>
-                              <CheckCircle2 className={`w-3 h-3 ${idx === 0 ? 'text-[var(--primary)]' : 'text-amber-400'}`} />
-                              {idx === 0 ? 'PRIMARY READY' : `FAILOVER READY (#${idx + 1})`}
+                            <Badge variant="neutral" className="text-slate-300 border-white/15 bg-white/[0.04]">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                              {idx === 0 ? 'READY' : `FAILOVER READY (#${idx + 1})`}
                             </Badge>
                           )}
 
