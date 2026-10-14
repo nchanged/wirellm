@@ -119,3 +119,12 @@ code, kbd, samp, pre, .font-mono {
     box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
   }
 }
+
+@keyframes border-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
