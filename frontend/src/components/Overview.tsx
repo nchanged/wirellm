@@ -151,7 +151,7 @@ export const Overview: React.FC<OverviewProps> = ({
   const [filterMode, setFilterMode] = useState<'all' | 'active_blocked'>('all');
   const [showAgentSetup, setShowAgentSetup] = useState<boolean>(false);
 
-  // Initialize from localStorage (pruning entries older than 5 minutes)
+  // Initialize from localStorage (pruning stale streams older than 3 minutes, and marking >12s inactive streams as done)
   const [activeStreams, setActiveStreams] = useState<Record<string, ActiveStreamState>>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -160,8 +160,12 @@ export const Overview: React.FC<OverviewProps> = ({
         const now = Date.now();
         const filtered: Record<string, ActiveStreamState> = {};
         for (const [k, v] of Object.entries(parsed as Record<string, ActiveStreamState>)) {
-          if (!v.isDone || (now - v.lastUpdated <= FIVE_MINUTES_MS)) {
-            filtered[k] = v;
+          const age = now - (v.lastUpdated || 0);
+          if (age <= 180_000) { // Keep only within 3 minutes
+            filtered[k] = {
+              ...v,
+              isDone: v.isDone || age > 10_000, // Mark done if inactive for >10s
+            };
           }
         }
         return filtered;
@@ -181,7 +185,7 @@ export const Overview: React.FC<OverviewProps> = ({
     }
   }, [activeStreams]);
 
-  // Periodic pruner: remove streams older than 5 minutes every 10 seconds
+  // Periodic pruner: mark streams inactive for >10s as done, and remove streams older than 2 minutes
   useEffect(() => {
     const timer = setInterval(() => {
       setActiveStreams((prev) => {
@@ -189,15 +193,24 @@ export const Overview: React.FC<OverviewProps> = ({
         let changed = false;
         const next: Record<string, ActiveStreamState> = {};
         for (const [k, v] of Object.entries(prev)) {
-          if (!v.isDone || (now - v.lastUpdated <= FIVE_MINUTES_MS)) {
-            next[k] = v;
-          } else {
+          const age = now - (v.lastUpdated || 0);
+          const shouldBeDone = v.isDone || age > 10_000;
+
+          if (age > 120_000) {
+            changed = true; // Prune entries older than 2 minutes
+            continue;
+          }
+
+          if (shouldBeDone !== v.isDone) {
             changed = true;
+            next[k] = { ...v, isDone: true };
+          } else {
+            next[k] = v;
           }
         }
         return changed ? next : prev;
       });
-    }, 10000);
+    }, 2000);
     return () => clearInterval(timer);
   }, []);
 
@@ -211,7 +224,9 @@ export const Overview: React.FC<OverviewProps> = ({
         const ev = item.event;
         const key = ev.request_id;
         const timestamp = item.timestamp_ms || now;
-        if (!ev.is_done || (now - timestamp <= FIVE_MINUTES_MS)) {
+        const age = now - timestamp;
+        if (age <= 180_000) {
+          const shouldBeDone = ev.is_done || age > 10_000;
           if (!next[key] || (next[key].isDone && timestamp > next[key].lastUpdated)) {
             next[key] = {
               requestId: ev.request_id,
@@ -221,7 +236,7 @@ export const Overview: React.FC<OverviewProps> = ({
               text: ev.delta,
               tokensSoFar: ev.tokens_so_far,
               elapsedMs: ev.elapsed_ms,
-              isDone: ev.is_done,
+              isDone: shouldBeDone,
               error: ev.error,
               speedTokPerSec: ev.elapsed_ms > 150 ? Math.round((ev.tokens_so_far / (ev.elapsed_ms / 1000))) : 0,
               lastUpdated: timestamp,
@@ -264,10 +279,10 @@ export const Overview: React.FC<OverviewProps> = ({
         },
       };
 
-      // Prune entries older than 5 minutes
+      // Prune entries older than 2 minutes
       const pruned: Record<string, ActiveStreamState> = {};
       for (const [k, v] of Object.entries(updated)) {
-        if (!v.isDone || (now - v.lastUpdated <= FIVE_MINUTES_MS)) {
+        if (now - (v.lastUpdated || 0) <= 120_000) {
           pruned[k] = v;
         }
       }
@@ -292,9 +307,13 @@ export const Overview: React.FC<OverviewProps> = ({
 
   const handleClearCompleted = () => {
     setActiveStreams((prev) => {
+      const now = Date.now();
       const next: Record<string, ActiveStreamState> = {};
       for (const [k, v] of Object.entries(prev)) {
-        if (!v.isDone) next[k] = v;
+        // Keep only truly active streams with recent tokens (<10s)
+        if (!v.isDone && (now - v.lastUpdated <= 10_000)) {
+          next[k] = v;
+        }
       }
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
@@ -303,6 +322,15 @@ export const Overview: React.FC<OverviewProps> = ({
       }
       return next;
     });
+  };
+
+  const handleClearAllStreams = () => {
+    setActiveStreams({});
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
   };
 
   const activeStreamList = Object.values(activeStreams);
@@ -430,6 +458,7 @@ export const Overview: React.FC<OverviewProps> = ({
         streams={activeStreamList}
         onDismiss={handleDismissStream}
         onClearCompleted={handleClearCompleted}
+        onClearAll={handleClearAllStreams}
       />
 
       {/* ============================================================== */}
