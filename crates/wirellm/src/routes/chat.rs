@@ -10,6 +10,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
+use reqwest::Url;
 
 use wirellm_core::router::{AdaptivePriorityStrategy, RoutingStrategy};
 use wirellm_core::state::{AppState, ProviderState};
@@ -137,7 +138,8 @@ pub async fn create_chat_completions(
         payload["model"] = Value::String(target_model.clone());
         let rewritten_body = Bytes::from(serde_json::to_vec(&payload).unwrap());
 
-        let endpoint_url = match selected.base_url.join("chat/completions") {
+        let base_str = selected.base_url.as_str().trim_end_matches('/');
+        let endpoint_url = match Url::parse(&format!("{}/chat/completions", base_str)) {
             Ok(url) => url,
             Err(e) => {
                 error!("Invalid base URL path join for {}: {}", selected.name, e);
