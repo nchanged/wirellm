@@ -6,26 +6,27 @@
 replicaCount: 1
 
 image:
-  repository: registry.gitlab.com/fusebox-group/fusebox-project/wirellm
+  repository: ghcr.io/your-org/wirellm
   tag: latest
   pullPolicy: Always
 
-imagePullSecrets:
-  - name: gitlab-registry
+# Optional image pull secrets if using a private container registry:
+# imagePullSecrets:
+#   - name: my-registry-secret
 
 service:
   type: ClusterIP
   port: 8765
 
-# Traefik IngressRoute (Oracle Cloud OKE / Traefik ingress controller)
+# Traefik IngressRoute (or standard Kubernetes Ingress)
 ingressroute:
   enabled: true
   entryPoints:
     - websecure
-  host: <RELAY_HOST>
-  tlsSecretName: wire-relay-tls
+  host: llm.example.com
+  tlsSecretName: llm-example-tls
 
-# Automatic Let's Encrypt SSL/TLS Certificate
+# Automatic Let's Encrypt SSL/TLS Certificate via cert-manager
 certificate:
   enabled: true
   issuerRef:
@@ -37,7 +38,7 @@ persistence:
   enabled: true
   mountPath: /data
   size: 5Gi
-  # storageClass: "oci-bv"
+  # storageClass: "fast-storage"
 
 # Cluster Security & Authentication Configuration
 auth:
@@ -48,7 +49,7 @@ auth:
   # -----------------------------------------------------------------------
   apiKeys:
     - "sk-wire-cluster-key-prod-001"
-    - "sk-wire-agent-claude-worker"
+    - "sk-wire-agent-worker-002"
 
   # -----------------------------------------------------------------------
   # 2. Google OAuth:
@@ -58,14 +59,14 @@ auth:
     clientId: "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com"
     clientSecret: "GOCSPX-YOUR_GOOGLE_CLIENT_SECRET"
     allowedEmails:
-      - "your-email@gmail.com"
-      # - "*@yourcompany.com"
+      - "admin@example.com"
+      - "*@yourcompany.com"
 
   # 3. Session Signing Secret
   sessionSecret: "generate-a-secure-random-string-here"
 
   # 4. Gateway Origin
-  publicUrl: "https://<RELAY_HOST>"
+  publicUrl: "https://llm.example.com"
 
   # Option B: Instead of putting keys in values, reference an existing K8s secret:
   # existingSecret: "wirellm-cluster-secrets"
@@ -78,5 +79,4 @@ resources:
     cpu: 1000m
     memory: 1Gi
 
-nodeSelector:
-  kubernetes.io/arch: arm64
+nodeSelector: {}

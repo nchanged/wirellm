@@ -69,7 +69,7 @@ pub struct AuthConfig {
     #[serde(default)]
     pub session_secret: Option<String>,
 
-    /// Public origin of the application (e.g. "https://<RELAY_HOST>").
+    /// Public origin of the application (e.g. "https://llm.example.com").
     /// Used to build absolute OAuth redirect URIs.
     #[serde(default)]
     pub public_url: Option<String>,

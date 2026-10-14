@@ -15,11 +15,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Configuration with smart defaults
-IMAGE="${IMAGE:-registry.gitlab.com/fusebox-group/fusebox-project/wirellm:latest}"
-CONTEXT="${CONTEXT:-oracle}"
-NS="${NS:-ashley-ns}"
-SITE_URL="${SITE_URL:-https://<RELAY_HOST>}"
+# Load local cluster-specific deployment variables if present (gitignored)
+if [ -f "$REPO_ROOT/.env.publish" ]; then
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.env.publish"
+fi
+
+# Configuration with generic open-source defaults
+IMAGE="${IMAGE:-ghcr.io/wirellm/wirellm:latest}"
+CONTEXT="${CONTEXT:-default}"
+NS="${NS:-wirellm}"
+SITE_URL="${SITE_URL:-https://llm.example.com}"
 PLATFORM="${PLATFORM:-linux/arm64}"
 VALUES_FILE="${VALUES_FILE:-}"
 
@@ -42,11 +48,11 @@ for arg in "$@"; do
       echo "  --no-push       Build Docker image locally without pushing to remote registry"
       echo "  --help, -h      Show this help message"
       echo ""
-      echo "Environment variables:"
-      echo "  IMAGE           Docker image tag (default: registry.gitlab.com/fusebox-group/fusebox-project/wirellm:latest)"
-      echo "  CONTEXT         kubectl context (default: oracle)"
-      echo "  NS              Kubernetes namespace (default: ashley-ns)"
-      echo "  SITE_URL        Public URL for verification (default: https://<RELAY_HOST>)"
+      echo "Environment variables (or define in .env.publish):"
+      echo "  IMAGE           Docker image tag (default: ghcr.io/wirellm/wirellm:latest)"
+      echo "  CONTEXT         kubectl context (default: default)"
+      echo "  NS              Kubernetes namespace (default: wirellm)"
+      echo "  SITE_URL        Public URL for verification (default: https://llm.example.com)"
       echo "  VALUES_FILE     Custom Helm values file (default: deploy/helm/wirellm/values.yaml)"
       exit 0
       ;;
