@@ -6,6 +6,7 @@ import { ProvidersStudio } from './components/ProvidersStudio';
 import { VirtualModelsStudio } from './components/VirtualModelsStudio';
 import { AnalyticsView } from './components/AnalyticsView';
 import { LogsView } from './components/LogsView';
+import { ThemeSelector } from './components/ThemeSelector';
 import {
   Workflow,
   Server,
@@ -137,33 +138,33 @@ export const App: React.FC = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#020408] text-slate-100 flex flex-col font-sans selection:bg-cyan-500/20 selection:text-cyan-300">
+    <div className="min-h-screen bg-[var(--bg-app)] text-slate-100 flex flex-col font-sans transition-colors duration-300">
       {/* Top Cybernetic Header Navbar - Pixel-aligned single-row layout */}
-      <header className="border-b border-white/[0.08] bg-[#03060c]/95 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-[var(--border-subtle)] bg-[var(--bg-header)] backdrop-blur-md sticky top-0 z-50 transition-colors">
         <div className="max-w-7xl mx-auto h-14 px-4 sm:px-6 flex items-center justify-between gap-4">
           
           {/* Brand Logo */}
           <div className="flex items-center gap-3 shrink-0">
-            <div className="w-8 h-8 rounded-lg bg-[#001e28] border border-[#00f0ff]/50 flex items-center justify-center shadow-[0_0_15px_rgba(0,240,255,0.4)]">
-              <Cpu className="w-4 h-4 text-[#00f0ff]" />
+            <div className="w-8 h-8 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] flex items-center justify-center shadow-[0_0_15px_var(--primary-glow)] transition-all">
+              <Cpu className="w-4 h-4 text-[var(--primary)]" />
             </div>
 
             <div className="flex items-center gap-2">
               <span className="text-base font-bold text-white tracking-tight font-mono">
-                WIRE<span className="text-[#00f0ff] wire-text-glow font-extrabold">LLM</span>
+                WIRE<span className="text-[var(--primary)] wire-text-glow font-extrabold transition-colors">LLM</span>
               </span>
-              <Badge variant="cyan" size="xs">
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)]">
                 v0.2.1
-              </Badge>
+              </span>
               <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-mono text-slate-400 ml-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] animate-pulse shadow-[0_0_8px_rgba(0,240,255,0.8)]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] animate-pulse shadow-[0_0_8px_var(--primary)]" />
                 &lt;2ms wire latency
               </span>
             </div>
           </div>
 
           {/* Navigation Tabs */}
-          <nav className="flex items-center gap-1 bg-[#010307] p-1 rounded-xl border border-white/[0.08]">
+          <nav className="flex items-center gap-1 bg-[#010307]/80 p-1 rounded-xl border border-white/[0.08]">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
@@ -174,11 +175,11 @@ export const App: React.FC = () => {
                   className={cn(
                     'h-8 px-3 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all select-none',
                     isActive
-                      ? 'bg-[#00222a] text-[#00f0ff] border border-[#00f0ff]/50 shadow-[0_0_15px_-2px_rgba(0,240,255,0.4)] font-semibold'
+                      ? 'bg-[var(--primary-bg-badge)] text-[var(--primary)] border border-[var(--primary-border)] shadow-[0_0_15px_-2px_var(--primary-glow-subtle)] font-semibold'
                       : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] border border-transparent'
                   )}
                 >
-                  <Icon className={cn('w-3.5 h-3.5', isActive ? 'text-[#00f0ff]' : 'text-slate-500')} />
+                  <Icon className={cn('w-3.5 h-3.5', isActive ? 'text-[var(--primary)]' : 'text-slate-500')} />
                   <span className="hidden md:inline">{item.label}</span>
                   <span className="md:hidden">{item.short}</span>
                 </button>
@@ -189,12 +190,12 @@ export const App: React.FC = () => {
           {/* Right Status Hub */}
           <div className="flex items-center gap-2 shrink-0">
             {/* Live WebSocket Status Badge */}
-            <div className="flex items-center gap-2 bg-[#010307] h-8 px-2.5 rounded-lg border border-white/[0.08] text-xs font-mono">
+            <div className="flex items-center gap-2 bg-[#010307]/90 h-8 px-2.5 rounded-lg border border-white/[0.08] text-xs font-mono">
               <span
                 className={cn(
                   'w-2 h-2 rounded-full inline-block',
                   wsConnected
-                    ? 'bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,1)] animate-pulse'
+                    ? 'bg-[var(--primary)] shadow-[0_0_10px_var(--primary)] animate-pulse'
                     : isConnected
                     ? 'bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.8)]'
                     : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]'
@@ -208,11 +209,14 @@ export const App: React.FC = () => {
             {/* MCP SSE Live Indicator */}
             <div
               title="Native Model Context Protocol Server active at /mcp/sse"
-              className="hidden lg:flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-mono text-cyan-300 bg-[#001820] border border-cyan-500/40"
+              className="hidden lg:flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11px] font-mono text-[var(--primary)] bg-[var(--primary-bg-badge)] border border-[var(--primary-border)]"
             >
-              <Radio className="w-3.5 h-3.5 text-[#00f0ff] animate-pulse" />
+              <Radio className="w-3.5 h-3.5 text-[var(--primary)] animate-pulse" />
               <span>MCP SSE</span>
             </div>
+
+            {/* Theme Selector */}
+            <ThemeSelector />
 
             {/* Manual Refresh Button */}
             <Button
@@ -220,10 +224,10 @@ export const App: React.FC = () => {
               size="icon"
               onClick={handleManualRefresh}
               title="Refresh Telemetry State"
-              className="h-8 w-8"
+              className="h-8 w-8 hover:border-[var(--primary-border)] hover:text-[var(--primary)]"
             >
               <RefreshCw
-                className={cn('w-3.5 h-3.5 text-slate-400', isRefreshing && 'animate-spin text-[#00f0ff]')}
+                className={cn('w-3.5 h-3.5 text-slate-400', isRefreshing && 'animate-spin text-[var(--primary)]')}
               />
             </Button>
           </div>
