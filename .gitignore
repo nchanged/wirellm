@@ -30,5 +30,6 @@ node_modules/
 .antigravitycli/
 .opencode/
 config-local-test.toml
+deploy/helm/wirellm/values-cluster.yaml
 .DS_Store
 Thumbs.db

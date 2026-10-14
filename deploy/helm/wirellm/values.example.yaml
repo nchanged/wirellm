@@ -6,9 +6,12 @@
 replicaCount: 1
 
 image:
-  repository: wirellm/wirellm
+  repository: registry.gitlab.com/fusebox-group/fusebox-project/wirellm
   tag: latest
   pullPolicy: Always
+
+imagePullSecrets:
+  - name: gitlab-registry
 
 service:
   type: ClusterIP
@@ -74,3 +77,6 @@ resources:
   limits:
     cpu: 1000m
     memory: 1Gi
+
+nodeSelector:
+  kubernetes.io/arch: arm64

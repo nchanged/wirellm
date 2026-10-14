@@ -153,6 +153,22 @@ impl Config {
     /// Loads a YAML or TOML configuration file and expands environment variables of style `${VAR_NAME}`.
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let p = path.as_ref();
+        if !p.exists() {
+            let default_starter = r#"server:
+  host: "0.0.0.0"
+  port: 8765
+  otel_endpoint: "http://127.0.0.1:4318"
+  upstream_timeout_secs: 30
+  bind_family: "ipv4"
+"#;
+            if let Some(parent) = p.parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = fs::create_dir_all(parent);
+                }
+            }
+            let _ = fs::write(p, default_starter);
+        }
+
         let content = fs::read_to_string(p)
             .map_err(|e| OxllmError::ConfigLoad(format!("Failed to read config file: {}", e)))?;
 
@@ -185,18 +201,9 @@ impl Config {
             .map(|p| (p.name.as_str(), p))
             .collect();
 
-        // 1. Validate that at least one provider is configured
+        // 1. If no providers are configured yet, allow starting so users can configure via UI or API
         if self.providers.is_empty() {
-            if let Ok(db) = crate::db::DbManager::new(None::<&str>) {
-                if let Ok(db_cfg) = db.load_config() {
-                    if !db_cfg.providers.is_empty() {
-                        return Ok(());
-                    }
-                }
-            }
-            return Err(OxllmError::ConfigLoad(
-                "At least one provider must be defined in config or database".into(),
-            ));
+            return Ok(());
         }
 
         // 2. Validate custom provider headers

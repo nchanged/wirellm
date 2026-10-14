@@ -80,6 +80,18 @@ pub fn resolve_config_path(given: PathBuf) -> PathBuf {
     home_yaml
 }
 
+/// Parses a port string, gracefully stripping any `tcp://ip:` prefix from K8s service env vars
+pub fn parse_port(val: &str) -> Result<u16, String> {
+    let s = val.trim();
+    if let Some(pos) = s.rfind(':') {
+        let port_part = &s[pos + 1..];
+        if let Ok(p) = port_part.parse::<u16>() {
+            return Ok(p);
+        }
+    }
+    s.parse::<u16>().map_err(|e| format!("invalid port: {}", e))
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "wirellm",
@@ -101,7 +113,7 @@ pub enum Commands {
         config: PathBuf,
 
         /// Port of the gateway server (defaults to config file or database)
-        #[arg(short, long, env = "WIRELLM_PORT")]
+        #[arg(short, long, env = "WIRELLM_PORT", value_parser = parse_port)]
         port: Option<u16>,
 
         /// Verbosity level. Repeat for more output: -v (debug), -vv (trace)
@@ -117,7 +129,7 @@ pub enum Commands {
     /// Fetches and displays the active health and circuit status from localhost
     Status {
         /// Port of the running gateway server (defaults to config file or database)
-        #[arg(short, long, env = "WIRELLM_PORT")]
+        #[arg(short, long, env = "WIRELLM_PORT", value_parser = parse_port)]
         port: Option<u16>,
     },
     /// Triggers hot-reload by sending SIGHUP to the running gateway daemon
@@ -139,7 +151,7 @@ pub enum Commands {
         config: PathBuf,
 
         /// Port of the gateway server (defaults to config file or database)
-        #[arg(short, long, env = "WIRELLM_PORT")]
+        #[arg(short, long, env = "WIRELLM_PORT", value_parser = parse_port)]
         port: Option<u16>,
     },
     /// Restarts the wirellm service daemon
@@ -149,7 +161,7 @@ pub enum Commands {
         config: PathBuf,
 
         /// Port of the gateway server (defaults to config file or database)
-        #[arg(short, long, env = "WIRELLM_PORT")]
+        #[arg(short, long, env = "WIRELLM_PORT", value_parser = parse_port)]
         port: Option<u16>,
     },
     /// Streams live daemon logs (~/.wirellm/wirellm.log)
@@ -176,7 +188,7 @@ pub enum ProviderCommand {
     /// List all providers and their circuit state
     List {
         /// Port of the running gateway server (defaults to config file or database)
-        #[arg(short, long, env = "WIRELLM_PORT")]
+        #[arg(short, long, env = "WIRELLM_PORT", value_parser = parse_port)]
         port: Option<u16>,
     },
     /// Take a provider offline (circuit breaker + manual disabled)
@@ -184,7 +196,7 @@ pub enum ProviderCommand {
         /// Name of the provider to take offline
         name: String,
         /// Port of the running gateway server (defaults to config file or database)
-        #[arg(short, long, env = "WIRELLM_PORT")]
+        #[arg(short, long, env = "WIRELLM_PORT", value_parser = parse_port)]
         port: Option<u16>,
     },
     /// Bring a provider back online
@@ -192,7 +204,7 @@ pub enum ProviderCommand {
         /// Name of the provider to bring online
         name: String,
         /// Port of the running gateway server (defaults to config file or database)
-        #[arg(short, long, env = "WIRELLM_PORT")]
+        #[arg(short, long, env = "WIRELLM_PORT", value_parser = parse_port)]
         port: Option<u16>,
     },
     /// Reset a provider's circuit breaker, failures, and rate limit
@@ -200,7 +212,21 @@ pub enum ProviderCommand {
         /// Name of the provider to reset
         name: String,
         /// Port of the running gateway server (defaults to config file or database)
-        #[arg(short, long, env = "WIRELLM_PORT")]
+        #[arg(short, long, env = "WIRELLM_PORT", value_parser = parse_port)]
         port: Option<u16>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_port() {
+        assert_eq!(parse_port("8765").unwrap(), 8765);
+        assert_eq!(parse_port("tcp://10.43.167.200:8765").unwrap(), 8765);
+        assert_eq!(parse_port("http://127.0.0.1:9090").unwrap(), 9090);
+        assert_eq!(parse_port("  3000  ").unwrap(), 3000);
+        assert!(parse_port("invalid").is_err());
+    }
 }

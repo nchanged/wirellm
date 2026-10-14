@@ -8,12 +8,13 @@
 replicaCount: 1
 
 image:
-  repository: wirellm/wirellm
-  pullPolicy: IfNotPresent
+  repository: registry.gitlab.com/fusebox-group/fusebox-project/wirellm
+  pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
 
-imagePullSecrets: []
+imagePullSecrets:
+  - name: gitlab-registry
 nameOverride: ""
 fullnameOverride: ""
 
@@ -86,6 +87,7 @@ resources:
     cpu: 50m
     memory: 128Mi
 
-nodeSelector: {}
+nodeSelector:
+  kubernetes.io/arch: arm64
 tolerations: []
 affinity: {}
