@@ -7,6 +7,8 @@ import {
   LogsResponse,
   AuthStatusResponse,
   ApiKeyRecord,
+  VaultSecretRecord,
+  VaultSecretInput,
 } from './types';
 
 const API_BASE = '';
@@ -168,6 +170,37 @@ export async function deleteApiKey(id: string): Promise<void> {
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error?.message || `Failed to revoke API key (${res.status})`);
+  }
+}
+
+export async function fetchVaultSecrets(): Promise<VaultSecretRecord[]> {
+  const res = await fetch(`${API_BASE}/api/vault/secrets`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch vault secrets: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function createVaultSecret(input: VaultSecretInput): Promise<any> {
+  const res = await fetch(`${API_BASE}/api/vault/secrets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Failed to save secret to vault (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function deleteVaultSecret(name: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/vault/secrets/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || `Failed to delete secret (${res.status})`);
   }
 }
 

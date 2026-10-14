@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Server,
   Plus,
@@ -18,9 +18,19 @@ import {
   Copy,
   Globe,
   ShieldCheck,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
-import { ApiStatusResponse, ProviderInput, TestConnectionResponse } from '../types';
-import { createProvider, updateProvider, deleteProvider, testProvider } from '../api';
+import { ApiStatusResponse, ProviderInput, TestConnectionResponse, VaultSecretRecord } from '../types';
+import {
+  createProvider,
+  updateProvider,
+  deleteProvider,
+  testProvider,
+  fetchVaultSecrets,
+  createVaultSecret,
+  deleteVaultSecret,
+} from '../api';
 import { Card, Button, Badge, Input, Select, Modal } from '../ui';
 
 interface ProvidersStudioProps {
@@ -319,12 +329,87 @@ const PRESETS: ProviderPreset[] = [
   },
 ];
 
+const VAULT_PRESETS = [
+  { name: 'NVIDIA_API_KEY', label: 'NVIDIA NIM', desc: 'NVIDIA NIM API key (integrate.api.nvidia.com)' },
+  { name: 'GROQ_API_KEY', label: 'GroqCloud', desc: 'GroqCloud ultra-fast LPU API key' },
+  { name: 'OPENROUTER_TOKEN', label: 'OpenRouter', desc: 'OpenRouter unified token' },
+  { name: 'GEMINI_API_KEY', label: 'Google Gemini', desc: 'Google Gemini Studio API key' },
+  { name: 'DEEPSEEK_API_KEY', label: 'DeepSeek', desc: 'DeepSeek official API key' },
+  { name: 'ANTHROPIC_API_KEY', label: 'Anthropic', desc: 'Anthropic Claude API key' },
+  { name: 'OPENAI_API_KEY', label: 'OpenAI', desc: 'OpenAI platform API key' },
+];
+
 export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefresh }) => {
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedPresetId, setSelectedPresetId] = useState<string>('deepseek');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Central Vault State
+  const [vaultSecrets, setVaultSecrets] = useState<VaultSecretRecord[]>([]);
+  const [activeSubTab, setActiveSubTab] = useState<'providers' | 'vault'>('providers');
+  const [isVaultModalOpen, setIsVaultModalOpen] = useState(false);
+  const [vaultSecretName, setVaultSecretName] = useState('');
+  const [vaultSecretValue, setVaultSecretValue] = useState('');
+  const [vaultSecretDesc, setVaultSecretDesc] = useState('');
+  const [showSecretValue, setShowSecretValue] = useState(false);
+  const [isSavingVaultSecret, setIsSavingVaultSecret] = useState(false);
+
+  const loadVaultSecrets = async () => {
+    try {
+      const data = await fetchVaultSecrets();
+      setVaultSecrets(data);
+    } catch (err) {
+      console.error('Failed to load vault secrets:', err);
+    }
+  };
+
+  useEffect(() => {
+    loadVaultSecrets();
+  }, []);
+
+  const openAddVaultModal = (preset?: { name: string; desc: string }) => {
+    setVaultSecretName(preset ? preset.name : '');
+    setVaultSecretValue('');
+    setVaultSecretDesc(preset ? preset.desc : '');
+    setShowSecretValue(false);
+    setIsVaultModalOpen(true);
+  };
+
+  const handleSaveVaultSecret = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!vaultSecretName.trim() || !vaultSecretValue.trim()) {
+      alert('Secret name and value are required');
+      return;
+    }
+    setIsSavingVaultSecret(true);
+    try {
+      await createVaultSecret({
+        name: vaultSecretName.trim().toUpperCase().replace(/-/g, '_'),
+        value: vaultSecretValue.trim(),
+        description: vaultSecretDesc.trim() || undefined,
+      });
+      setIsVaultModalOpen(false);
+      await loadVaultSecrets();
+      onRefresh();
+    } catch (err: any) {
+      alert(err.message || 'Failed to save secret to vault');
+    } finally {
+      setIsSavingVaultSecret(false);
+    }
+  };
+
+  const handleDeleteVaultSecret = async (name: string) => {
+    if (!confirm(`Are you sure you want to delete secret "${name}" from the central Vault?`)) return;
+    try {
+      await deleteVaultSecret(name);
+      await loadVaultSecrets();
+      onRefresh();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete secret');
+    }
+  };
 
   const [formData, setFormData] = useState<ProviderInput>({
     name: '',
@@ -536,8 +621,161 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
 
   return (
     <div className="space-y-6">
-      {/* Action Bar */}
-      <Card className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+      {/* Subtab Toggle: Providers vs Vault */}
+      <div className="flex items-center gap-2 border-b border-white/[0.08] pb-3">
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('providers')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-medium transition-all ${
+            activeSubTab === 'providers'
+              ? 'bg-[var(--primary)] text-slate-900 font-bold shadow-[0_0_15px_var(--primary-glow-subtle)]'
+              : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+          }`}
+        >
+          <Server className="w-3.5 h-3.5" />
+          <span>Configured Providers ({status?.providers.length || 0})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('vault')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-medium transition-all ${
+            activeSubTab === 'vault'
+              ? 'bg-[var(--primary)] text-slate-900 font-bold shadow-[0_0_15px_var(--primary-glow-subtle)]'
+              : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+          }`}
+        >
+          <ShieldCheck className="w-3.5 h-3.5" />
+          <span>Central Vault Secrets ({vaultSecrets.length})</span>
+        </button>
+      </div>
+
+      {activeSubTab === 'vault' ? (
+        <div className="space-y-6">
+          {/* Vault Action Bar */}
+          <Card className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2 font-mono">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                CENTRAL ENCRYPTED VAULT
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Store upstream LLM credentials once with <code className="text-emerald-400 font-mono">AES-256-GCM</code> authenticated encryption. Reusable across multiple providers via <code className="text-amber-400 font-mono">${'{SECRET_NAME}'}</code> without copy-pasting.
+              </p>
+            </div>
+
+            <Button
+              variant="primary"
+              size="md"
+              onClick={() => openAddVaultModal()}
+            >
+              <Plus className="w-4 h-4" />
+              Add Secret to Vault
+            </Button>
+          </Card>
+
+          {/* Quick Presets Bar */}
+          <div className="bg-[#050814] border border-white/[0.06] rounded-xl p-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-mono text-slate-400 flex items-center gap-1.5 mr-1">
+              <Sparkles className="w-3.5 h-3.5 text-[var(--secondary)]" /> Quick Presets:
+            </span>
+            {VAULT_PRESETS.map((p) => {
+              const alreadyExists = vaultSecrets.some((s) => s.name === p.name);
+              return (
+                <button
+                  key={p.name}
+                  type="button"
+                  onClick={() => openAddVaultModal(p)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-all flex items-center gap-1.5 border ${
+                    alreadyExists
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                      : 'bg-white/[0.03] border-white/10 text-slate-300 hover:text-white hover:border-[var(--primary)] hover:bg-[var(--primary)]/10'
+                  }`}
+                >
+                  {alreadyExists ? <Check className="w-3 h-3 text-emerald-400" /> : <Plus className="w-3 h-3 text-slate-400" />}
+                  <span>{p.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Vault Secrets Grid */}
+          {vaultSecrets.length === 0 ? (
+            <div className="bg-[#04060c] border border-white/[0.06] rounded-2xl p-12 text-center space-y-4">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
+                <Lock className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-white font-mono">No Vault Secrets Stored Yet</h3>
+                <p className="text-xs text-slate-400 max-w-md mx-auto">
+                  Add an API key once (e.g. NVIDIA, Groq, OpenRouter), and you can reuse it across multiple providers and virtual models without copy-pasting.
+                </p>
+              </div>
+              <Button variant="primary" size="sm" onClick={() => openAddVaultModal()}>
+                <Plus className="w-3.5 h-3.5" />
+                Add Your First Secret
+              </Button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {vaultSecrets.map((s) => {
+                const templateRef = `\${${s.name}}`;
+                return (
+                  <Card key={s.name} className="p-4 flex flex-col justify-between space-y-3 relative group">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                            <Lock className="w-3.5 h-3.5" />
+                          </div>
+                          <span className="font-mono font-bold text-xs text-white tracking-wide truncate max-w-[180px]">
+                            {s.name}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(templateRef, s.name)}
+                          className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 hover:text-white border border-white/10 flex items-center gap-1 transition-all"
+                          title="Copy template variable for providers"
+                        >
+                          {copiedKey === s.name ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                          <span>{templateRef}</span>
+                        </button>
+                      </div>
+
+                      <div className="bg-[#030508] border border-white/[0.06] rounded-lg p-2 flex items-center justify-between text-xs font-mono">
+                        <span className="text-slate-400">Masked Key:</span>
+                        <span className="text-emerald-400 font-semibold tracking-wider">{s.key_preview || '••••••••••••'}</span>
+                      </div>
+
+                      {s.description && (
+                        <p className="text-[11px] text-slate-400 leading-snug line-clamp-2">
+                          {s.description}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                      <span>Updated {s.updated_at?.split('T')[0] || s.created_at?.split('T')[0] || 'Recently'}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteVaultSecret(s.name)}
+                        className="text-slate-500 hover:text-rose-400 p-1 rounded hover:bg-rose-500/10 transition-colors"
+                        title="Delete from Vault"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Action Bar */}
+          <Card className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h2 className="text-base font-bold text-white flex items-center gap-2 font-mono">
             <Server className="w-4 h-4 text-[var(--primary)]" />
@@ -758,6 +996,8 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
           </Card>
         )}
       </div>
+    </div>
+  )}
 
       {/* Edit/Add Modal */}
       <Modal
@@ -899,6 +1139,34 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
                 </span>
               )}
             </div>
+
+            {vaultSecrets.length > 0 && (
+              <div className="pt-2 border-t border-white/[0.06] space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
+                  <span className="flex items-center gap-1.5 text-slate-300">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Select from Central Vault:</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500">1-click link</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {vaultSecrets.map((s) => (
+                    <button
+                      key={s.name}
+                      type="button"
+                      onClick={() => {
+                        setApiKeyValue(`\${${s.name}}`);
+                        setExistingEncryptedKeyPreview(null);
+                      }}
+                      className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/[0.04] hover:bg-emerald-500/20 text-slate-300 hover:text-emerald-300 border border-white/10 hover:border-emerald-500/50 transition-all flex items-center gap-1.5 shadow-sm"
+                    >
+                      <Lock className="w-3 h-3 text-emerald-400 shrink-0" />
+                      <span>{`\${${s.name}}`}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
@@ -963,6 +1231,80 @@ export const ProvidersStudio: React.FC<ProvidersStudioProps> = ({ status, onRefr
                 mono
               />
             </div>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Add Secret to Vault Modal */}
+      <Modal
+        isOpen={isVaultModalOpen}
+        onClose={() => setIsVaultModalOpen(false)}
+        title="Add Secret to Central Vault"
+        description="Store once with AES-256-GCM authenticated encryption. Reusable across any provider."
+        icon={<Lock className="w-4 h-4 text-emerald-400" />}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setIsVaultModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={handleSaveVaultSecret} disabled={isSavingVaultSecret}>
+              {isSavingVaultSecret ? 'Encrypting & Saving...' : 'Save to Vault'}
+            </Button>
+          </>
+        }
+      >
+        <form onSubmit={handleSaveVaultSecret} className="space-y-4">
+          <div>
+            <label className="block text-xs font-mono font-medium text-slate-300 mb-1.5">
+              Secret Name / Identifier
+            </label>
+            <Input
+              type="text"
+              required
+              value={vaultSecretName}
+              onChange={(e) => setVaultSecretName(e.target.value.toUpperCase().replace(/[\s-]/g, '_'))}
+              placeholder="e.g. NVIDIA_API_KEY, GROQ_API_KEY"
+              mono
+            />
+            <p className="text-[10px] text-slate-500 font-mono mt-1">
+              Providers can reference this secret as <code className="text-amber-400">${'{' + (vaultSecretName || 'NAME') + '}'}</code>.
+            </p>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-mono font-medium text-slate-300">
+                Secret Value (Token / Key)
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowSecretValue(!showSecretValue)}
+                className="text-[11px] font-mono text-slate-400 hover:text-white flex items-center gap-1"
+              >
+                {showSecretValue ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                <span>{showSecretValue ? 'Hide' : 'Show'}</span>
+              </button>
+            </div>
+            <Input
+              type={showSecretValue ? 'text' : 'password'}
+              required
+              value={vaultSecretValue}
+              onChange={(e) => setVaultSecretValue(e.target.value)}
+              placeholder="nvapi-..., gsk_..., or Bearer token"
+              mono
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-mono font-medium text-slate-300 mb-1.5">
+              Description (Optional)
+            </label>
+            <Input
+              type="text"
+              value={vaultSecretDesc}
+              onChange={(e) => setVaultSecretDesc(e.target.value)}
+              placeholder="e.g. Primary NVIDIA NIM inference key"
+            />
           </div>
         </form>
       </Modal>

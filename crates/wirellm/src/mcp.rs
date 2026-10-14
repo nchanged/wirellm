@@ -197,6 +197,38 @@ pub async fn mcp_messages_handler(
                             "type": "object",
                             "properties": {}
                         }
+                    },
+                    {
+                        "name": "wirellm_set_secret",
+                        "description": "Store or update an encrypted API key or token in the WireLLM central Vault. AES-256-GCM encrypted at rest. Any provider can reference it via '${NAME}' without re-entering the secret.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["name", "value"],
+                            "properties": {
+                                "name": { "type": "string", "description": "Secret identifier (e.g. NVIDIA, NVIDIA_API_KEY, GROQ, OPENROUTER, DEEPSEEK)" },
+                                "value": { "type": "string", "description": "Raw secret API key or Bearer token" },
+                                "description": { "type": "string", "description": "Optional human-readable label or description" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_list_secrets",
+                        "description": "List all secrets currently stored in the central Vault with their masked previews and descriptions. Plaintext secrets are never returned.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    },
+                    {
+                        "name": "wirellm_delete_secret",
+                        "description": "Delete a secret from the central Vault.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": { "type": "string", "description": "Name of secret to delete" }
+                            }
+                        }
                     }
                 ]
             });
@@ -367,6 +399,37 @@ async fn handle_tool_call(
         },
         "wirellm_get_setup_recommendations" | "oxllm_get_setup_recommendations" => {
             Ok(RECOMMENDED_SETUP_MD.to_string())
+        },
+        "wirellm_set_secret" | "wirellm_set_vault_secret" | "oxllm_set_secret" => {
+            let secret_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
+            let secret_val = args.get("value").and_then(|v| v.as_str()).ok_or("Missing 'value'")?;
+            let desc = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+
+            let clean_name = secret_name.trim().to_uppercase().replace('-', "_");
+            reloadable
+                .db
+                .upsert_vault_secret(&clean_name, secret_val, desc)
+                .map_err(|e| format!("Failed to save secret to vault: {}", e))?;
+
+            let _ = reloadable.reloader.reload();
+            Ok(format!("Secret '{}' securely encrypted (AES-256-GCM) and saved to Vault. Reference it in any provider with '\\${{{}}}'", clean_name, clean_name))
+        },
+        "wirellm_list_secrets" | "wirellm_list_vault_secrets" | "oxllm_list_secrets" => {
+            let secrets = reloadable
+                .db
+                .list_vault_secrets()
+                .map_err(|e| e.to_string())?;
+            serde_json::to_string_pretty(&secrets).map_err(|e| e.to_string())
+        },
+        "wirellm_delete_secret" | "wirellm_delete_vault_secret" | "oxllm_delete_secret" => {
+            let secret_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
+            let clean_name = secret_name.trim().to_uppercase().replace('-', "_");
+            reloadable
+                .db
+                .delete_vault_secret(&clean_name)
+                .map_err(|e| format!("Failed to delete secret from vault: {}", e))?;
+            let _ = reloadable.reloader.reload();
+            Ok(format!("Secret '{}' removed from Vault", clean_name))
         },
         unknown => Err(format!("Unknown tool: {}", unknown)),
     }

@@ -148,4 +148,18 @@ export interface ApiKeyRecord {
   created_at: string;
 }
 
+export interface VaultSecretRecord {
+  name: string;
+  key_preview: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VaultSecretInput {
+  name: string;
+  value: string;
+  description?: string;
+}
+
 

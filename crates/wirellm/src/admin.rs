@@ -2,7 +2,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use wirellm_core::config::VirtualModelTarget;
-use wirellm_core::db::{DailyStats, ProviderSummary, VirtualModelDetail};
+use wirellm_core::db::{DailyStats, ProviderSummary, VaultSecretRecord, VirtualModelDetail};
 use wirellm_core::state::CircuitState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -693,6 +693,79 @@ pub async fn delete_api_key(
     Ok(Json(serde_json::json!({
         "success": true,
         "message": format!("API key '{}' revoked successfully", id)
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct VaultSecretInput {
+    pub name: String,
+    pub value: String,
+    pub description: Option<String>,
+}
+
+/// GET /api/vault/secrets - Lists all central Vault secrets with masked previews
+pub async fn list_vault_secrets(
+    State(reloadable): State<ReloadableState>,
+) -> Result<Json<Vec<VaultSecretRecord>>, (StatusCode, Json<serde_json::Value>)> {
+    reloadable
+        .db
+        .list_vault_secrets()
+        .map(Json)
+        .map_err(|e| internal_error(e.to_string()))
+}
+
+/// POST /api/vault/secrets - Adds or updates an encrypted secret in the central Vault
+pub async fn create_vault_secret(
+    State(reloadable): State<ReloadableState>,
+    Json(input): Json<VaultSecretInput>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    if input.name.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Secret name cannot be empty"
+            })),
+        ));
+    }
+    if input.value.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Secret value cannot be empty"
+            })),
+        ));
+    }
+
+    let clean_name = input.name.trim().to_uppercase().replace('-', "_");
+    reloadable
+        .db
+        .upsert_vault_secret(&clean_name, &input.value, input.description.as_deref().unwrap_or(""))
+        .map_err(|e| internal_error(e.to_string()))?;
+
+    let _ = reloadable.reloader.reload();
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("Secret '{}' saved to central Vault and available for provider templates", clean_name),
+        "name": clean_name
+    })))
+}
+
+/// DELETE /api/vault/secrets/{name} - Deletes a secret from the central Vault
+pub async fn delete_vault_secret(
+    State(reloadable): State<ReloadableState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    reloadable
+        .db
+        .delete_vault_secret(&name)
+        .map_err(|e| internal_error(e.to_string()))?;
+
+    let _ = reloadable.reloader.reload();
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": format!("Secret '{}' removed from central Vault", name)
     })))
 }
 
