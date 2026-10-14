@@ -170,7 +170,7 @@ const LiveStreamTile: React.FC<{
         <div
           className="absolute inset-[-150%] pointer-events-none"
           style={{
-            background: `conic-gradient(from 0deg, transparent 0deg, var(--primary) 45deg, var(--primary-hover) 70deg, transparent 105deg, transparent 360deg)`,
+            background: `conic-gradient(from 0deg, transparent 0deg, var(--primary) 35deg, var(--secondary) 75deg, transparent 115deg, transparent 360deg)`,
             animation: `border-spin ${spinDuration.toFixed(2)}s linear infinite`,
           }}
         />

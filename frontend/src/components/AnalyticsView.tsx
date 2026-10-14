@@ -227,7 +227,7 @@ export const AnalyticsView: React.FC = () => {
                     />
                     <Legend wrapperStyle={{ fontSize: '11px', fontFamily: 'JetBrains Mono', paddingTop: '8px', color: '#94a3b8' }} />
                     <Bar dataKey="Input Tokens" stackId="a" fill={currentConfig.primary} radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="Output Tokens" stackId="a" fill="#818cf8" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="Output Tokens" stackId="a" fill={currentConfig.secondary} radius={[3, 3, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
