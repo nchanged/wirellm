@@ -253,7 +253,7 @@ export const App: React.FC = () => {
       {/* Infrastructure Footer */}
       <footer className="border-t border-white/[0.06] bg-[#04060a] py-3.5 px-6 text-center text-xs text-slate-500 font-mono flex flex-col sm:flex-row items-center justify-between gap-2 max-w-7xl mx-auto w-full">
         <div className="flex items-center gap-2">
-          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+          <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] shadow-[0_0_6px_var(--primary)]" />
           <span>WireLLM Infrastructure Daemon</span>
           <span className="text-slate-600">&bull;</span>
           <span>SQLite WAL &bull; AES-256 Vault &bull; OTLP Spans</span>
