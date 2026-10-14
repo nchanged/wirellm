@@ -1,0 +1,10 @@
+target/
+frontend/node_modules/
+frontend/dist/
+.git/
+.wirellm/
+.oxllm/
+*.log
+*.pid
+scratch/
+.env*

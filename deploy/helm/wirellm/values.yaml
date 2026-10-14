@@ -1,0 +1,91 @@
+# =========================================================================
+# WireLLM - Helm Chart Configuration Values
+# Default values are generic and safe for public repositories.
+# DO NOT COMMIT PRIVATE PASSWORDS OR SECRETS TO THIS FILE.
+# Use an existingSecret or custom values override during helm install.
+# =========================================================================
+
+replicaCount: 1
+
+image:
+  repository: wirellm/wirellm
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8765
+
+# Traefik IngressRoute configuration (compatible with Oracle Cloud / Traefik ingress)
+ingressroute:
+  enabled: true
+  entryPoints:
+    - websecure
+  host: wirellm.example.com
+  tlsSecretName: wirellm-tls-secret
+
+# cert-manager Certificate configuration (automatically provisions Let's Encrypt TLS)
+certificate:
+  enabled: true
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+
+# Persistent storage for SQLite database (wirellm.db) and configuration
+persistence:
+  enabled: true
+  mountPath: /data
+  accessModes:
+    - ReadWriteOnce
+  size: 2Gi
+  storageClass: ""
+
+# Security & Authentication Configuration
+auth:
+  # API token access: list of valid API keys for /v1/*, /mcp/*, and /api/*
+  # NOTE: If empty and no existingSecret provided, API access is UNPROTECTED.
+  apiKeys: []
+
+  # Google OAuth configuration to protect the Web UI
+  # If clientId is empty, Google Auth is DISABLED (UI is open).
+  google:
+    clientId: ""
+    clientSecret: ""
+    # List of emails allowed to log in (e.g. ["user@gmail.com", "*@mycompany.com"])
+    # If empty, all authenticated Google users are permitted.
+    allowedEmails: []
+
+  # Secret used to sign session cookies. If empty, a random secret is generated on pod startup.
+  sessionSecret: ""
+
+  # Public origin URL of the gateway (e.g. https://wirellm.example.com)
+  publicUrl: ""
+
+  # Reference an existing Kubernetes Secret for sensitive values instead of passing them in values.yaml
+  # If specified, wirellm will read credentials from this secret.
+  # Supported keys in secret:
+  #   - API_KEYS (comma-separated tokens)
+  #   - GOOGLE_CLIENT_ID
+  #   - GOOGLE_CLIENT_SECRET
+  #   - AUTH_SESSION_SECRET
+  existingSecret: ""
+
+# Additional environment variables passed to the container
+env: {}
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

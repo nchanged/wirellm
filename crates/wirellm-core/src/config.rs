@@ -40,9 +40,109 @@ pub struct VirtualModelTarget {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GoogleAuthConfig {
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub allowed_emails: Vec<String>,
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct AuthConfig {
+    /// Token access: list of valid API keys for /v1/*, /mcp/*, and /api/*.
+    /// If empty, API access is UNPROTECTED.
+    #[serde(default)]
+    pub api_keys: Vec<String>,
+
+    /// Google OAuth configuration to protect the UI.
+    /// If client_id is None or empty, Google Auth is DISABLED (UI is unprotected).
+    #[serde(default)]
+    pub google: Option<GoogleAuthConfig>,
+
+    /// Secret key used to sign session cookies.
+    /// If not provided, a random secret is generated.
+    #[serde(default)]
+    pub session_secret: Option<String>,
+
+    /// Public origin of the application (e.g. "https://<RELAY_HOST>").
+    /// Used to build absolute OAuth redirect URIs.
+    #[serde(default)]
+    pub public_url: Option<String>,
+}
+
+impl AuthConfig {
+    /// Returns true if API access requires token authentication.
+    pub fn is_api_auth_required(&self) -> bool {
+        !self.api_keys.is_empty()
+    }
+
+    /// Returns true if Google OAuth is configured and enabled for UI protection.
+    pub fn is_google_auth_enabled(&self) -> bool {
+        self.google
+            .as_ref()
+            .and_then(|g| g.client_id.as_ref())
+            .map(|id| !id.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Enriches configuration from standard environment variables if not already set.
+    pub fn merge_env_vars(&mut self) {
+        if let Ok(keys) = std::env::var("WIRELLM_API_KEYS").or_else(|_| std::env::var("WIRELLM_API_KEY")) {
+            for k in keys.split(',') {
+                let trimmed = k.trim().to_string();
+                if !trimmed.is_empty() && !self.api_keys.contains(&trimmed) {
+                    self.api_keys.push(trimmed);
+                }
+            }
+        }
+        if let Ok(cid) = std::env::var("WIRELLM_GOOGLE_CLIENT_ID").or_else(|_| std::env::var("GOOGLE_CLIENT_ID")) {
+            let google = self.google.get_or_insert_with(Default::default);
+            if google.client_id.is_none() && !cid.trim().is_empty() {
+                google.client_id = Some(cid.trim().to_string());
+            }
+        }
+        if let Ok(csec) = std::env::var("WIRELLM_GOOGLE_CLIENT_SECRET").or_else(|_| std::env::var("GOOGLE_CLIENT_SECRET")) {
+            let google = self.google.get_or_insert_with(Default::default);
+            if google.client_secret.is_none() && !csec.trim().is_empty() {
+                google.client_secret = Some(csec.trim().to_string());
+            }
+        }
+        if let Ok(emails) = std::env::var("WIRELLM_GOOGLE_ALLOWED_EMAILS") {
+            let google = self.google.get_or_insert_with(Default::default);
+            for e in emails.split(',') {
+                let trimmed = e.trim().to_string();
+                if !trimmed.is_empty() && !google.allowed_emails.contains(&trimmed) {
+                    google.allowed_emails.push(trimmed);
+                }
+            }
+        }
+        if self.session_secret.is_none() {
+            if let Ok(sec) = std::env::var("WIRELLM_AUTH_SESSION_SECRET").or_else(|_| std::env::var("AUTH_SESSION_SECRET")) {
+                if !sec.trim().is_empty() {
+                    self.session_secret = Some(sec.trim().to_string());
+                }
+            }
+        }
+        if self.public_url.is_none() {
+            if let Ok(url) = std::env::var("WIRELLM_PUBLIC_URL").or_else(|_| std::env::var("APP_ORIGIN")) {
+                if !url.trim().is_empty() {
+                    self.public_url = Some(url.trim().to_string());
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub server: ServerConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]

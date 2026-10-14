@@ -462,6 +462,7 @@ impl DbManager {
 
         Ok(Config {
             server,
+            auth: Default::default(),
             providers,
             virtual_models,
         })

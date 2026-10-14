@@ -268,11 +268,15 @@ pub fn build_app_state(config: Config) -> Result<AppState, String> {
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
+    let mut auth = config.auth.clone();
+    auth.merge_env_vars();
+
     Ok(AppState {
         providers,
         virtual_models: config.virtual_models,
         http_client,
         upstream_timeout_secs: config.server.upstream_timeout_secs,
+        auth,
     })
 }
 
@@ -428,8 +432,27 @@ pub async fn handle_sighup(reloader: Reloader) {
 
 pub async fn ws_live_handler(
     ws: WebSocketUpgrade,
+    crate::auth::IsLocalhost(is_local): crate::auth::IsLocalhost,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
     State(state): State<ReloadableState>,
 ) -> Response {
+    let app_state = state.app_state.borrow().clone();
+    let auth = &app_state.auth;
+
+    if !is_local && (auth.is_google_auth_enabled() || auth.is_api_auth_required()) {
+        let secret = crate::auth::resolve_session_secret(auth);
+        let has_session = crate::auth::extract_session_user(&headers, &secret).is_some();
+        let query_token = query.get("token").map(|s| s.as_str());
+        let has_api_key = crate::auth::extract_api_key(&headers, query_token)
+            .map(|k| crate::auth::is_api_key_valid(&k, &auth.api_keys))
+            .unwrap_or(false);
+
+        if !has_session && !has_api_key {
+            return (StatusCode::UNAUTHORIZED, "Unauthorized WebSocket connection").into_response();
+        }
+    }
+
     ws.on_upgrade(move |socket| handle_live_socket(socket, state))
 }
 
@@ -552,6 +575,16 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
 
     if let Some(p) = cli_port {
         config.server.port = p;
+    } else if let Ok(p_str) = std::env::var("WIRELLM_PORT").or_else(|_| std::env::var("PORT")) {
+        if let Ok(p) = p_str.trim().parse::<u16>() {
+            config.server.port = p;
+        }
+    }
+
+    if let Ok(h) = std::env::var("WIRELLM_HOST").or_else(|_| std::env::var("HOST")) {
+        if !h.trim().is_empty() {
+            config.server.host = h.trim().to_string();
+        }
     }
 
     // 2. Build initial AppState
@@ -633,15 +666,23 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         recent_streams,
     };
 
-    let app = Router::new()
-        // OpenAI compatibility
+    // 1. API routes (/v1/* and /mcp/*) with optional API Key Bearer authentication
+    let api_routes = Router::new()
         .route("/v1/models", get(routes::list_models))
         .route("/v1/embeddings", post(routes::create_embeddings))
         .route(
             "/v1/chat/completions",
             post(routes::create_chat_completions),
         )
-        // Admin REST API
+        .route("/mcp/sse", get(mcp::mcp_sse_handler))
+        .route("/mcp/messages", post(mcp::mcp_messages_handler))
+        .layer(middleware::from_fn_with_state(
+            reloadable_state.clone(),
+            crate::auth::require_api_auth,
+        ));
+
+    // 2. Admin routes (/api/*) with Google Auth session or API Key authentication
+    let admin_routes = Router::new()
         .route("/api/status", get(admin::get_api_status))
         .route(
             "/api/providers",
@@ -659,11 +700,28 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         )
         .route("/api/analytics/daily", get(admin::get_daily_analytics))
         .route("/api/logs", get(routes::get_logs))
+        .layer(middleware::from_fn_with_state(
+            reloadable_state.clone(),
+            crate::auth::require_admin_or_ui_auth,
+        ));
+
+    // 3. Main composite router
+    let app = Router::new()
+        .merge(api_routes)
+        .merge(admin_routes)
+        // Public Health Check (essential for Kubernetes liveness & readiness probes)
+        .route("/health", get(health_check))
+        // Authentication endpoints
+        .route("/auth/status", get(crate::auth::get_auth_status))
+        .route("/auth/me", get(crate::auth::get_auth_status))
+        .route("/auth/google/login", get(crate::auth::google_login_handler))
+        .route("/auth/google/callback", get(crate::auth::google_callback_handler))
+        .route(
+            "/auth/logout",
+            get(crate::auth::logout_handler).post(crate::auth::logout_handler),
+        )
         .route("/ws/live", get(ws_live_handler))
-        // Model Context Protocol (MCP) Server
-        .route("/mcp/sse", get(mcp::mcp_sse_handler))
-        .route("/mcp/messages", post(mcp::mcp_messages_handler))
-        // Legacy admin and status routes
+        // Legacy admin and status routes (localhost only)
         .route(
             "/status",
             get(routes::get_status).layer(middleware::from_fn(localhost_only)),
@@ -671,10 +729,6 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         .route(
             "/logs",
             get(routes::get_logs).layer(middleware::from_fn(localhost_only)),
-        )
-        .route(
-            "/health",
-            get(health_check).layer(middleware::from_fn(localhost_only)),
         )
         .route(
             "/reload",

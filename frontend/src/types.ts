@@ -125,3 +125,18 @@ export interface RecentStreamItem {
   timestamp_ms: number;
 }
 
+export interface SessionUser {
+  email: string;
+  name: string;
+  picture?: string;
+  exp: number;
+}
+
+export interface AuthStatusResponse {
+  google_auth_enabled: boolean;
+  api_auth_required: boolean;
+  authenticated: boolean;
+  user?: SessionUser | null;
+}
+
+

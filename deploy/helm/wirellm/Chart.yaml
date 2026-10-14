@@ -1,0 +1,15 @@
+apiVersion: v2
+name: wirellm
+description: Production Helm chart for WireLLM - High-performance LLM Circuit Router, Vault & Management Gateway
+type: application
+version: 0.2.1
+appVersion: "0.2.1"
+keywords:
+  - llm
+  - router
+  - ai
+  - circuit-breaker
+  - kubernetes
+maintainers:
+  - name: WireLLM Team
+    url: https://github.com/nchanged/wirellm

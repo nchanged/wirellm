@@ -15,6 +15,22 @@ pub fn resolve_config_path(given: PathBuf) -> PathBuf {
         return given;
     }
 
+    if let Ok(cfg) = std::env::var("WIRELLM_CONFIG") {
+        let p = PathBuf::from(cfg);
+        if p.exists() {
+            return p;
+        }
+    }
+
+    if let Ok(dir) = std::env::var("WIRELLM_HOME").or_else(|_| std::env::var("OXLLM_HOME")) {
+        for ext in &["config.yaml", "config.yml", "config.toml"] {
+            let p = PathBuf::from(&dir).join(ext);
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let wirellm_dir = PathBuf::from(&home).join(".wirellm");
 

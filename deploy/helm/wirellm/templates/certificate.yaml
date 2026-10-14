@@ -1,0 +1,15 @@
+{{- if and .Values.ingressroute.enabled .Values.certificate.enabled -}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "wirellm.fullname" . }}-tls
+  labels:
+    {{- include "wirellm.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.ingressroute.tlsSecretName }}
+  issuerRef:
+    name: {{ .Values.certificate.issuerRef.name }}
+    kind: {{ .Values.certificate.issuerRef.kind }}
+  dnsNames:
+    - {{ .Values.ingressroute.host }}
+{{- end }}
