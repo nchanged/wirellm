@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AnalyticsResponse } from '../types';
-import { fetchAnalytics } from '../api';
+import { fetchAnalytics, AnalyticsRange } from '../api';
 import {
   BarChart3,
   TrendingUp,
@@ -35,16 +35,58 @@ import {
 } from '../ui';
 import { useTheme } from '../theme';
 
+// daily_usage rows use UTC dates; the quick filters must speak the same day grid
+const todayUtc = (): string => new Date().toISOString().slice(0, 10);
+
+const weekStartUtc = (): string => {
+  const now = new Date();
+  const day = (now.getUTCDay() + 6) % 7; // Monday = 0
+  const monday = new Date(now);
+  monday.setUTCDate(now.getUTCDate() - day);
+  return monday.toISOString().slice(0, 10);
+};
+
 export const AnalyticsView: React.FC = () => {
   const { currentConfig } = useTheme();
   const [data, setData] = useState<AnalyticsResponse | null>(null);
-  const [days, setDays] = useState(30);
+  const [range, setRange] = useState<AnalyticsRange>({ kind: 'days', days: 30 });
   const [loading, setLoading] = useState(true);
 
-  const loadData = async (d: number) => {
+  const quickPresets: Array<{ label: string; value: AnalyticsRange }> = [
+    { label: 'TOTAL', value: { kind: 'all' } },
+    { label: 'TODAY', value: { kind: 'range', from: todayUtc(), to: todayUtc() } },
+    { label: 'THIS WEEK', value: { kind: 'range', from: weekStartUtc(), to: todayUtc() } },
+    { label: '7D', value: { kind: 'days', days: 7 } },
+    { label: '30D', value: { kind: 'days', days: 30 } },
+    { label: '90D', value: { kind: 'days', days: 90 } },
+  ];
+
+  const activePreset = (candidate: AnalyticsRange): boolean => {
+    switch (candidate.kind) {
+      case 'days':
+        return range.kind === 'days' && range.days === candidate.days;
+      case 'all':
+        return range.kind === 'all';
+      case 'range':
+        return (
+          range.kind === 'range' &&
+          range.from === candidate.from &&
+          (range.to ?? '') === (candidate.to ?? '')
+        );
+    }
+  };
+
+  const rangeLabel =
+    range.kind === 'days'
+      ? `Last ${range.days} Days`
+      : range.kind === 'all'
+        ? 'All Time'
+        : `${range.from} → ${range.to}`;
+
+  const loadData = async (r: AnalyticsRange) => {
     setLoading(true);
     try {
-      const res = await fetchAnalytics(d);
+      const res = await fetchAnalytics(r);
       setData(res);
     } catch (err) {
       console.error(err);
@@ -54,8 +96,8 @@ export const AnalyticsView: React.FC = () => {
   };
 
   useEffect(() => {
-    loadData(days);
-  }, [days]);
+    loadData(range);
+  }, [range]);
 
   // Aggregate by date for charts
   const chartDataMap: Record<
@@ -126,20 +168,47 @@ export const AnalyticsView: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 bg-[#030508] p-1 rounded-lg border border-white/[0.06]">
-          {[7, 30, 90].map((d) => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all ${
-                days === d
-                  ? 'bg-[var(--primary)] text-black font-extrabold shadow-[0_0_12px_var(--primary-glow-subtle)]'
-                  : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
-              }`}
-            >
-              {d}D
-            </button>
-          ))}
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex items-center gap-1.5 bg-[#030508] p-1 rounded-lg border border-white/[0.06]">
+            {quickPresets.map((preset) => (
+              <button
+                key={preset.label}
+                onClick={() => setRange(preset.value)}
+                className={`px-3 py-1.5 rounded-md text-xs font-mono font-semibold transition-all ${
+                  activePreset(preset.value)
+                    ? 'bg-[var(--primary)] text-black font-extrabold shadow-[0_0_12px_var(--primary-glow-subtle)]'
+                    : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500">
+            <span className="uppercase tracking-wider">Custom</span>
+            <input
+              type="date"
+              value={range.kind === 'range' ? range.from : ''}
+              onChange={(e) =>
+                e.target.value &&
+                setRange({ kind: 'range', from: e.target.value, to: range.kind === 'range' ? range.to : todayUtc() })
+              }
+              className="bg-[#030508] border border-white/10 rounded px-2 py-1 text-slate-200 [color-scheme:dark]"
+            />
+            <span>→</span>
+            <input
+              type="date"
+              value={range.kind === 'range' ? range.to ?? '' : todayUtc()}
+              onChange={(e) =>
+                setRange({
+                  kind: 'range',
+                  from: range.kind === 'range' ? range.from : weekStartUtc(),
+                  to: e.target.value || todayUtc(),
+                })
+              }
+              className="bg-[#030508] border border-white/10 rounded px-2 py-1 text-slate-200 [color-scheme:dark]"
+            />
+          </div>
         </div>
       </Card>
 
@@ -293,7 +362,7 @@ export const AnalyticsView: React.FC = () => {
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xs font-mono uppercase tracking-wider text-slate-300 flex items-center gap-2">
                 <Database className="w-4 h-4 text-slate-400" />
-                Granular Model Ledger (Last {days} Days)
+                Granular Model Ledger ({rangeLabel})
               </h3>
               <Badge variant="neutral">{data?.stats.length || 0} transaction records</Badge>
             </div>
