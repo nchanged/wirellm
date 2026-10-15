@@ -674,5 +674,37 @@ mod tests {
         let candidates = vec![&p];
         assert!(strategy.select(&candidates).await.is_none());
     }
+
+    /// GUARANTEE: ladder order is strictly preserved. Selection must walk the
+    /// candidate slice exactly top-down; a smart higher-priority provider that
+    /// is breathing must be skipped IN INDEX ORDER, never re-sorted ahead by
+    /// smartness/latency/any weight.
+    #[tokio::test]
+    async fn test_strict_ladder_order_under_breathing() {
+        // prov_dumb is LAST in the ladder but has the LOWEST smartness — if
+        // anything ever reorders by smartness/weights this test fails loud.
+        let p1 = setup_provider("rung1");
+        let p2 = setup_provider("rung2");
+        let p3 = setup_provider("rung3");
+        let p4 = setup_provider("rung4_last_smallest");
+        let candidates = vec![&p1, &p2, &p3, &p4];
+        let strategy = AdaptivePriorityStrategy;
+
+        // Healthy: strictly rung1 first
+        assert_eq!(strategy.select(&candidates).await.unwrap().name, "rung1");
+
+        // rung1 gets a breathing window (503)
+        strategy.feedback(&p1, false, false, Some(503), None).await;
+        assert_eq!(strategy.select(&candidates).await.unwrap().name, "rung2");
+
+        // rung2 cooling too → must land on rung3, exactly in order
+        strategy.feedback(&p2, false, false, Some(503), None).await;
+        assert_eq!(strategy.select(&candidates).await.unwrap().name, "rung3");
+
+        // Windows expire without a new failure → rung1 is first again
+        *p1.rate_limited_until.write().await = None;
+        *p2.rate_limited_until.write().await = None;
+        assert_eq!(strategy.select(&candidates).await.unwrap().name, "rung1");
+    }
 }
 
