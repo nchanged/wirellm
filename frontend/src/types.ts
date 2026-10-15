@@ -24,6 +24,8 @@ export interface ProviderRuntimeDetail {
   min_interval_ms?: number;
   is_burst_limited: boolean;
   in_flight: number;
+  breathing_room_secs?: number;
+  auto_disabled_reason?: string | null;
   has_encrypted_key?: boolean;
   key_preview?: string;
 }

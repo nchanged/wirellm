@@ -191,8 +191,11 @@ pub async fn create_chat_completions(
             selected.name, attempts
         );
 
-        // Increment request counter and active in_flight concurrency
-        let _flight_guard = if let Some(target) = app_state.providers.iter().find(|p| p.name == selected.name) {
+        // Increment request counter and active in_flight concurrency.
+        // NOTE: for streaming requests the guard is moved INTO the spawned body
+        // pump (see below) so in_flight stays > 0 for the WHOLE stream lifetime,
+        // not just until response headers arrive.
+        let flight_guard = if let Some(target) = app_state.providers.iter().find(|p| p.name == selected.name) {
             target
                 .requests
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -230,12 +233,17 @@ pub async fn create_chat_completions(
                     let est_prompt = estimated_prompt_tokens;
                     let live_tx_clone = live_tx.clone();
                     let requested_model_clone = requested_model.to_string();
+                    // Move the in-flight guard into the stream pump: remaining
+                    // lifetime of this request == lifetime of the spawned task.
+                    let flight_guard_for_pump = flight_guard;
 
                     let (tx, rx) = tokio::sync::mpsc::channel::<
                         Result<Bytes, Box<dyn std::error::Error + Send + Sync>>,
                     >(32);
 
                     tokio::spawn(async move {
+                        // Holds in_flight > 0 until the pump (stream) ends
+                        let _flight_guard = flight_guard_for_pump;
                         let mut reqwest_stream = res.bytes_stream();
                         let mut stream_success = true;
                         let mut exact_input_tokens: Option<u64> = None;
@@ -267,9 +275,26 @@ pub async fn create_chat_completions(
                                                                 let mut chunk_text = String::new();
 
                                                                 if let Some(delta) = choice.get("delta") {
-                                                                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                                                    // Reasoning deltas travel under different field names
+                                                                    // across upstreams (NVIDIA NIM variants use
+                                                                    // "reasoning"/"reasoning_content"/"thinking").
+                                                                    // Recognizing them keeps the live feed honest during
+                                                                    // thinking phases instead of showing 0 tok.
+                                                                    let reasoning = delta
+                                                                        .get("reasoning_content")
+                                                                        .or_else(|| delta.get("reasoning"))
+                                                                        .or_else(|| delta.get("thinking"))
+                                                                        .and_then(|c| c.as_str());
+                                                                    // Some upstreams emit thinking deltas as
+                                                                    // {"content": "", "reasoning_content": "…"} —
+                                                                    // an empty content must not mask reasoning.
+                                                                    let content = delta
+                                                                        .get("content")
+                                                                        .and_then(|c| c.as_str())
+                                                                        .filter(|c| !c.is_empty());
+                                                                    if let Some(content) = content {
                                                                         chunk_text.push_str(content);
-                                                                    } else if let Some(reasoning) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+                                                                    } else if let Some(reasoning) = reasoning {
                                                                         chunk_text.push_str(reasoning);
                                                                     }
 
@@ -529,6 +554,21 @@ pub async fn create_chat_completions(
                                     .and_then(|c| c.get("message"))
                                     .map(|m| {
                                         let mut text = m.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                                        // Non-stream responses from reasoning models often
+                                        // carry the reasoning phase in `reasoning_content` /
+                                        // `reasoning` — surface it in the deck preview.
+                                        if text.is_empty() {
+                                            let reasoning = m
+                                                .get("reasoning_content")
+                                                .or_else(|| m.get("reasoning"))
+                                                .or_else(|| m.get("thinking"))
+                                                .and_then(|c| c.as_str())
+                                                .unwrap_or("");
+                                            if !reasoning.is_empty() {
+                                                text.push_str("🧠 ");
+                                                text.push_str(reasoning);
+                                            }
+                                        }
                                         if let Some(tool_calls) = m.get("tool_calls").and_then(|tc| tc.as_array()) {
                                             for tc in tool_calls {
                                                 if let Some(f) = tc.get("function") {

@@ -22,6 +22,7 @@ import {
   LogOut,
   Key,
   Lock,
+  Activity,
 } from 'lucide-react';
 import { Badge, Button, cn } from './ui';
 
@@ -288,7 +289,23 @@ export const App: React.FC = () => {
               </div>
             )}
 
-            {/* Live WebSocket Status Badge */}
+            {/* Live WebSocket Status Badge + in-flight activity chip */}
+          <div className="flex items-center gap-2">
+            {(() => {
+              // Sum of in-flight REQUESTS (not providers) — matches rung badges
+              const busyRequests = (status?.providers || []).reduce(
+                (acc, p) => acc + (p.in_flight || 0),
+                0
+              );
+              if (busyRequests === 0) return null;
+              return (
+                <Badge variant="solid-primary" className="animate-pulse font-black text-[10px]">
+                  <Activity className="w-3 h-3" />
+                  {busyRequests} IN-FLIGHT
+                </Badge>
+              );
+            })()}
+          </div>
             <div className="flex items-center gap-2 bg-[#010307]/90 h-8 px-2.5 rounded-lg border border-white/[0.08] text-xs font-mono">
               <span
                 className={cn(
@@ -301,7 +318,11 @@ export const App: React.FC = () => {
                 )}
               />
               <span className="text-slate-300 text-[11px] tracking-tight">
-                {wsConnected ? 'WS LIVE' : isConnected ? `PORT :${window.location.port || '8765'}` : 'OFFLINE'}
+                {wsConnected
+                  ? 'WS LIVE'
+                  : isConnected
+                  ? 'WS RECONNECTING…'
+                  : 'OFFLINE'}
               </span>
             </div>
 

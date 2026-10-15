@@ -52,6 +52,8 @@ interface TargetEvaluation {
   reason: string;
   inFlight: number;
   circuit: string;
+  /** Busy only via the status-tick in-flight counter (no token stream seen) */
+  providerBusyOnly?: boolean;
 }
 
 function evaluateTarget(
@@ -72,6 +74,17 @@ function evaluateTarget(
 
   const isTripped = p.circuit.includes('Open');
   const inFlight = p.in_flight || 0;
+
+  // Severed upstream (model removed/EOL): auto-disabled providers must render
+  // as blocked — pre-gap they were indistinguishable from healthy standby.
+  if (p.auto_disabled_reason) {
+    return {
+      status: 'blocked',
+      reason: `Auto-disabled: ${p.auto_disabled_reason}`,
+      inFlight,
+      circuit: p.circuit,
+    };
+  }
 
   if (isTripped) {
     return {
@@ -335,6 +348,14 @@ export const Overview: React.FC<OverviewProps> = ({
     );
   }
 
+  // Snapshot-level in-flight map (provider → count), from the 1s status tick.
+  // Drives rung "ACTIVE/busy" badges independently of the WS token feed so
+  // non-streaming calls and WS dropouts still show on the ladder.
+  const inFlightMap: Record<string, number> = {};
+  for (const p of status.providers) {
+    if ((p.in_flight || 0) > 0) inFlightMap[p.name] = p.in_flight;
+  }
+
   const formatUptime = (seconds: number) => {
     const d = Math.floor(seconds / (3600 * 24));
     const h = Math.floor((seconds % (3600 * 24)) / 3600);
@@ -565,13 +586,22 @@ export const Overview: React.FC<OverviewProps> = ({
                     s.model === tgt.model
                 );
 
+              // 2. Restart-proof + non-stream-aware: a rung is also BUSY when the
+              // status snapshot reports in-flight work on its provider — covers
+              // WS dropout and non-streaming calls (0 token events). Note: when
+              // the WS is down the snapshot refreshes per ~4s poll, so a busy
+              // badge can linger up to ~4s after the burst ends in that state.
+              const inFlightBusy = !isBlocked && (inFlightMap[tgt.provider] ?? 0) > 0;
+              const isBusy = isTargetStreaming || inFlightBusy;
+
               return {
                 ...tgt,
                 evaluation: {
                   ...evalRes,
-                  status: isTargetStreaming ? ('running' as const) : evalRes.status,
+                  status: isBusy ? ('running' as const) : evalRes.status,
+                  providerBusyOnly: inFlightBusy && !isTargetStreaming,
                 },
-                isStreaming: isTargetStreaming,
+                isStreaming: isBusy,
               };
             });
 
@@ -709,7 +739,8 @@ export const Overview: React.FC<OverviewProps> = ({
                           {isRunning && (
                             <Badge variant="solid-primary" className="shadow-[0_0_12px_var(--primary-glow)] animate-pulse font-black text-black">
                               <Activity className="w-3 h-3 animate-spin text-black shrink-0" />
-                              ACTIVE {ev.inFlight > 0 ? `(${ev.inFlight} req)` : ''}
+                              {ev.providerBusyOnly ? 'IN-FLIGHT' : 'ACTIVE'}
+                              {ev.inFlight > 0 ? ` (${ev.inFlight} req)` : ''}
                             </Badge>
                           )}
 
