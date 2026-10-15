@@ -463,6 +463,21 @@ async fn handle_tool_call(
             let mut out = serde_json::Map::new();
             out.insert("uptime_secs".to_string(), json!(reloadable.start_time.elapsed().as_secs()));
             out.insert("active_provider_count".to_string(), json!(app_state.providers.len()));
+            // Full-history totals from daily_usage — identical source to the
+            // dashboard header and /api/analytics/daily (days=0)
+            let lifetime_totals = reloadable
+                .db
+                .get_daily_stats(0)
+                .map_err(|e| format!("Database error: {}", e))?;
+            let (mut tr, mut tin, mut tout) = (0u64, 0u64, 0u64);
+            for s in &lifetime_totals {
+                tr += s.total_requests;
+                tin += s.total_input_tokens;
+                tout += s.total_output_tokens;
+            }
+            out.insert("total_requests".to_string(), json!(tr));
+            out.insert("total_input_tokens".to_string(), json!(tin));
+            out.insert("total_output_tokens".to_string(), json!(tout));
             out.insert("providers".to_string(), value);
 
             serde_json::to_string_pretty(&out).map_err(|e| e.to_string())

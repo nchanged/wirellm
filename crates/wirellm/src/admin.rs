@@ -148,16 +148,26 @@ pub async fn build_status_response(
         .get_provider_summaries()
         .map_err(|e| format!("Database error: {}", e))?;
 
-    let mut provider_details = Vec::new();
+    // Header totals are computed from FULL daily_usage history (days=0),
+    // so they match /api/analytics/daily exactly — per-provider summaries can
+    // only count existing providers, which would silently drop the history of
+    // deleted/retired provider circuits from the totals.
+    let lifetime_totals = reloadable
+        .db
+        .get_daily_stats(0)
+        .map_err(|e| format!("Database error: {}", e))?;
     let mut total_requests = 0u64;
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
+    for s in &lifetime_totals {
+        total_requests += s.total_requests;
+        total_input_tokens += s.total_input_tokens;
+        total_output_tokens += s.total_output_tokens;
+    }
+
+    let mut provider_details = Vec::new();
 
     for summary in db_summaries {
-        total_requests += summary.lifetime_requests;
-        total_input_tokens += summary.lifetime_input_tokens;
-        total_output_tokens += summary.lifetime_output_tokens;
-
         let rt = app_state.providers.iter().find(|p| p.name == summary.name);
 
         let (
