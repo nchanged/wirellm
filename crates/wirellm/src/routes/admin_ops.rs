@@ -24,6 +24,9 @@ pub struct RouteEntry {
     pub is_burst_limited: bool,
     pub rate_limited_until_secs: Option<u64>,
     pub in_flight: u32,
+    pub recent_faults: u32,
+    pub breathing_room_secs: u64,
+    pub auto_disabled_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -45,6 +48,9 @@ pub struct ProviderStatus {
     pub min_interval_ms: Option<u64>,
     pub is_burst_limited: bool,
     pub in_flight: u32,
+    pub recent_faults: u32,
+    pub breathing_room_secs: u64,
+    pub auto_disabled_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -114,6 +120,8 @@ pub async fn get_status(
         let is_rpm_capped = provider.is_rpm_limited(now).await;
         let is_burst_limited = provider.is_burst_limited(now).await;
         let in_flight = provider.in_flight.load(std::sync::atomic::Ordering::Relaxed);
+        let recent_faults = provider.fault_history.read().await.len() as u32;
+        let auto_disabled_reason = provider.auto_disabled().await;
 
         total_requests += requests;
 
@@ -135,6 +143,9 @@ pub async fn get_status(
             min_interval_ms: provider.min_interval_ms,
             is_burst_limited,
             in_flight,
+            recent_faults,
+            breathing_room_secs: rate_limited_until_secs.unwrap_or(0),
+            auto_disabled_reason,
         });
     }
 
@@ -189,6 +200,13 @@ pub async fn get_status(
                 },
                 None => ("Unknown".to_string(), 0, 0, None, 0, false, None, false, None, 0),
             };
+            let recent_faults_and_reason = match provider_state {
+                Some(p) => (
+                    p.fault_history.read().await.len() as u32,
+                    p.auto_disabled().await,
+                ),
+                None => (0, None),
+            };
             entries.push(RouteEntry {
                 provider: target.provider.clone(),
                 model: target.model.clone(),
@@ -202,6 +220,9 @@ pub async fn get_status(
                 is_burst_limited,
                 rate_limited_until_secs,
                 in_flight,
+                recent_faults: recent_faults_and_reason.0,
+                breathing_room_secs: rate_limited_until_secs.unwrap_or(0),
+                auto_disabled_reason: recent_faults_and_reason.1,
             });
         }
         virtual_models.insert(vm_name.clone(), entries);
@@ -244,6 +265,14 @@ pub async fn admin_online(
             provider
                 .manual_disabled
                 .store(false, std::sync::atomic::Ordering::Release);
+            // Manual re-enable also clears an auto-disabled (severed) marker —
+            // e.g. after fixing the model name in config or the upstream
+            // restoring a removed model — and any pending breathing window.
+            *provider.auto_disabled_reason.write().await = None;
+            provider
+                .severed_strikes
+                .store(0, std::sync::atomic::Ordering::Release);
+            *provider.rate_limited_until.write().await = None;
             (
                 StatusCode::OK,
                 format!("Provider '{}' brought online", name),
@@ -257,19 +286,28 @@ pub async fn admin_online(
 }
 
 /// POST /admin/providers/{name}/reset — resets circuit breaker to Closed,
-/// failures to 0, rate limit cleared, manual disabled cleared.
+/// failures to 0, rate limit cleared, manual disabled and auto-disabled cleared,
+/// breathing room window evaporated.
 pub async fn admin_reset(
     State(app_state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     match app_state.providers.iter().find(|p| p.name == name) {
         Some(provider) => {
-            *provider.circuit.write().await = CircuitState::Closed;
+            // Canonical lock order: consecutive_failures → circuit → everything
+            // else. Acquiring circuit first inverts the order used by the
+            // routing feedback path and can deadlock a concurrent completion.
             *provider.consecutive_failures.write().await = 0;
+            *provider.circuit.write().await = CircuitState::Closed;
             *provider.rate_limited_until.write().await = None;
             provider
                 .manual_disabled
                 .store(false, std::sync::atomic::Ordering::Release);
+            *provider.auto_disabled_reason.write().await = None;
+            provider
+                .severed_strikes
+                .store(0, std::sync::atomic::Ordering::Release);
+            provider.fault_history.write().await.clear();
             (
                 StatusCode::OK,
                 format!("Provider '{}' reset to healthy", name),

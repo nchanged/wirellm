@@ -12,7 +12,7 @@ use serde_json::Value;
 use reqwest::Url;
 
 use wirellm_core::config::VirtualModelTarget;
-use wirellm_core::state::{AppState, CircuitState, ProviderState};
+use wirellm_core::state::{AppState, CircuitState, FaultHistogram, ProviderState};
 use wirellm_core::telemetry::TelemetryClient;
 
 use crate::admin;
@@ -89,6 +89,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let p2 = ProviderState {
@@ -113,6 +119,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut virtual_models = std::collections::HashMap::new();
@@ -212,6 +224,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut virtual_models = std::collections::HashMap::new();
@@ -315,6 +333,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let p2 = ProviderState {
@@ -339,6 +363,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let strategy = AdaptivePriorityStrategy;
@@ -400,6 +430,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let p1 = make_provider("p1");
@@ -515,6 +551,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let p2 = ProviderState {
@@ -539,6 +581,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut virtual_models = std::collections::HashMap::new();
@@ -641,6 +689,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut virtual_models = std::collections::HashMap::new();
@@ -759,6 +813,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut virtual_models = std::collections::HashMap::new();
@@ -851,6 +911,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mut vm = std::collections::HashMap::new();
         vm.insert(
@@ -933,6 +999,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut vms = std::collections::HashMap::new();
@@ -1028,6 +1100,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut vms = std::collections::HashMap::new();
@@ -1123,6 +1201,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mut vm = std::collections::HashMap::new();
         vm.insert(
@@ -1588,6 +1672,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut vms = std::collections::HashMap::new();
@@ -1713,6 +1803,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let mut vms = std::collections::HashMap::new();
@@ -2052,6 +2148,12 @@ use crate::server::*;
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
         let app_state = Arc::new(AppState {

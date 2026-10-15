@@ -48,8 +48,27 @@ pub struct ProviderRuntimeDetail {
     pub min_interval_ms: Option<u64>,
     pub is_burst_limited: bool,
     pub in_flight: u32,
+    pub recent_faults: u32,
+    pub breathing_room_secs: u64,
+    pub auto_disabled_reason: Option<String>,
     pub has_encrypted_key: bool,
     pub key_preview: String,
+}
+
+/// Normalizes provider headers and auto-populates OpenCode routing headers.
+/// Providers pointing at OpenCode Zen / Go gateways get `x-opencode-session`
+/// automatically so upstreams can route them efficiently. The value may be a
+/// Vault/env template like `${OPENCODE_SESSION_ID}` and is expanded at request time.
+pub fn normalize_provider_headers(base_url: &str, headers: &mut HashMap<String, String>) {
+    let is_opencode_zen = base_url.contains("opencode.ai/zen");
+    if is_opencode_zen
+        && !headers.keys().any(|k| k.eq_ignore_ascii_case("x-opencode-session"))
+    {
+        headers.insert(
+            "x-opencode-session".to_string(),
+            "${OPENCODE_SESSION_ID}".to_string(),
+        );
+    }
 }
 
 #[derive(Deserialize)]
@@ -146,6 +165,8 @@ pub async fn build_status_response(
             is_rpm_capped,
             is_burst,
             in_fl,
+            recent_faults,
+            auto_disabled_reason,
         ) = if let Some(p) = rt {
             let circ = *p.circuit.read().await;
             let c_str = match circ {
@@ -205,6 +226,8 @@ pub async fn build_status_response(
                 capped,
                 burst,
                 inflight,
+                p.fault_history.read().await.len() as u32,
+                p.auto_disabled().await,
             )
         } else {
             (
@@ -220,6 +243,8 @@ pub async fn build_status_response(
                 false,
                 false,
                 0,
+                0,
+                None,
             )
         };
 
@@ -249,6 +274,9 @@ pub async fn build_status_response(
             min_interval_ms: summary.min_interval_ms,
             is_burst_limited: is_burst,
             in_flight: in_fl,
+            recent_faults,
+            breathing_room_secs: rate_limited_until_secs.unwrap_or(0),
+            auto_disabled_reason,
             has_encrypted_key: summary.has_encrypted_key,
             key_preview: summary.key_preview,
         });
@@ -293,8 +321,9 @@ pub async fn list_providers(
 /// POST /api/providers - Add a new provider and hot-reload
 pub async fn create_provider(
     State(reloadable): State<ReloadableState>,
-    Json(input): Json<ProviderInput>,
+    Json(mut input): Json<ProviderInput>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    normalize_provider_headers(&input.base_url, &mut input.headers);
     reloadable
         .db
         .upsert_provider(
@@ -334,6 +363,7 @@ pub async fn update_provider(
     Json(mut input): Json<ProviderInput>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     input.name = name.clone();
+    normalize_provider_headers(&input.base_url, &mut input.headers);
     reloadable
         .db
         .upsert_provider(

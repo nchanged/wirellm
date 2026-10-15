@@ -35,6 +35,11 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                 continue;
             }
 
+            // Check for auto-disabled (severed upstream: model removed/EOL/404)
+            if provider.auto_disabled_reason.read().await.is_some() {
+                continue;
+            }
+
             // 1. Dynamic Idle Penalty Decay (Aging)
             {
                 let mut failures = provider.consecutive_failures.write().await;
@@ -183,6 +188,12 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
             let mut rl = provider.rate_limited_until.write().await;
             *rl = None;
 
+            // Deflate the breathing window: a healthy response evaporates the
+            // oldest fault so recovery is picked up quickly. A healthy model
+            // also forgives severed-strike history.
+            provider.record_overload_success().await;
+            provider.severed_strikes.store(0, Ordering::Relaxed);
+
             if is_probe {
                 provider.probe_in_flight.store(false, Ordering::SeqCst);
                 info!(
@@ -208,28 +219,87 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
             if status_code == Some(429) {
                 // Rate-limited: extract or apply default backoff
                 let cooldown = retry_after.unwrap_or_else(|| Duration::from_secs(10)); // 10s default fallback
+                let candidate = now + cooldown;
                 let mut rl = provider.rate_limited_until.write().await;
-                *rl = Some(now + cooldown);
+                // Keep the longest window: a Retry-After must not shorten an
+                // outstanding overload breath, and vice versa
+                if rl.map_or(true, |until| until < candidate) {
+                    *rl = Some(candidate);
+                }
                 info!(
                     target: "wirellm_core::router",
                     "Rate-limited {} for {}s",
                     provider.name, cooldown.as_secs()
                 );
-            } else if *failures >= 3 || is_probe {
-                // Tripped or failed probe: trigger exponential circuit cooldown
-                let exponent = failures.saturating_sub(3) as u32;
-                let multiplier = 2u64.pow(exponent);
-                let cooldown = Duration::from_secs(60 * multiplier);
-
-                let mut state = provider.circuit.write().await;
-                *state = CircuitState::Open {
-                    until: now + cooldown,
+            } else if matches!(status_code, Some(404) | Some(410)) {
+                // Severed upstream: the model is gone for good (EOL'd, removed
+                // or misconfigured). Auto-disable after TWO strikes so a single
+                // transient 404 (deploy blip, relay misroute) can't hard-kill
+                // the provider; the dashboard highlights it until an admin
+                // clears it.
+                let strikes = provider.severed_strikes.fetch_add(1, Ordering::Relaxed) + 1;
+                if strikes >= 2 {
+                    let reason = format!(
+                        "model unavailable upstream (HTTP {}, {} strikes)",
+                        status_code.unwrap(),
+                        strikes
+                    );
+                    *provider.auto_disabled_reason.write().await = Some(reason);
+                    info!(
+                        target: "wirellm_core::router",
+                        "Auto-disabled {} — {}. Manual re-enable required.",
+                        provider.name,
+                        provider.auto_disabled_reason.read().await.clone().unwrap_or_default()
+                    );
+                } else {
+                    info!(
+                        target: "wirellm_core::router",
+                        "Severed response (HTTP {}) from {} — strike {}/2 before auto-disable",
+                        status_code.unwrap(), provider.name, strikes
+                    );
+                }
+            } else {
+                // Capacity errors (5xx) and connection failures: adaptive
+                // breathing room — stop hammering a saturated upstream while
+                // still trying again soon.
+                let capacity_error = match status_code {
+                    Some(c) => c >= 500,
+                    None => true,
                 };
-                info!(
-                    target: "wirellm_core::router",
-                    "Circuit opened for {} for {}s ({} consecutive failures)",
-                    provider.name, cooldown.as_secs(), *failures
-                );
+                if capacity_error {
+                    let cooldown = provider.record_overload_fault(now).await;
+                    let candidate = now + cooldown;
+                    let mut rl = provider.rate_limited_until.write().await;
+                    // Never shorten an active skip window (a 429 Retry-After
+                    // may be longer than this breath, and it's upstream-authoritative)
+                    if rl.map_or(true, |until| until < candidate) {
+                        *rl = Some(candidate);
+                    }
+                    info!(
+                        target: "wirellm_core::router",
+                        "Overloaded {}; breathing room {}s ({} recent faults)",
+                        provider.name,
+                        cooldown.as_secs(),
+                        provider.fault_history.read().await.len()
+                    );
+                }
+
+                // Tripped or failed probe: trigger exponential circuit cooldown
+                if *failures >= 3 || is_probe {
+                    let exponent = failures.saturating_sub(3) as u32;
+                    let multiplier = 2u64.pow(exponent);
+                    let cooldown = Duration::from_secs(60 * multiplier);
+
+                    let mut state = provider.circuit.write().await;
+                    *state = CircuitState::Open {
+                        until: now + cooldown,
+                    };
+                    info!(
+                        target: "wirellm_core::router",
+                        "Circuit opened for {} for {}s ({} consecutive failures)",
+                        provider.name, cooldown.as_secs(), *failures
+                    );
+                }
             }
 
             if is_probe {
@@ -271,6 +341,12 @@ mod tests {
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(crate::state::FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
@@ -431,6 +507,172 @@ mod tests {
         // Request 2 (fired immediately after): prov1 is burst-limited, so it proactively falls over to prov2!
         let s2 = strategy.select(&candidates).await.expect("Select candidate 2");
         assert_eq!(s2.name, "prov2");
+    }
+
+    #[tokio::test]
+    async fn test_overload_breathing_room_grows_under_burst() {
+        let p = setup_provider("prov1");
+        let strategy = AdaptivePriorityStrategy;
+
+        // Rapid 503 burst: each fault gets a deeper breathing window than the last
+        let mut last = 0u64;
+        for expected_min in [10u64, 20, 35] {
+            strategy.feedback(&p, false, false, Some(503), None).await;
+            let secs = p.last_overload_cooldown_ms.load(Ordering::Relaxed) / 1000;
+            assert!(secs >= expected_min, "expected >= {}s, got {}s", expected_min, secs);
+            assert!(secs > last, "breathing room must grow under burst: {} -> {}", last, secs);
+            assert!(secs <= 300, "must never exceed the 5-minute cap");
+            last = secs;
+        }
+
+        // Selection must skip the provider while breathing
+        let candidates = vec![&p];
+        assert!(strategy.select(&candidates).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_diurnal_busy_hour_extends_first_fault() {
+        let p = setup_provider("prov1");
+        let strategy = AdaptivePriorityStrategy;
+
+        // Simulate a historically busy UTC hour (3 faults already known)
+        let hour = crate::state::utc_hour_of_day();
+        p.diurnal.bump(hour);
+        p.diurnal.bump(hour);
+        p.diurnal.bump(hour);
+
+        // First fault in that hour breathes deeper than the 10s floor
+        // ("historical" excludes the fault being recorded)
+        strategy.feedback(&p, false, false, Some(500), None).await;
+        let secs = p.last_overload_cooldown_ms.load(Ordering::Relaxed) / 1000;
+        assert!(secs > 10, "busy hour must breathe deeper than the floor: {}s", secs);
+        assert!(secs <= 300);
+    }
+
+    #[tokio::test]
+    async fn test_quiet_hour_first_fault_gets_exact_floor() {
+        let p = setup_provider("prov1");
+        let strategy = AdaptivePriorityStrategy;
+
+        // No history in this hour → the very first fault gets exactly 10s
+        strategy.feedback(&p, false, false, Some(500), None).await;
+        let secs = p.last_overload_cooldown_ms.load(Ordering::Relaxed) / 1000;
+        assert_eq!(secs, 10, "quiet hour first fault must be exactly the floor");
+    }
+
+    #[tokio::test]
+    async fn test_diurnal_fades_over_elapsed_hours() {
+        let p = setup_provider("prov1");
+        let hour_now = crate::state::utc_epoch_hour();
+        let bucket = hour_now % 24;
+
+        p.diurnal.bump(bucket);
+        p.diurnal.bump(bucket);
+        p.diurnal.bump(bucket);
+        assert_eq!(p.diurnal.get(bucket), 3);
+
+        // A past epoch hour must NOT rewind or decay
+        p.diurnal.tick_and_decay(hour_now.saturating_sub(2));
+        assert_eq!(p.diurnal.get(bucket), 3, "past ticks must not decay");
+
+        // A future epoch hour triggers catch-up decay (2 hours: 3 → 2 → 1)
+        p.diurnal.tick_and_decay(hour_now + 2);
+        assert!(p.diurnal.get(bucket) < 3, "future tick must decay: {}", p.diurnal.get(bucket));
+        assert!(p.diurnal.get(bucket) >= 1, "must not over-decay: {}", p.diurnal.get(bucket));
+    }
+
+    #[tokio::test]
+    async fn test_breathing_never_shortens_auth_window() {
+        let p = setup_provider("prov1");
+        let strategy = AdaptivePriorityStrategy;
+
+        // Upstream-authoritative 429 with a long Retry-After
+        strategy
+            .feedback(&p, false, false, Some(429), Some(Duration::from_secs(60)))
+            .await;
+        let long_window = p.rate_limited_until.read().await.unwrap();
+
+        // A 503 must NOT shorten the outstanding window
+        strategy.feedback(&p, false, false, Some(503), None).await;
+        let after = p.rate_limited_until.read().await.unwrap();
+        assert!(
+            after >= long_window,
+            "5xx breathing must not shorten an active Retry-After window"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_client_errors_do_not_breathe() {
+        let p = setup_provider("prov1");
+        let strategy = AdaptivePriorityStrategy;
+
+        // 400 Bad Request is not a capacity signal: no breathing, no faults recorded
+        strategy.feedback(&p, false, false, Some(400), None).await;
+        assert!(p.rate_limited_until.read().await.is_none());
+        assert!(p.fault_history.read().await.is_empty());
+        assert!(p.auto_disabled_reason.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_severed_requires_two_strikes() {
+        let p1 = setup_provider("dead");
+        let p2 = setup_provider("fallback");
+        let candidates = vec![&p1, &p2];
+        let strategy = AdaptivePriorityStrategy;
+
+        // First 404: strike 1 — provider stays routable (transient blips happen)
+        strategy.feedback(&p1, false, false, Some(404), None).await;
+        assert!(p1.auto_disabled_reason.read().await.is_none());
+        assert_eq!(strategy.select(&candidates).await.unwrap().name, "dead");
+
+        // Second 404: strike 2 — hard auto-disable, instant failover
+        strategy.feedback(&p1, false, false, Some(404), None).await;
+        assert!(p1.auto_disabled_reason.read().await.is_some());
+        assert_eq!(strategy.select(&candidates).await.unwrap().name, "fallback");
+    }
+
+    #[tokio::test]
+    async fn test_severed_model_auto_disables_provider() {
+        let p1 = setup_provider("dead");
+        let p2 = setup_provider("fallback");
+        let candidates = vec![&p1, &p2];
+        let strategy = AdaptivePriorityStrategy;
+
+        // Upstream EOL'd the model (HTTP 410)
+        strategy.feedback(&p1, false, false, Some(410), None).await;
+        strategy.feedback(&p1, false, false, Some(410), None).await;
+
+        let reason = p1.auto_disabled_reason.read().await.clone();
+        assert!(reason.is_some());
+        assert!(reason.unwrap().contains("410"));
+
+        // Routing skips the severed provider entirely
+        let selected = strategy.select(&candidates).await.unwrap();
+        assert_eq!(selected.name, "fallback");
+    }
+
+    #[tokio::test]
+    async fn test_success_deflates_fault_window() {
+        let p = setup_provider("prov1");
+        let strategy = AdaptivePriorityStrategy;
+
+        strategy.feedback(&p, false, false, Some(503), None).await;
+        strategy.feedback(&p, false, false, Some(503), None).await;
+        assert_eq!(p.fault_history.read().await.len(), 2);
+
+        strategy.feedback(&p, true, false, Some(200), None).await;
+        assert_eq!(p.fault_history.read().await.len(), 1);
+        assert!(p.rate_limited_until.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auto_disabled_provider_never_selected() {
+        let p = setup_provider("prov1");
+        *p.auto_disabled_reason.write().await = Some("model unavailable upstream (HTTP 404)".to_string());
+
+        let strategy = AdaptivePriorityStrategy;
+        let candidates = vec![&p];
+        assert!(strategy.select(&candidates).await.is_none());
     }
 }
 

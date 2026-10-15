@@ -1,16 +1,120 @@
 use crate::config::VirtualModelTarget;
+use crate::db::DbManager;
 use reqwest::Url;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+
+/// Rolling window used to count recent overload faults (how bursty the upstream is right now).
+pub const FAULT_WINDOW_SECS: u64 = 600;
+/// Breathing room (seconds) applied after the first fault of a window.
+pub const OVERLOAD_BASE_COOLDOWN_SECS: u64 = 10;
+/// Upper bound on any single breathing window.
+pub const OVERLOAD_MAX_COOLDOWN_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
     Closed,
     Open { until: Instant },
     HalfOpen,
+}
+
+/// Per-provider, per-UTC-hour overload histogram ("diurnal load memory").
+/// Bucket counts fade ~5% every hour so stale patterns (e.g. "NVIDIA is busy
+/// during US afternoon") stop influencing breathing room after a quiet day.
+pub struct FaultHistogram {
+    buckets: [AtomicU64; 24],
+    last_decay_epoch_hour: AtomicU64,
+}
+
+impl std::fmt::Debug for FaultHistogram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot: Vec<u64> = (0..24).map(|h| {
+            self.buckets[(h % 24) as usize].load(std::sync::atomic::Ordering::Relaxed)
+        }).collect();
+        f.debug_tuple("FaultHistogram").field(&snapshot).finish()
+    }
+}
+
+impl FaultHistogram {
+    pub fn new() -> Self {
+        Self {
+            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            last_decay_epoch_hour: AtomicU64::new(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs() / 3600)
+                    .unwrap_or(0),
+            ),
+        }
+    }
+
+    /// Fades all buckets by ~5% per elapsed UTC hour (catching up missed hours,
+    /// capped at 48h of fade) so old patterns decay. Latches on EPOCH hours.
+    pub fn tick_and_decay(&self, epoch_hour: u64) {
+        let last = self.last_decay_epoch_hour.load(Ordering::Relaxed);
+        if epoch_hour > last
+            && self
+                .last_decay_epoch_hour
+                .compare_exchange(last, epoch_hour, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            // Note: a bucket holding a single fault fades to 0 after one hour
+            // (integer decay) — short-lived noise should not endure.
+            let missed = (epoch_hour - last).min(48);
+            for _ in 0..missed {
+                for b in &self.buckets {
+                    let v = b.load(Ordering::Relaxed);
+                    if v > 0 {
+                        // (v * 19 / 20) = 5% fade per hour
+                        b.store(v * 19 / 20, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Increments the bucket for `hour` and returns the new value.
+    pub fn bump(&self, hour: u64) -> u64 {
+        let b = &self.buckets[(hour % 24) as usize];
+        b.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn get(&self, hour: u64) -> u64 {
+        self.buckets[(hour % 24) as usize].load(Ordering::Relaxed)
+    }
+
+    pub fn snapshot(&self) -> [u64; 24] {
+        std::array::from_fn(|i| self.buckets[i].load(Ordering::Relaxed))
+    }
+
+    /// Restores persisted bucket values (from the server_settings store).
+    pub fn restore(&self, vals: &[u64; 24]) {
+        for (b, v) in self.buckets.iter().zip(vals) {
+            b.store(*v, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Default for FaultHistogram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Current unix-epoch hour (latch/decay timeline — total ordering, no wraparound).
+pub fn utc_epoch_hour() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() / 3600)
+        .unwrap_or(0)
+}
+
+/// Current UTC hour of day (0..23) — the diurnal bucket index.
+pub fn utc_hour_of_day() -> u64 {
+    utc_epoch_hour() % 24
 }
 
 #[derive(Debug)]
@@ -46,6 +150,21 @@ pub struct ProviderState {
     pub in_flight: Arc<AtomicU32>,
     pub request_timestamps: Arc<RwLock<VecDeque<Instant>>>,
     pub last_request_time: Arc<RwLock<Option<Instant>>>,
+
+    // Adaptive overload protection ("breathing room")
+    // Recent 5xx/connection faults — used to size the breathing window geometrically
+    pub fault_history: Arc<RwLock<VecDeque<Instant>>>,
+    // Last computed breathing window (ms), for dashboards
+    pub last_overload_cooldown_ms: Arc<AtomicU64>,
+    // Per-UTC-hour fault memory — busy hours (e.g. NVIDIA US-afternoon) breathe deeper
+    pub diurnal: Arc<FaultHistogram>,
+    // Optional DB handle to persist the diurnal histogram across restarts
+    pub fault_pattern_store: Option<Arc<DbManager>>,
+    // Severed upstream (model removed/EOL/misconfigured, e.g. HTTP 404/410):
+    // provider is skipped in routing until an admin clears the reason.
+    // Two strikes required so a single transient 404 can't hard-kill a provider.
+    pub auto_disabled_reason: Arc<RwLock<Option<String>>>,
+    pub severed_strikes: Arc<AtomicU32>,
 }
 
 impl ProviderState {
@@ -120,6 +239,70 @@ impl ProviderState {
             let mut last_req = self.last_request_time.write().await;
             *last_req = Some(now);
         }
+    }
+
+    /// Returns the auto-disable reason when the provider's model is severed
+    /// upstream (removed/EOL/misconfigured), making it skip routing entirely.
+    pub async fn auto_disabled(&self) -> Option<String> {
+        self.auto_disabled_reason.read().await.clone()
+    }
+
+    /// Records an overload fault (HTTP 5xx or connection failure) and returns
+    /// the adaptive breathing window:
+    ///
+    ///   breathing = BASE(10s) × 2^(faults_in_10min_window − 1) × diurnal_factor
+    ///   diurnal_factor = 1 + min(historical_faults_this_hour, 8) × 0.35
+    ///
+    /// Rapid overload bursts stretch geometrically toward the 5-minute cap;
+    /// a first fault in a typically-busy UTC hour already breathes deeper than
+    /// the floor; a first fault in a quiet hour gets exactly the 10s floor
+    /// ("historical" excludes the fault being recorded).
+    pub async fn record_overload_fault(&self, now: Instant) -> Duration {
+        // Evict + push + count under a single guard (the count feeds the
+        // geometric exponent — must not race with concurrent burst faults)
+        let recent_faults = {
+            let window = Duration::from_secs(FAULT_WINDOW_SECS);
+            let mut hist = self.fault_history.write().await;
+            while let Some(front) = hist.front() {
+                if now.saturating_duration_since(*front) > window {
+                    hist.pop_front();
+                } else {
+                    break;
+                }
+            }
+            hist.push_back(now);
+            hist.len() as u64
+        };
+
+        let epoch_hour = utc_epoch_hour();
+        self.diurnal.tick_and_decay(epoch_hour);
+        let hour = epoch_hour % 24;
+        let historical = self.diurnal.get(hour);
+        self.diurnal.bump(hour);
+
+        let recency = 1u64 << (recent_faults.saturating_sub(1)).min(5); // 1×..32×
+        let diurnal_factor = 1.0 + (historical.min(8) as f64) * 0.35; // 1×..~3.8×
+        let secs =
+            ((OVERLOAD_BASE_COOLDOWN_SECS as f64) * recency as f64 * diurnal_factor).round() as u64;
+        let secs = secs.max(1).min(OVERLOAD_MAX_COOLDOWN_SECS);
+
+        self.last_overload_cooldown_ms
+            .store(secs * 1000, Ordering::Relaxed);
+
+        // Persist the diurnal memory so patterns survive daemon restarts
+        if let Some(store) = &self.fault_pattern_store {
+            let _ = store.save_provider_fault_pattern(&self.name, &self.diurnal.snapshot());
+        }
+
+        Duration::from_secs(secs)
+    }
+
+    /// Success-side deflation: evaporate the oldest fault from the window so a
+    /// recovered provider stops growing its breathing room (the diurnal
+    /// histogram keeps the long-term memory via its own hourly fade).
+    pub async fn record_overload_success(&self) {
+        let mut hist = self.fault_history.write().await;
+        hist.pop_front();
     }
 }
 

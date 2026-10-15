@@ -1,5 +1,5 @@
 use wirellm_core::router::{AdaptivePriorityStrategy, RoutingStrategy};
-use wirellm_core::state::{CircuitState, ProviderState};
+use wirellm_core::state::{CircuitState, FaultHistogram, ProviderState};
 use reqwest::Url;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
@@ -33,6 +33,12 @@ async fn test_routing_loop_latency_performance() {
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         });
     }
 

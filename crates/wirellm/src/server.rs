@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use wirellm_core::config::Config;
 use wirellm_core::db::{get_wirellm_home, DbManager};
-use wirellm_core::state::{AppState, CircuitState, ProviderState};
+use wirellm_core::state::{AppState, CircuitState, FaultHistogram, ProviderState};
 use wirellm_core::telemetry::{TelemetryClient, TelemetryWorker};
 
 use crate::admin;
@@ -101,7 +101,7 @@ impl Reloader {
             }
         }
         config.validate().map_err(|e| format!("Config validation failed: {}", e))?;
-        let new_state = build_app_state(config)?;
+        let new_state = build_app_state(config, self.db.clone())?;
         self.sender
             .send(Arc::new(new_state))
             .map_err(|e| format!("Failed to update watch channel: {}", e))?;
@@ -233,7 +233,7 @@ impl axum::extract::FromRef<ReloadableState> for Reloader {
     }
 }
 
-pub fn build_app_state(config: Config) -> Result<AppState, String> {
+pub fn build_app_state(config: Config, db: Arc<DbManager>) -> Result<AppState, String> {
     let mut providers = Vec::new();
     for p in config.providers {
         if !p.enabled {
@@ -249,6 +249,12 @@ pub fn build_app_state(config: Config) -> Result<AppState, String> {
                 p.base_url, p.name, e
             )
         })?;
+
+        // Restore the persisted per-hour fault memory for this provider
+        let diurnal = FaultHistogram::new();
+        if let Ok(Some(saved)) = db.load_provider_fault_pattern(&p.name) {
+            diurnal.restore(&saved);
+        }
 
         providers.push(ProviderState {
             name: p.name,
@@ -272,6 +278,12 @@ pub fn build_app_state(config: Config) -> Result<AppState, String> {
             in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             request_timestamps: Arc::new(RwLock::new(std::collections::VecDeque::new())),
             last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(AtomicU64::new(0)),
+            diurnal: Arc::new(diurnal),
+            fault_pattern_store: Some(db.clone()),
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         });
     }
 
@@ -609,7 +621,7 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
     }
 
     // 2. Build initial AppState
-    let app_state = Arc::new(build_app_state(config.clone())?);
+    let app_state = Arc::new(build_app_state(config.clone(), db.clone())?);
 
     // 3. Initialize watch channel
     let (watch_sender, watch_receiver) = tokio::sync::watch::channel(app_state.clone());
@@ -697,6 +709,12 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         )
         .route("/mcp/sse", get(mcp::mcp_sse_handler))
         .route("/mcp/messages", post(mcp::mcp_messages_handler))
+        .route(
+            "/mcp",
+            post(mcp::mcp_streamable_post_handler)
+                .get(mcp::mcp_streamable_get_handler)
+                .delete(mcp::mcp_streamable_delete_handler),
+        )
         .layer(middleware::from_fn_with_state(
             reloadable_state.clone(),
             crate::auth::require_api_auth,
