@@ -37,6 +37,9 @@ pub async fn list_models(State(app_state): State<Arc<AppState>>) -> impl IntoRes
                 .find(|p| p.name == target.provider)
             {
                 // Check if provider is healthy (Closed, or expired cooldown ready for HalfOpen)
+                if provider.auto_disabled_reason.read().await.is_some() {
+                    continue;
+                }
                 let circuit = *provider.circuit.read().await;
                 let is_tripped = match circuit {
                     CircuitState::Closed | CircuitState::HalfOpen => false,
@@ -70,6 +73,9 @@ pub async fn list_models(State(app_state): State<Arc<AppState>>) -> impl IntoRes
     let mut seen_models: std::collections::HashSet<String> = data.iter().map(|m| m.id.clone()).collect();
     for provider in &app_state.providers {
         if provider.manual_disabled.load(std::sync::atomic::Ordering::Relaxed) {
+            continue;
+        }
+        if provider.auto_disabled_reason.read().await.is_some() {
             continue;
         }
         let circuit = *provider.circuit.read().await;

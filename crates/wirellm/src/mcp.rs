@@ -1,4 +1,5 @@
 use axum::extract::{Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::{
     sse::{Event, KeepAlive, Sse},
     IntoResponse, Json,
@@ -10,6 +11,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 use wirellm_core::config::VirtualModelTarget;
+use wirellm_core::state::CircuitState;
 
 use crate::ReloadableState;
 
@@ -57,15 +59,15 @@ pub async fn mcp_sse_handler() -> impl IntoResponse {
     )
 }
 
-/// POST /mcp/messages - Handles JSON-RPC 2.0 messages from MCP clients
-pub async fn mcp_messages_handler(
-    State(reloadable): State<ReloadableState>,
-    Query(_query): Query<McpQuery>,
-    Json(payload): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
+/// Core JSON-RPC dispatch shared by the legacy (/mcp/messages) and streamable (/mcp) transports.
+/// Returns None for notifications (JSON-RPC messages without an id).
+async fn process_jsonrpc(
+    reloadable: ReloadableState,
+    payload: JsonRpcRequest,
+) -> Option<JsonRpcResponse> {
     let req_id = payload.id.clone();
 
-    match payload.method.as_str() {
+    let response = match payload.method.as_str() {
         "initialize" => {
             let res = json!({
                 "protocolVersion": "2024-11-05",
@@ -77,19 +79,19 @@ pub async fn mcp_messages_handler(
                     "version": "0.2.0"
                 }
             });
-            Json(JsonRpcResponse {
+            JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 id: req_id,
                 result: Some(res),
                 error: None,
-            })
+            }
         },
-        "notifications/initialized" => Json(JsonRpcResponse {
+        "notifications/initialized" => JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: req_id,
             result: Some(json!({"status": "acknowledged"})),
             error: None,
-        }),
+        },
         "tools/list" => {
             let tools = json!({
                 "tools": [
@@ -125,7 +127,8 @@ pub async fn mcp_messages_handler(
                                 "rpm": { "type": "integer", "description": "Optional rate limit in requests per minute" },
                                 "min_interval_ms": { "type": "integer", "description": "Optional proactive burst spacing in milliseconds" },
                                 "max_concurrency": { "type": "integer", "description": "Optional maximum concurrent requests" },
-                                "smartness_score": { "type": "integer", "description": "Optional model intelligence score (0-100)" }
+                                "smartness_score": { "type": "integer", "description": "Optional model intelligence score (0-100)" },
+                                "headers": { "type": "object", "description": "Optional custom HTTP headers sent to the upstream (values may be Vault/env templates like ${VAR}). Providers on opencode.ai/zen automatically get x-opencode-session." }
                             }
                         }
                     },
@@ -206,6 +209,33 @@ pub async fn mcp_messages_handler(
                         }
                     },
                     {
+                        "name": "wirellm_test_virtual_model",
+                        "description": "Fire a probe chat completion through a virtual model ladder (or direct model ID) via the gateway itself. Reports which provider served the request, latency, finish reason, and reply text without modifying any state.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": { "type": "string", "description": "Virtual model alias (e.g. coder, openviking) or concrete model ID (e.g. gemini-2.5-flash)" },
+                                "prompt": { "type": "string", "description": "Optional probe prompt (default 'Say OK')" },
+                                "max_tokens": { "type": "integer", "description": "Optional probe max_tokens (default 64)" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_test_provider",
+                        "description": "Fire a probe chat completion DIRECTLY against one provider (not a ladder) to verify its configuration and measure real generation latency. Reports status, latency, reply text, and errors. State-safe.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": { "type": "string", "description": "Provider name (e.g. gemini-flash, nvidia-nemotron-lightning)" },
+                                "model": { "type": "string", "description": "Optional concrete model ID (default: provider's first model)" },
+                                "prompt": { "type": "string", "description": "Optional probe prompt (default 'Say OK')" },
+                                "max_tokens": { "type": "integer", "description": "Optional probe max_tokens (default 16)" }
+                            }
+                        }
+                    },
+                    {
                         "name": "wirellm_get_setup_recommendations",
                         "description": "Get recommended setup configurations, always-free providers (NVIDIA NIM, Groq, OpenRouter), budget options (DeepSeek), model capability ratings, rate limit pacing, and virtual model fallback ladders (coder, planner, orchestrator) as structured markdown and guidance.",
                         "inputSchema": {
@@ -281,12 +311,12 @@ pub async fn mcp_messages_handler(
                     }
                 ]
             });
-            Json(JsonRpcResponse {
+            JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 id: req_id,
                 result: Some(tools),
                 error: None,
-            })
+            }
         },
         "tools/call" => {
             let params = payload.params.unwrap_or(json!({}));
@@ -295,7 +325,7 @@ pub async fn mcp_messages_handler(
 
             let tool_output = handle_tool_call(tool_name, args, &reloadable).await;
             match tool_output {
-                Ok(content_str) => Json(JsonRpcResponse {
+                Ok(content_str) => JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: req_id,
                     result: Some(json!({
@@ -307,8 +337,8 @@ pub async fn mcp_messages_handler(
                         ]
                     })),
                     error: None,
-                }),
-                Err(err_msg) => Json(JsonRpcResponse {
+                },
+                Err(err_msg) => JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     id: req_id,
                     result: None,
@@ -316,10 +346,10 @@ pub async fn mcp_messages_handler(
                         "code": -32000,
                         "message": err_msg
                     })),
-                }),
+                },
             }
         },
-        other => Json(JsonRpcResponse {
+        other => JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
             id: req_id,
             result: None,
@@ -327,8 +357,61 @@ pub async fn mcp_messages_handler(
                 "code": -32601,
                 "message": format!("Method not found: {}", other)
             })),
+        },
+    };
+
+    if payload.id.is_some() {
+        Some(response)
+    } else {
+        None
+    }
+}
+
+/// POST /mcp/messages - Legacy HTTP+SSE transport message endpoint (responses inline).
+pub async fn mcp_messages_handler(
+    State(reloadable): State<ReloadableState>,
+    Query(_query): Query<McpQuery>,
+    Json(payload): Json<JsonRpcRequest>,
+) -> impl IntoResponse {
+    match process_jsonrpc(reloadable, payload).await {
+        Some(resp) => Json(resp),
+        None => Json(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: Some(json!({ "status": "acknowledged" })),
+            error: None,
         }),
     }
+}
+
+/// POST /mcp - Streamable HTTP transport: single JSON response per POST, 202 for notifications.
+pub async fn mcp_streamable_post_handler(
+    State(reloadable): State<ReloadableState>,
+    Query(_query): Query<McpQuery>,
+    Json(payload): Json<JsonRpcRequest>,
+) -> impl IntoResponse {
+    match process_jsonrpc(reloadable, payload).await {
+        Some(resp) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            Json(serde_json::to_value(resp).unwrap_or_else(|_| json!({}))),
+        ),
+        None => (
+            StatusCode::ACCEPTED,
+            [(header::CONTENT_TYPE, "application/json")],
+            Json(json!({})),
+        ),
+    }
+}
+
+/// GET /mcp - no SSE upgrade on the streamable transport; reply with the allowed methods.
+pub async fn mcp_streamable_get_handler() -> impl IntoResponse {
+    (StatusCode::METHOD_NOT_ALLOWED, [("Allow", "POST, DELETE")])
+}
+
+/// DELETE /mcp - stateless server; session termination is always acknowledged.
+pub async fn mcp_streamable_delete_handler() -> impl IntoResponse {
+    StatusCode::OK
 }
 
 async fn handle_tool_call(
@@ -344,10 +427,43 @@ async fn handle_tool_call(
                 .get_provider_summaries()
                 .map_err(|e| e.to_string())?;
 
+            let mut value = json!(summaries);
+            // Merge live routing state (circuit, breathing room, auto-disable) into each row
+            if let Some(arr) = value.as_array_mut() {
+                let now = std::time::Instant::now();
+                for item in arr.iter_mut() {
+                    let name: Option<String> = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let rt = name
+                        .as_deref()
+                        .and_then(|nm| app_state.providers.iter().find(|p| p.name == nm));
+                    if let Some(rt) = rt {
+                        let circ = *rt.circuit.read().await;
+                        item["circuit"] = json!(match circ {
+                            CircuitState::Closed => "Closed (Healthy)".to_string(),
+                            CircuitState::HalfOpen => "Half-Open (Probing)".to_string(),
+                            CircuitState::Open { until } => format!(
+                                "Open ({}s cooldown left)",
+                                until.saturating_duration_since(now).as_secs()
+                            ),
+                        });
+                        item["recent_faults"] = json!(rt.fault_history.read().await.len());
+                        let rl = *rt.rate_limited_until.read().await;
+                        item["breathing_room_secs"] = json!(match rl {
+                            Some(until) if now < until => until.saturating_duration_since(now).as_secs(),
+                            _ => 0,
+                        });
+                        item["auto_disabled_reason"] = json!(rt.auto_disabled().await);
+                    }
+                }
+            }
+
             let mut out = serde_json::Map::new();
             out.insert("uptime_secs".to_string(), json!(reloadable.start_time.elapsed().as_secs()));
             out.insert("active_provider_count".to_string(), json!(app_state.providers.len()));
-            out.insert("providers".to_string(), json!(summaries));
+            out.insert("providers".to_string(), value);
 
             serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
         },
@@ -388,7 +504,16 @@ async fn handle_tool_call(
                 _ => return Err("Missing 'api_key_template', 'vault_secret', or 'raw_api_key'".to_string()),
             };
 
-            let empty_headers = HashMap::new();
+            let mut provider_headers: HashMap<String, String> = args
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .map(|m| {
+                    m.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            crate::admin::normalize_provider_headers(base_url, &mut provider_headers);
             reloadable
                 .db
                 .upsert_provider(
@@ -397,7 +522,7 @@ async fn handle_tool_call(
                     base_url,
                     &api_key_template,
                     &models,
-                    &empty_headers,
+                    &provider_headers,
                     rpm,
                     min_interval_ms,
                     max_concurrency,
@@ -436,9 +561,14 @@ async fn handle_tool_call(
             let prov_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
             let app_state = reloadable.app_state.borrow().clone();
             if let Some(p) = app_state.providers.iter().find(|p| p.name == prov_name) {
-                *p.circuit.write().await = wirellm_core::state::CircuitState::Closed;
+                // Canonical lock order: consecutive_failures → circuit → rest
                 *p.consecutive_failures.write().await = 0;
+                *p.circuit.write().await = wirellm_core::state::CircuitState::Closed;
                 *p.rate_limited_until.write().await = None;
+                *p.auto_disabled_reason.write().await = None;
+                p.severed_strikes
+                    .store(0, std::sync::atomic::Ordering::Release);
+                p.fault_history.write().await.clear();
                 Ok(format!("Provider '{}' circuit breaker reset to Closed (Healthy)", prov_name))
             } else {
                 Err(format!("Provider '{}' not found in active providers", prov_name))
@@ -554,6 +684,111 @@ async fn handle_tool_call(
                 .map_err(|e| format!("Failed to delete secret from vault: {}", e))?;
             let _ = reloadable.reloader.reload();
             Ok(format!("Secret '{}' removed from Vault", clean_name))
+        },
+        "wirellm_test_virtual_model" => {
+            let model = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name' (virtual model alias or model ID)")?.to_string();
+            let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("Say OK").to_string();
+            let max_tokens = args.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(64);
+
+            let port = reloadable.db.load_config().map_err(|e| e.to_string())?.server.port;
+            let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
+            let body = serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens
+            });
+
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(180))
+                .build()
+                .map_err(|e| e.to_string())?;
+
+            let start = std::time::Instant::now();
+            let res = client.post(&url).json(&body).send().await
+                .map_err(|e| format!("Gateway call failed: {}", e))?;
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let status_code = res.status().as_u16();
+            let payload: serde_json::Value = res.json().await
+                .map_err(|e| format!("Gateway returned non-JSON response: {}", e))?;
+
+            let served_by = payload.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string();
+            let content = payload.pointer("/choices/0/message/content")
+                .and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let finish = payload.pointer("/choices/0/finish_reason")
+                .and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let error = payload.get("error").cloned();
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status_code": status_code,
+                "served_by": served_by,
+                "latency_ms": latency_ms,
+                "finish_reason": finish,
+                "content": content,
+                "error": error,
+            })).map_err(|e| e.to_string())
+        },
+        "wirellm_test_provider" => {
+            let prov_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name' (provider)")?.to_string();
+            let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("Say OK").to_string();
+            let max_tokens = args.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(16);
+
+            let full_config = reloadable.db.load_config().map_err(|e| e.to_string())?;
+            let p_cfg = full_config.providers.into_iter()
+                .find(|p| p.name == prov_name)
+                .ok_or_else(|| format!("Provider '{}' not found", prov_name))?;
+            if !p_cfg.enabled {
+                return Err(format!("Provider '{}' is disabled", prov_name));
+            }
+
+            let model = match args.get("model").and_then(|v| v.as_str()) {
+                Some(m) if !m.trim().is_empty() => m.to_string(),
+                _ => p_cfg.models.first().cloned()
+                    .ok_or_else(|| format!("Provider '{}' has no models configured", prov_name))?,
+            };
+
+            let chat_url = format!("{}/chat/completions", p_cfg.base_url.trim_end_matches('/'));
+            let body = serde_json::json!({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens
+            });
+
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .map_err(|e| e.to_string())?;
+
+            let start = std::time::Instant::now();
+            let mut req = client.post(&chat_url).json(&body);
+            if !p_cfg.api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", p_cfg.api_key));
+            }
+            for (k, v) in &p_cfg.headers {
+                req = req.header(k, v);
+            }
+            let res = req.send().await
+                .map_err(|e| format!("Request to '{}' failed: {} (check base_url/network)", prov_name, e))?;
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let status_code = res.status().as_u16();
+            let payload: serde_json::Value = res.json().await
+                .map_err(|e| format!("Provider returned non-JSON: {}", e))?;
+
+            let served_by = payload.get("model").and_then(|m| m.as_str()).unwrap_or(&model).to_string();
+            let content = payload.pointer("/choices/0/message/content")
+                .and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let finish = payload.pointer("/choices/0/finish_reason")
+                .and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let error = payload.get("error").cloned();
+
+            serde_json::to_string_pretty(&serde_json::json!({
+                "provider": prov_name,
+                "status_code": status_code,
+                "served_by": served_by,
+                "latency_ms": latency_ms,
+                "finish_reason": finish,
+                "content": content,
+                "error": error,
+            })).map_err(|e| e.to_string())
         },
         unknown => Err(format!("Unknown tool: {}", unknown)),
     }

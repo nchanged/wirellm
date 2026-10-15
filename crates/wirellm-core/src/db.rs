@@ -104,6 +104,12 @@ pub struct DbManager {
     db_path: PathBuf,
 }
 
+impl std::fmt::Debug for DbManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbManager").field("db_path", &self.db_path).finish()
+    }
+}
+
 impl DbManager {
     /// Opens the SQLite database at the specified path (or default ~/.oxllm/oxllm.db)
     /// and initializes the schema.
@@ -436,7 +442,18 @@ impl DbManager {
                 .map_err(|e| OxllmError::Internal(e.to_string()))?;
 
             let models: Vec<String> = serde_json::from_str(&models_json).unwrap_or_default();
-            let headers: HashMap<String, String> = serde_json::from_str(&headers_json).unwrap_or_default();
+            let raw_headers: HashMap<String, String> = serde_json::from_str(&headers_json).unwrap_or_default();
+            // Expand ${VAR} header values from central Vault secrets or environment variables.
+            // Unresolvable headers are skipped (with a warning) instead of disabling the provider.
+            let mut headers: HashMap<String, String> = HashMap::new();
+            for (hk, hv) in raw_headers {
+                match self.resolve_secret_template(&hv) {
+                    Ok(v) => { headers.insert(hk, v); }
+                    Err(e) => {
+                        tracing::warn!("Header '{}' for provider '{}' refers to an unresolvable secret ({}); skipping header", hk, name, e);
+                    }
+                }
+            }
 
             // Decrypt raw API key from vault if present, otherwise expand environment variable / vault template
             let (api_key, enabled) = if !encrypted_api_key.trim().is_empty() {
@@ -664,6 +681,44 @@ impl DbManager {
             res.push(r.map_err(|e| OxllmError::Internal(e.to_string()))?);
         }
         Ok(res)
+    }
+
+    /// Persist a provider's per-UTC-hour fault histogram into server_settings
+    /// so the diurnal overload memory survives daemon restarts.
+    pub fn save_provider_fault_pattern(&self, provider: &str, buckets: &[u64; 24]) -> Result<()> {
+        let conn = self.connect()?;
+        let payload = serde_json::to_string(buckets)
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO server_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![format!("diurnal_faults:{}", provider), payload],
+        )
+        .map_err(|e| OxllmError::Internal(format!("Failed to save fault pattern: {}", e)))?;
+        Ok(())
+    }
+
+    /// Loads a provider's persisted per-UTC-hour fault histogram, if any.
+    pub fn load_provider_fault_pattern(&self, provider: &str) -> Result<Option<[u64; 24]>> {
+        let conn = self.connect()?;
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT value FROM server_settings WHERE key = ?1",
+                params![format!("diurnal_faults:{}", provider)],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(OxllmError::Internal(other.to_string())),
+            })?;
+
+        match json {
+            Some(s) => serde_json::from_str::<[u64; 24]>(&s)
+                .map(Some)
+                .map_err(|e| OxllmError::Internal(format!("Corrupt fault pattern: {}", e))),
+            None => Ok(None),
+        }
     }
 
     /// Upserts a provider into SQLite with optional encrypted secret key in vault.
