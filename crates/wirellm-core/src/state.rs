@@ -357,3 +357,73 @@ impl AppState {
         direct_candidates
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GUARANTEE: resolve_candidates returns the virtual model's targets
+    /// exactly in configured ladder order — smartness/weights must never
+    /// reorder the ladder.
+    #[test]
+    fn test_resolve_candidates_preserves_ladder_order() {
+        let mk = |name: &str| ProviderState {
+            name: name.to_string(),
+            base_url: reqwest::Url::parse("http://127.0.0.1/v1/").unwrap(),
+            api_key: "k".to_string(),
+            models: vec!["m".to_string()],
+            headers: HashMap::new(),
+            circuit: Arc::new(RwLock::new(CircuitState::Closed)),
+            consecutive_failures: Arc::new(RwLock::new(0)),
+            rate_limited_until: Arc::new(RwLock::new(None)),
+            last_attempt_time: Arc::new(RwLock::new(None)),
+            probe_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            manual_disabled: std::sync::atomic::AtomicBool::new(false),
+            requests: std::sync::atomic::AtomicU64::new(0),
+            successes: std::sync::atomic::AtomicU64::new(0),
+            tokens_input: std::sync::atomic::AtomicU64::new(0),
+            tokens_output: std::sync::atomic::AtomicU64::new(0),
+            max_rpm: None,
+            min_interval_ms: None,
+            max_concurrency: None,
+            in_flight: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            request_timestamps: Arc::new(RwLock::new(VecDeque::new())),
+            last_request_time: Arc::new(RwLock::new(None)),
+            fault_history: Arc::new(RwLock::new(VecDeque::new())),
+            last_overload_cooldown_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            diurnal: Arc::new(FaultHistogram::new()),
+            fault_pattern_store: None,
+            auto_disabled_reason: Arc::new(RwLock::new(None)),
+            severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        };
+        // Deliberately index providers so protocol-smartness is anti-ordered —
+        // any sort by smartness/brand/latency heuristics would break this test.
+        let a = mk("genius-model");
+        let b = mk("medium-model");
+        let c = mk("tiny-model");
+        let app_state = AppState {
+            providers: vec![a, b, c],
+            virtual_models: [(
+                "ladder".to_string(),
+                vec![
+                    VirtualModelTarget { provider: "tiny-model".to_string(), model: "m".to_string() },
+                    VirtualModelTarget { provider: "genius-model".to_string(), model: "m".to_string() },
+                    VirtualModelTarget { provider: "medium-model".to_string(), model: "m".to_string() },
+                ],
+            )]
+            .into_iter()
+            .collect(),
+            http_client: reqwest::Client::new(),
+            upstream_timeout_secs: 30,
+            auth: Default::default(),
+        };
+
+        let resolved = app_state.resolve_candidates("ladder");
+        let order: Vec<&str> = resolved.iter().map(|(p, _)| p.name.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["tiny-model", "genius-model", "medium-model"],
+            "ladder order must EXACTLY match the configured target order — no smartness reordering"
+        );
+    }
+}
