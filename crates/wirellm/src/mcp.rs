@@ -690,7 +690,16 @@ async fn handle_tool_call(
             let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("Say OK").to_string();
             let max_tokens = args.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(64);
 
-            let port = reloadable.db.load_config().map_err(|e| e.to_string())?.server.port;
+            // Resolve the gateway's ACTUAL listening port the same way the
+            // daemon does: CLI > PORT/WIRELLM_PORT env > server_settings DB
+            // value. Dialing the raw DB port breaks where the runtime applied
+            // an env override (e.g. Kubernetes PORT).
+            let db_port = reloadable.db.load_config().map_err(|e| e.to_string())?.server.port;
+            let port = std::env::var("PORT")
+                .or_else(|_| std::env::var("WIRELLM_PORT"))
+                .ok()
+                .and_then(|p_str| crate::cli::parse_port(&p_str).ok())
+                .unwrap_or(db_port);
             let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
             let body = serde_json::json!({
                 "model": model,

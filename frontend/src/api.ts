@@ -110,10 +110,30 @@ export async function deleteVirtualModel(name: string): Promise<void> {
   }
 }
 
-export async function fetchAnalytics(days = 30): Promise<AnalyticsResponse> {
-  const res = await fetch(`${API_BASE}/api/analytics/daily?days=${days}`);
+export type AnalyticsRange =
+  | { kind: 'days'; days: number }
+  | { kind: 'all' }
+  | { kind: 'range'; from: string; to: string };
+
+function analyticsQuery(opts: AnalyticsRange): string {
+  switch (opts.kind) {
+    case 'days':
+      return `days=${opts.days}`;
+    case 'all':
+      return 'days=0';
+    case 'range': {
+      const fromParams: string[] = [`from=${opts.from}`];
+      if (opts.to) fromParams.push(`to=${encodeURIComponent(opts.to)}`);
+      return fromParams.join('&');
+    }
+  }
+}
+
+export async function fetchAnalytics(range: AnalyticsRange): Promise<AnalyticsResponse> {
+  const res = await fetch(`${API_BASE}/api/analytics/daily?${analyticsQuery(range)}`);
   if (!res.ok) {
-    throw new Error(`Failed to fetch analytics: ${res.statusText}`);
+    const detail = await res.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(detail?.error?.message || `Failed to fetch analytics: ${res.statusText}`);
   }
   return res.json();
 }

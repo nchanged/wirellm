@@ -78,6 +78,8 @@ export interface DailyStats {
 
 export interface AnalyticsResponse {
   days: number;
+  from?: string;
+  to?: string;
   stats: DailyStats[];
   total_input_tokens: number;
   total_output_tokens: number;

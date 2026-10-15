@@ -1868,10 +1868,89 @@ use crate::server::*;
         assert!(!lower.contains("authorization: bearer default-key"));
     }
 
+    /// Analytics range filtering: from/to override days; days=0 = all-time;
+    /// malformed dates are rejected with 400.
+    #[tokio::test]
+    async fn test_analytics_range_filtering() {
+        let (_ws, wr) = tokio::sync::watch::channel(Arc::new(AppState {
+            providers: vec![],
+            virtual_models: std::collections::HashMap::new(),
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+            auth: Default::default(),
+        }));
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let reloader = Reloader::test_new(_ws);
+        let rs = ReloadableState::test_new(wr, TelemetryClient::new(ttx), reloader);
+
+        // Seed two metrics for today
+        rs.db
+            .record_metric("prov-a", "model-x", 100, 200, 10, 20, false)
+            .unwrap();
+        rs.db
+            .record_metric("prov-b", "model-y", 200, 200, 30, 40, false)
+            .unwrap();
+
+        let router = build_full_test_router(rs);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+
+        // days=0 -> ALL history
+        let res = client
+            .get(format!("http://{}/api/analytics/daily?days=0", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let all: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(all["total_requests"].as_u64().unwrap(), 2);
+        assert!(all["stats"].as_array().unwrap().len() >= 1);
+        let today = all["stats"][0]["date"].as_str().unwrap().to_string();
+
+        // from/to range that includes today -> same totals
+        let res = client
+            .get(format!(
+                "http://{}/api/analytics/daily?from={}&to={}",
+                addr, today, today
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let ranged: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(ranged["total_requests"].as_u64().unwrap(), 2);
+
+        // Future-only range -> empty
+        let res = client
+            .get(format!(
+                "http://{}/api/analytics/daily?from=2999-01-01&to=2999-01-02",
+                addr
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let none: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(none["total_requests"].as_u64().unwrap(), 0);
+
+        // Malformed date -> 400
+        let res = client
+            .get(format!("http://{}/api/analytics/daily?from=2026-1-1", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400);
+    }
+
     fn build_full_test_router(state: ReloadableState) -> axum::Router {
         use axum::routing::{delete, get, post, put};
         axum::Router::new()
             .route("/v1/models", get(routes::list_models))
+
             .route("/v1/embeddings", post(routes::create_embeddings))
             .route("/v1/chat/completions", post(routes::create_chat_completions))
             .route("/api/status", get(admin::get_api_status))

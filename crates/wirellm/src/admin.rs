@@ -105,11 +105,19 @@ pub struct VirtualModelInput {
 #[derive(Deserialize)]
 pub struct AnalyticsQuery {
     pub days: Option<u32>,
+    /// Inclusive UTC date lower bound ('YYYY-MM-DD'). Overrides `days` when set.
+    pub from: Option<String>,
+    /// Inclusive UTC date upper bound ('YYYY-MM-DD'). Overrides `days` when set.
+    pub to: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct AnalyticsResponse {
     pub days: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
     pub stats: Vec<DailyStats>,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
@@ -614,15 +622,54 @@ pub async fn delete_virtual_model(
 }
 
 /// GET /api/analytics/daily - Get daily token usage and cost savings
+/// Range resolution: `from`/`to` (inclusive, 'YYYY-MM-DD') when provided;
+/// otherwise `days` (0 = all-time, default 30) relative to today (UTC).
 pub async fn get_daily_analytics(
     State(reloadable): State<ReloadableState>,
     Query(query): Query<AnalyticsQuery>,
 ) -> Result<Json<AnalyticsResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let days = query.days.unwrap_or(30);
-    let stats = reloadable
-        .db
-        .get_daily_stats(days)
-        .map_err(|e| internal_error(e.to_string()))?;
+    let date_shape_ok = |v: &str| {
+        v.len() == 10
+            && v.as_bytes()[4] == b'-'
+            && v.as_bytes()[7] == b'-'
+            && v.split('-').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    };
+    for (label, v) in [("from", &query.from), ("to", &query.to)] {
+        if let Some(v) = v {
+            if !date_shape_ok(v) {
+                return Err(bad_request(format!(
+                    "Invalid '{}' date '{}': expected 'YYYY-MM-DD'",
+                    label, v
+                )));
+            }
+        }
+    }
+
+    let explicitly_ranged = query.from.is_some() || query.to.is_some();
+    let from_reported = query.from.clone();
+    let to_reported = query.to.clone();
+    let (stats, days_reported) = if explicitly_ranged {
+        let mut from = query.from;
+        let mut to = query.to;
+        // Keep the range sensible: 'to' >= 'from' (string compare == date compare)
+        if let (Some(f), Some(t)) = (&from, &to) {
+            if f > t {
+                std::mem::swap(&mut from, &mut to);
+            }
+        }
+        let stats = reloadable
+            .db
+            .get_daily_stats_range(from.clone(), to.clone())
+            .map_err(|e| internal_error(e.to_string()))?;
+        (stats, 0)
+    } else {
+        let days = query.days.unwrap_or(30); // days=0 -> all-time
+        let stats = reloadable
+            .db
+            .get_daily_stats(days)
+            .map_err(|e| internal_error(e.to_string()))?;
+        (stats, days)
+    };
 
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
@@ -637,13 +684,28 @@ pub async fn get_daily_analytics(
     let estimated_cost_saved_usd = 0.0;
 
     Ok(Json(AnalyticsResponse {
-        days,
+        days: days_reported,
         stats,
         total_input_tokens,
         total_output_tokens,
         total_requests,
         estimated_cost_saved_usd,
+        from: from_reported,
+        to: to_reported,
     }))
+}
+
+fn bad_request(msg: String) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": {
+                "message": msg,
+                "type": "invalid_request_error",
+                "code": 400
+            }
+        })),
+    )
 }
 
 fn internal_error(msg: String) -> (StatusCode, Json<serde_json::Value>) {

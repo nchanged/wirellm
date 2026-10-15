@@ -565,7 +565,9 @@ impl DbManager {
         Ok(())
     }
 
-    /// Returns daily usage statistics for the specified number of days (default 30).
+    /// Returns daily usage statistics within the last `days` days, or the
+    /// ENTIRE history when `days == 0` (the date filter is real now — no more
+    /// "last N rows" approximation).
     pub fn get_daily_stats(&self, days: u32) -> Result<Vec<DailyStats>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
@@ -573,12 +575,11 @@ impl DbManager {
                     total_input_tokens, total_output_tokens,
                     CASE WHEN total_requests > 0 THEN (total_duration_ms * 1.0 / total_requests) ELSE 0.0 END as avg_latency
              FROM daily_usage 
-             ORDER BY date DESC, total_requests DESC 
-             LIMIT ?1"
+             WHERE (?1 = 0 OR date >= date('now', '-' || (?1 - 1) || ' days'))
+             ORDER BY date DESC, total_requests DESC"
         ).map_err(|e| OxllmError::Internal(e.to_string()))?;
 
-        let limit = (days * 50).max(100) as i64;
-        let rows = stmt.query_map([limit], |row| {
+        let rows = stmt.query_map([days as i64], |row| {
             Ok(DailyStats {
                 date: row.get(0)?,
                 provider_name: row.get(1)?,
@@ -598,7 +599,43 @@ impl DbManager {
         Ok(res)
     }
 
-    /// Returns provider summaries with aggregated lifetime statistics.
+    /// Returns daily usage statistics for an explicit inclusive date range,
+    /// or the entire history when both bounds are None. Dates are 'YYYY-MM-DD'.
+    pub fn get_daily_stats_range(
+        &self,
+        from_date: Option<String>,
+        to_date: Option<String>,
+    ) -> Result<Vec<DailyStats>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(
+            "SELECT date, provider_name, model_name, total_requests, successful_requests, 
+                    total_input_tokens, total_output_tokens,
+                    CASE WHEN total_requests > 0 THEN (total_duration_ms * 1.0 / total_requests) ELSE 0.0 END as avg_latency
+             FROM daily_usage 
+             WHERE (?1 IS NULL OR date >= ?1)
+               AND (?2 IS NULL OR date <= ?2)
+             ORDER BY date DESC, total_requests DESC"
+        ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let rows = stmt.query_map(params![from_date, to_date], |row| {
+            Ok(DailyStats {
+                date: row.get(0)?,
+                provider_name: row.get(1)?,
+                model_name: row.get(2)?,
+                total_requests: row.get::<_, i64>(3)? as u64,
+                successful_requests: row.get::<_, i64>(4)? as u64,
+                total_input_tokens: row.get::<_, i64>(5)? as u64,
+                total_output_tokens: row.get::<_, i64>(6)? as u64,
+                avg_latency_ms: row.get(7)?,
+            })
+        }).map_err(|e| OxllmError::Internal(e.to_string()))?;
+
+        let mut res = Vec::new();
+        for r in rows {
+            res.push(r.map_err(|e| OxllmError::Internal(e.to_string()))?);
+        }
+        Ok(res)
+    }
     pub fn get_provider_summaries(&self) -> Result<Vec<ProviderSummary>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
