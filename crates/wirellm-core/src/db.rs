@@ -927,19 +927,37 @@ impl DbManager {
         let mut conn = self.connect()?;
         let tx = conn.transaction().map_err(|e| OxllmError::Internal(e.to_string()))?;
 
-        let (w_smart, w_speed, w_rel) = weights.unwrap_or((0.5, 0.3, 0.2));
-
-        tx.execute(
-            "INSERT INTO virtual_models (name, description, weight_smartness, weight_speed, weight_reliability, updated_at) 
-             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
-             ON CONFLICT(name) DO UPDATE SET 
-                description = ?2,
-                weight_smartness = ?3,
-                weight_speed = ?4,
-                weight_reliability = ?5,
-                updated_at = CURRENT_TIMESTAMP",
-            params![name, description, w_smart, w_speed, w_rel],
-        ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+        // When weights are omitted we must PRESERVE the existing values on
+        // update (an agent editing only the target ladder must not silently
+        // reset operator-tuned weights). A brand-new row still gets the
+        // documented defaults below.
+        match weights {
+            Some((w_smart, w_speed, w_rel)) => {
+                tx.execute(
+                    "INSERT INTO virtual_models (name, description, weight_smartness, weight_speed, weight_reliability, updated_at) 
+                     VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)
+                     ON CONFLICT(name) DO UPDATE SET 
+                        description = ?2,
+                        weight_smartness = ?3,
+                        weight_speed = ?4,
+                        weight_reliability = ?5,
+                        updated_at = CURRENT_TIMESTAMP",
+                    params![name, description, w_smart, w_speed, w_rel],
+                ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+            },
+            None => {
+                // Create-with-defaults (0.5 / 0.3 / 0.2) but never touch the
+                // weight columns of an existing row.
+                tx.execute(
+                    "INSERT INTO virtual_models (name, description, weight_smartness, weight_speed, weight_reliability, updated_at) 
+                     VALUES (?1, ?2, 0.5, 0.3, 0.2, CURRENT_TIMESTAMP)
+                     ON CONFLICT(name) DO UPDATE SET 
+                        description = ?2,
+                        updated_at = CURRENT_TIMESTAMP",
+                    params![name, description],
+                ).map_err(|e| OxllmError::Internal(e.to_string()))?;
+            },
+        }
 
         tx.execute("DELETE FROM virtual_model_targets WHERE virtual_model_name = ?1", params![name])
             .map_err(|e| OxllmError::Internal(e.to_string()))?;
@@ -1497,6 +1515,59 @@ mod tests {
             .unwrap();
         }
         assert_eq!(db.get_routing_policy().unwrap(), DEFAULT_ROUTING_POLICY);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn test_upsert_virtual_model_preserves_weights_when_omitted() {
+        let path = temp_db_path("vm_weights");
+        cleanup(&path);
+        let db = DbManager::new(Some(&path)).unwrap();
+
+        // Targets reference providers by name (FK), so create the providers first.
+        let hdrs = HashMap::new();
+        db.upsert_provider("p", true, "https://x/v1", "${K}", &["m".to_string()], &hdrs, None, None, None, None, None).unwrap();
+        db.upsert_provider("p2", true, "https://x/v1", "${K}", &["m2".to_string()], &hdrs, None, None, None, None, None).unwrap();
+
+        let t1 = vec![VirtualModelTarget { provider: "p".into(), model: "m".into() }];
+        // Create with explicit weights.
+        db.upsert_virtual_model("coder", "desc", &t1, Some((0.9, 0.05, 0.05)))
+            .unwrap();
+        let vm = db
+            .get_virtual_models_detail()
+            .unwrap()
+            .into_iter()
+            .find(|v| v.name == "coder")
+            .unwrap();
+        assert!((vm.weight_smartness - 0.9).abs() < 1e-9);
+
+        // Updating targets only (weights omitted) must PRESERVE the weights.
+        let t2 = vec![VirtualModelTarget { provider: "p2".into(), model: "m2".into() }];
+        db.upsert_virtual_model("coder", "desc2", &t2, None).unwrap();
+        let vm2 = db
+            .get_virtual_models_detail()
+            .unwrap()
+            .into_iter()
+            .find(|v| v.name == "coder")
+            .unwrap();
+        assert!(
+            (vm2.weight_smartness - 0.9).abs() < 1e-9,
+            "omitted weights must be preserved, got {}",
+            vm2.weight_smartness
+        );
+        assert_eq!(vm2.targets.len(), 1);
+        assert_eq!(vm2.targets[0].provider, "p2");
+
+        // A brand-new row with weights omitted still gets the documented defaults.
+        db.upsert_virtual_model("planner", "d", &t1, None).unwrap();
+        let vm3 = db
+            .get_virtual_models_detail()
+            .unwrap()
+            .into_iter()
+            .find(|v| v.name == "planner")
+            .unwrap();
+        assert!((vm3.weight_smartness - 0.5).abs() < 1e-9);
 
         cleanup(&path);
     }

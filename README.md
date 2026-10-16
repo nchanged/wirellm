@@ -159,13 +159,24 @@ WireLLM exposes:
 1. Native MCP Tools over SSE at http://127.0.0.1:8765/mcp/sse:
    - `wirellm_get_status`: Inspect active providers, circuit states, and token stats.
    - `wirellm_list_providers`: List configured upstream LLM endpoints.
-   - `wirellm_add_provider`: Add/update an LLM provider with API keys, RPM limits, and models.
+   - `wirellm_add_provider`: Add/update an LLM provider with API keys, RPM limits, models, and enabled flag.
+   - `wirellm_delete_provider`: Remove a provider.
+   - `wirellm_test_provider`: Fire a direct probe chat at one provider.
+   - `wirellm_discover_provider_models`: Query an upstream's live `/v1/models`.
+   - `wirellm_set_provider_enabled`: Take a provider offline / bring it back online (clears auto-disable).
    - `wirellm_reset_circuit`: Reset tripped circuit breakers to Closed (Healthy).
    - `wirellm_list_virtual_models`: List aliases like `coder`, `planner`, `orchestrator`.
-   - `wirellm_update_virtual_model`: Tune provider fallback chains for each virtual model.
-   - `wirellm_get_token_stats`: View historical usage and latency.
-   - `wirellm_get_routing_policy`: Read the live timeout, overload-breathing, and circuit-breaker cooldown settings.
-   - `wirellm_set_routing_policy`: Tune & persist those settings (applied live, no restart, no Rust edits).
+   - `wirellm_update_virtual_model`: Tune provider fallback chains (and ranking weights) for each virtual model.
+   - `wirellm_delete_virtual_model`: Delete a virtual model.
+   - `wirellm_test_virtual_model`: Probe a ladder end-to-end and report which provider served it.
+   - `wirellm_get_token_stats`: Historical daily usage by `days`.
+   - `wirellm_get_analytics`: Daily usage with totals — by `days`, or an explicit `from`/`to` date range.
+   - `wirellm_get_routing_policy` / `wirellm_set_routing_policy`: Read/tune timeouts, overload breathing and circuit-breaker cooldowns (applied live, persisted to DB + config file).
+   - `wirellm_list_secrets` / `wirellm_get_secret` / `wirellm_set_secret` / `wirellm_set_secrets` / `wirellm_delete_secret`: Central encrypted Vault management.
+   - `wirellm_list_api_keys` / `wirellm_create_api_key` / `wirellm_delete_api_key`: Manage gateway API keys.
+   - `wirellm_get_logs`: Read recent server logs.
+   - `wirellm_reload`: Hot-reload providers/virtual models/keys from the DB (config-file changes apply at startup).
+   - `wirellm_get_setup_recommendations`: Bundled setup guide.
 2. REST Admin API:
    - GET http://127.0.0.1:8765/api/status
    - GET/POST http://127.0.0.1:8765/api/routing-policy

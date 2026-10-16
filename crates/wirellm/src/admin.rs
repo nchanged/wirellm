@@ -642,38 +642,17 @@ pub async fn get_daily_analytics(
     State(reloadable): State<ReloadableState>,
     Query(query): Query<AnalyticsQuery>,
 ) -> Result<Json<AnalyticsResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let date_shape_ok = |v: &str| {
-        v.len() == 10
-            && v.as_bytes()[4] == b'-'
-            && v.as_bytes()[7] == b'-'
-            && v.split('-').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-    };
-    for (label, v) in [("from", &query.from), ("to", &query.to)] {
-        if let Some(v) = v {
-            if !date_shape_ok(v) {
-                return Err(bad_request(format!(
-                    "Invalid '{}' date '{}': expected 'YYYY-MM-DD'",
-                    label, v
-                )));
-            }
-        }
-    }
-
-    let explicitly_ranged = query.from.is_some() || query.to.is_some();
     let from_reported = query.from.clone();
     let to_reported = query.to.clone();
+
+    let (from_norm, to_norm) =
+        normalize_analytics_range(query.from.clone(), query.to.clone()).map_err(bad_request)?;
+    let explicitly_ranged = from_norm.is_some() || to_norm.is_some();
+
     let (stats, days_reported) = if explicitly_ranged {
-        let mut from = query.from;
-        let mut to = query.to;
-        // Keep the range sensible: 'to' >= 'from' (string compare == date compare)
-        if let (Some(f), Some(t)) = (&from, &to) {
-            if f > t {
-                std::mem::swap(&mut from, &mut to);
-            }
-        }
         let stats = reloadable
             .db
-            .get_daily_stats_range(from.clone(), to.clone())
+            .get_daily_stats_range(from_norm, to_norm)
             .map_err(|e| internal_error(e.to_string()))?;
         (stats, 0)
     } else {
@@ -707,6 +686,40 @@ pub async fn get_daily_analytics(
         from: from_reported,
         to: to_reported,
     }))
+}
+
+/// Validates the 'YYYY-MM-DD' shape of `from`/`to` and orders the range
+/// (swaps when reversed). Shared by the REST `/api/analytics/daily` handler and
+/// the MCP `wirellm_get_analytics` tool so both behave identically.
+pub fn normalize_analytics_range(
+    from: Option<String>,
+    to: Option<String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let date_shape_ok = |v: &str| {
+        v.len() == 10
+            && v.as_bytes()[4] == b'-'
+            && v.as_bytes()[7] == b'-'
+            && v.split('-').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    };
+    for (label, v) in [("from", &from), ("to", &to)] {
+        if let Some(v) = v {
+            if !date_shape_ok(v) {
+                return Err(format!(
+                    "Invalid '{}' date '{}': expected 'YYYY-MM-DD'",
+                    label, v
+                ));
+            }
+        }
+    }
+    // Keep the range sensible: 'to' >= 'from' (string compare == date compare)
+    let mut from = from;
+    let mut to = to;
+    if let (Some(f), Some(t)) = (&from, &to) {
+        if f > t {
+            std::mem::swap(&mut from, &mut to);
+        }
+    }
+    Ok((from, to))
 }
 
 fn bad_request(msg: String) -> (StatusCode, Json<serde_json::Value>) {
