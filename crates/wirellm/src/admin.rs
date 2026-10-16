@@ -810,6 +810,19 @@ pub async fn update_routing_policy(
         .map_err(|e| internal_error(e.to_string()))?;
     wirellm_core::state::apply_routing_policy(&policy);
 
+    // Also mirror the policy into the on-disk config file. Best-effort: the live
+    // value + DB are already updated, so a read-only filesystem (e.g. a cloud
+    // pod) must not fail the request.
+    let cfg_path = reloadable.reloader.config_path.clone();
+    match wirellm_core::config::write_routing_policy_to_file(&cfg_path, &policy) {
+        Ok(p) => info!("Routing policy written back to config file {}", p.display()),
+        Err(e) => warn!(
+            "Routing policy applied live + persisted to DB, but config write-back to {} failed: {}",
+            cfg_path.display(),
+            e
+        ),
+    }
+
     Ok(Json(wirellm_core::state::current_routing_policy()))
 }
 
