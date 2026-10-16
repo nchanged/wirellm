@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-16
+
 ### Added
 - **MCP parity with the whole admin/UI surface**: new tools — `wirellm_delete_virtual_model`, `wirellm_set_provider_enabled` (offline/online), `wirellm_get_analytics` (days or from/to range with totals), `wirellm_get_logs`, `wirellm_reload`, `wirellm_list_api_keys`, `wirellm_create_api_key`, `wirellm_delete_api_key`. `wirellm_add_provider` gains an `enabled` flag and `wirellm_update_virtual_model` gains the three ranking weights. Everything the dashboard can do is now doable by an agent over MCP.
 - **Live-tunable routing policy**: Header timeouts, overload breathing room, circuit-breaker thresholds/cooldowns, the 429 fallback and failure-decay interval are now runtime settings (persisted in `server_settings`), exposed via `GET/POST /api/routing-policy`, the MCP tools `wirellm_get_routing_policy` / `wirellm_set_routing_policy`, and a **Timeouts & Cooldowns** panel on the dashboard. No Rust edits or restarts to retune the router.

@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "wirellm"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "axum",
  "base64",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "wirellm-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aes-gcm",
  "hex",
