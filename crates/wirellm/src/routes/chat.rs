@@ -207,10 +207,93 @@ pub async fn create_chat_completions(
             None
         };
 
-        let res = req.send().await;
+        // Guard against client disconnecting (e.g. OpenCode's ~60s header timeout)
+        // while we are still waiting for upstream HTTP response headers.
+        struct HeaderWaitGuard {
+            armed: bool,
+            attempt_start: Instant,
+            app_state: Arc<AppState>,
+            provider_name: String,
+            is_probe: bool,
+            live_tx: tokio::sync::broadcast::Sender<crate::server::LiveStreamEvent>,
+            request_id: String,
+            virtual_model: String,
+            target_model: String,
+        }
+        impl Drop for HeaderWaitGuard {
+            fn drop(&mut self) {
+                if !self.armed {
+                    return;
+                }
+                let waited = self.attempt_start.elapsed();
+                if self.live_tx.receiver_count() > 0 {
+                    let _ = self.live_tx.send(crate::server::LiveStreamEvent {
+                        request_id: self.request_id.clone(),
+                        virtual_model: Some(self.virtual_model.clone()),
+                        provider: self.provider_name.clone(),
+                        model: self.target_model.clone(),
+                        delta: String::new(),
+                        is_done: true,
+                        error: Some(format!("cancelled after {}s waiting for headers", waited.as_secs())),
+                        tokens_so_far: 0,
+                        elapsed_ms: waited.as_millis() as u64,
+                    });
+                }
+                // If upstream hung for >=10s before client gave up, record overload feedback
+                // so the next retry cascades to the next rung instead of hitting the same hung upstream.
+                // A cancelled HALF-OPEN probe ALWAYS releases its slot, otherwise the
+                // provider would be stuck un-probeable forever.
+                if self.is_probe || waited >= Duration::from_secs(10) {
+                    let app_state = self.app_state.clone();
+                    let provider_name = self.provider_name.clone();
+                    let is_probe = self.is_probe;
+                    tokio::spawn(async move {
+                        if let Some(target) = app_state.providers.iter().find(|p| p.name == provider_name) {
+                            if waited >= Duration::from_secs(10) {
+                                AdaptivePriorityStrategy
+                                    .feedback(target, false, is_probe, None, None)
+                                    .await;
+                            } else if is_probe {
+                                // Fast cancel of a probe: release the slot without
+                                // charging the provider a fault.
+                                target.probe_in_flight.store(false, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                    });
+                }
+            }
+        }
 
-        match res {
-            Ok(res) if res.status().is_success() => {
+        let mut header_guard = HeaderWaitGuard {
+            armed: true,
+            attempt_start: Instant::now(),
+            app_state: app_state.clone(),
+            provider_name: selected.name.clone(),
+            is_probe: selected.is_probe,
+            live_tx: live_tx.clone(),
+            request_id: request_id.clone(),
+            virtual_model: requested_model.to_string(),
+            target_model: target_model.clone(),
+        };
+
+        // Bound the wait for initial HTTP response headers so slow/hung 550B upstreams
+        // fail over to the next ladder rung BEFORE client-side header timeouts fire.
+        // Once streaming headers arrive, the body stream itself can run up to upstream_timeout_secs (300s).
+        let routing_policy = wirellm_core::state::current_routing_policy();
+        let header_timeout_secs = if is_streaming {
+            app_state.upstream_timeout_secs.min(routing_policy.stream_header_timeout_secs)
+        } else {
+            app_state.upstream_timeout_secs.min(routing_policy.nonstream_header_timeout_secs)
+        };
+        let send_res = tokio::time::timeout(
+            Duration::from_secs(header_timeout_secs),
+            req.send(),
+        )
+        .await;
+        header_guard.armed = false;
+
+        match send_res {
+            Ok(Ok(res)) if res.status().is_success() => {
                 let status_code = res.status().as_u16();
                 let upstream_headers = res.headers().clone();
                 let target_provider_state = app_state
@@ -604,7 +687,7 @@ pub async fn create_chat_completions(
                     return response.into_response();
                 }
             },
-            Ok(res) => {
+            Ok(Ok(res)) => {
                 let status_code = res.status().as_u16();
 
                 // Extract Retry-After before consuming the response body
@@ -633,6 +716,11 @@ pub async fn create_chat_completions(
                 } else {
                     String::new()
                 };
+                warn!(
+                    request_id = %request_id,
+                    "Chat completions upstream {} returned HTTP {}: {}",
+                    selected.name, status_code, parsed_error
+                );
                 last_upstream_error = parsed_error;
                 last_failed_provider = selected.name.clone();
                 last_failed_status = status_code;
@@ -669,12 +757,17 @@ pub async fn create_chat_completions(
                     request_id: request_id.clone(),
                 });
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!(
                     request_id = %request_id,
                     "Chat completions upstream {} connection failed: {}",
                     selected.name, e
                 );
+                last_upstream_error = e.to_string();
+                last_failed_provider = selected.name.clone();
+                // No HTTP status on a connection failure — surface 502 so the
+                // aggregated 502 message isn't a meaningless "(0)".
+                last_failed_status = 502;
                 let target_provider_state = app_state
                     .providers
                     .iter()
@@ -701,6 +794,46 @@ pub async fn create_chat_completions(
                     request_id: request_id.clone(),
                 });
             },
+            Err(_) => {
+                let reason = format!(
+                    "upstream header timeout after {}s",
+                    header_timeout_secs
+                );
+                warn!(
+                    request_id = %request_id,
+                    "Chat completions upstream {} timed out waiting for response headers ({}s) — failing over",
+                    selected.name, header_timeout_secs
+                );
+                last_upstream_error = reason.clone();
+                last_failed_provider = selected.name.clone();
+                // The upstream never answered: surface 504 (Gateway Timeout).
+                last_failed_status = 504;
+                let target_provider_state = app_state
+                    .providers
+                    .iter()
+                    .find(|p| p.name == selected.name)
+                    .unwrap();
+                strategy
+                    .feedback(target_provider_state, false, selected.is_probe, None, None)
+                    .await;
+                telemetry.emit(TelemetryEvent::UpdateStatus {
+                    provider: selected.name.clone(),
+                    status: circuit_status(target_provider_state).await,
+                });
+                telemetry.emit(TelemetryEvent::RecordTransaction {
+                    operation: "chat".to_string(),
+                    provider: selected.name.clone(),
+                    model: target_model.clone(),
+                    input_tokens: estimated_prompt_tokens,
+                    output_tokens: 0,
+                    duration: start_time.elapsed(),
+                    attempts,
+                    failure_reason: Some(reason),
+                    trace_id: trace_id.clone(),
+                    parent_span_id: parent_span_id.clone(),
+                    request_id: request_id.clone(),
+                });
+            },
         }
     }
 
@@ -712,5 +845,18 @@ pub async fn create_chat_completions(
     } else {
         "All upstream chat completions providers failed or are rate-limited".to_string()
     };
+    if live_tx.receiver_count() > 0 {
+        let _ = live_tx.send(crate::server::LiveStreamEvent {
+            request_id: request_id.clone(),
+            virtual_model: Some(requested_model.to_string()),
+            provider: last_failed_provider.clone(),
+            model: String::new(),
+            delta: String::new(),
+            is_done: true,
+            error: Some(message.clone()),
+            tokens_so_far: 0,
+            elapsed_ms: start_time.elapsed().as_millis() as u64,
+        });
+    }
     json_error_response(&message, "server_error", StatusCode::BAD_GATEWAY)
 }

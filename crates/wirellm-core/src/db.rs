@@ -758,6 +758,36 @@ impl DbManager {
         }
     }
 
+    /// Loads the persisted RoutingPolicy from server_settings (or returns Default).
+    pub fn get_routing_policy(&self) -> Result<crate::config::RoutingPolicy> {
+        let conn = self.connect()?;
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT value FROM server_settings WHERE key = 'routing_policy_json'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        match json {
+            Some(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+            None => Ok(crate::config::RoutingPolicy::default()),
+        }
+    }
+
+    /// Persists the RoutingPolicy into server_settings.
+    pub fn save_routing_policy(&self, policy: &crate::config::RoutingPolicy) -> Result<()> {
+        let conn = self.connect()?;
+        let payload = serde_json::to_string(policy)
+            .map_err(|e| OxllmError::Internal(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO server_settings (key, value) VALUES ('routing_policy_json', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![payload],
+        )
+        .map_err(|e| OxllmError::Internal(format!("Failed to save routing policy: {}", e)))?;
+        Ok(())
+    }
+
     /// Upserts a provider into SQLite with optional encrypted secret key in vault.
     pub fn upsert_provider(
         &self,
@@ -1402,5 +1432,69 @@ fn calculate_default_smartness(provider: &str, models: &[String]) -> u32 {
         80
     } else {
         75
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DEFAULT_ROUTING_POLICY, RoutingPolicy};
+
+    fn temp_db_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "wirellm_db_test_{}_{}.sqlite",
+            tag,
+            std::process::id()
+        ))
+    }
+
+    fn cleanup(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn test_routing_policy_roundtrip_and_corruption_fallback() {
+        let path = temp_db_path("routing_policy");
+        cleanup(&path);
+        let db = DbManager::new(Some(&path)).unwrap();
+
+        // No persisted row yet → the canonical default.
+        assert_eq!(db.get_routing_policy().unwrap(), DEFAULT_ROUTING_POLICY);
+
+        // A custom policy survives a save/load cycle verbatim (restart-safe).
+        let mut custom = RoutingPolicy {
+            stream_header_timeout_secs: 45,
+            nonstream_header_timeout_secs: 90,
+            fault_window_secs: 120,
+            overload_base_cooldown_secs: 20,
+            overload_max_cooldown_secs: 60,
+            circuit_failure_threshold: 5,
+            circuit_base_cooldown_secs: 45,
+            circuit_max_cooldown_secs: 240,
+            rate_limit_default_cooldown_secs: 7,
+            decay_interval_secs: 300,
+        };
+        db.save_routing_policy(&custom).unwrap();
+        assert_eq!(db.get_routing_policy().unwrap(), custom);
+
+        // Saving twice upserts (no duplicate-key blow-up).
+        custom.fault_window_secs = 200;
+        db.save_routing_policy(&custom).unwrap();
+        assert_eq!(db.get_routing_policy().unwrap(), custom);
+
+        // Malformed JSON must degrade to the default, never error the daemon.
+        {
+            let conn = db.connect().unwrap();
+            conn.execute(
+                "UPDATE server_settings SET value = 'not-json{' WHERE key = 'routing_policy_json'",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(db.get_routing_policy().unwrap(), DEFAULT_ROUTING_POLICY);
+
+        cleanup(&path);
     }
 }

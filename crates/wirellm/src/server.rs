@@ -234,6 +234,9 @@ impl axum::extract::FromRef<ReloadableState> for Reloader {
 }
 
 pub fn build_app_state(config: Config, db: Arc<DbManager>) -> Result<AppState, String> {
+    if let Ok(policy) = db.get_routing_policy() {
+        wirellm_core::state::apply_routing_policy(&policy);
+    }
     let mut providers = Vec::new();
     for p in config.providers {
         if !p.enabled {
@@ -744,6 +747,12 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
         .route("/api/keys/{id}", delete(admin::delete_api_key))
         .route("/api/vault/secrets", get(admin::list_vault_secrets).post(admin::create_vault_secret))
         .route("/api/vault/secrets/{name}", get(admin::get_vault_secret).delete(admin::delete_vault_secret))
+        .route(
+            "/api/routing-policy",
+            get(admin::get_routing_policy)
+                .post(admin::update_routing_policy)
+                .put(admin::update_routing_policy),
+        )
         .route("/api/logs", get(routes::get_logs))
         .layer(middleware::from_fn_with_state(
             reloadable_state.clone(),

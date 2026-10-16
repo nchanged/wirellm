@@ -1,4 +1,4 @@
-use crate::config::VirtualModelTarget;
+use crate::config::{DEFAULT_ROUTING_POLICY, VirtualModelTarget};
 use crate::db::DbManager;
 use reqwest::Url;
 use std::collections::{HashMap, VecDeque};
@@ -7,12 +7,62 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
-/// Rolling window used to count recent overload faults (how bursty the upstream is right now).
-pub const FAULT_WINDOW_SECS: u64 = 600;
-/// Breathing room (seconds) applied after the first fault of a window.
-pub const OVERLOAD_BASE_COOLDOWN_SECS: u64 = 10;
-/// Upper bound on any single breathing window.
-pub const OVERLOAD_MAX_COOLDOWN_SECS: u64 = 300;
+/// Live routing policy, seeded from `DEFAULT_ROUTING_POLICY` and atomically
+/// updated by `apply_routing_policy`. Kept as lock-free atomics because the hot
+/// selection path reads them on every request. `DEFAULT_ROUTING_POLICY` is the
+/// single source of truth for the numbers — do not re-type them here.
+static LIVE_STREAM_HEADER_TIMEOUT_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.stream_header_timeout_secs);
+static LIVE_NONSTREAM_HEADER_TIMEOUT_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.nonstream_header_timeout_secs);
+static LIVE_FAULT_WINDOW_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.fault_window_secs);
+static LIVE_OVERLOAD_BASE_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.overload_base_cooldown_secs);
+static LIVE_OVERLOAD_MAX_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.overload_max_cooldown_secs);
+static LIVE_CIRCUIT_THRESHOLD: AtomicU32 =
+    AtomicU32::new(DEFAULT_ROUTING_POLICY.circuit_failure_threshold);
+static LIVE_CIRCUIT_BASE_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.circuit_base_cooldown_secs);
+static LIVE_CIRCUIT_MAX_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.circuit_max_cooldown_secs);
+static LIVE_RATE_LIMIT_DEFAULT_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.rate_limit_default_cooldown_secs);
+static LIVE_DECAY_INTERVAL_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.decay_interval_secs);
+
+pub fn apply_routing_policy(policy: &crate::config::RoutingPolicy) {
+    // Clamp first (last line of defence) so no external caller can push an
+    // unsafe value into the live atomics.
+    let mut p = policy.clone();
+    p.clamp();
+    LIVE_STREAM_HEADER_TIMEOUT_SECS.store(p.stream_header_timeout_secs, Ordering::Relaxed);
+    LIVE_NONSTREAM_HEADER_TIMEOUT_SECS.store(p.nonstream_header_timeout_secs, Ordering::Relaxed);
+    LIVE_FAULT_WINDOW_SECS.store(p.fault_window_secs, Ordering::Relaxed);
+    LIVE_OVERLOAD_BASE_SECS.store(p.overload_base_cooldown_secs, Ordering::Relaxed);
+    LIVE_OVERLOAD_MAX_SECS.store(p.overload_max_cooldown_secs, Ordering::Relaxed);
+    LIVE_CIRCUIT_THRESHOLD.store(p.circuit_failure_threshold, Ordering::Relaxed);
+    LIVE_CIRCUIT_BASE_SECS.store(p.circuit_base_cooldown_secs, Ordering::Relaxed);
+    LIVE_CIRCUIT_MAX_SECS.store(p.circuit_max_cooldown_secs, Ordering::Relaxed);
+    LIVE_RATE_LIMIT_DEFAULT_SECS.store(p.rate_limit_default_cooldown_secs, Ordering::Relaxed);
+    LIVE_DECAY_INTERVAL_SECS.store(p.decay_interval_secs, Ordering::Relaxed);
+}
+
+pub fn current_routing_policy() -> crate::config::RoutingPolicy {
+    crate::config::RoutingPolicy {
+        stream_header_timeout_secs: LIVE_STREAM_HEADER_TIMEOUT_SECS.load(Ordering::Relaxed),
+        nonstream_header_timeout_secs: LIVE_NONSTREAM_HEADER_TIMEOUT_SECS.load(Ordering::Relaxed),
+        fault_window_secs: LIVE_FAULT_WINDOW_SECS.load(Ordering::Relaxed),
+        overload_base_cooldown_secs: LIVE_OVERLOAD_BASE_SECS.load(Ordering::Relaxed),
+        overload_max_cooldown_secs: LIVE_OVERLOAD_MAX_SECS.load(Ordering::Relaxed),
+        circuit_failure_threshold: LIVE_CIRCUIT_THRESHOLD.load(Ordering::Relaxed),
+        circuit_base_cooldown_secs: LIVE_CIRCUIT_BASE_SECS.load(Ordering::Relaxed),
+        circuit_max_cooldown_secs: LIVE_CIRCUIT_MAX_SECS.load(Ordering::Relaxed),
+        rate_limit_default_cooldown_secs: LIVE_RATE_LIMIT_DEFAULT_SECS.load(Ordering::Relaxed),
+        decay_interval_secs: LIVE_DECAY_INTERVAL_SECS.load(Ordering::Relaxed),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
@@ -250,18 +300,22 @@ impl ProviderState {
     /// Records an overload fault (HTTP 5xx or connection failure) and returns
     /// the adaptive breathing window:
     ///
-    ///   breathing = BASE(10s) × 2^(faults_in_10min_window − 1) × diurnal_factor
-    ///   diurnal_factor = 1 + min(historical_faults_this_hour, 8) × 0.35
+    ///   breathing = base_secs × 2^(faults_in_window − 1) × diurnal_factor
+    ///   diurnal_factor = 1 + min(historical_faults_this_hour, 4) × 0.15
     ///
-    /// Rapid overload bursts stretch geometrically toward the 5-minute cap;
-    /// a first fault in a typically-busy UTC hour already breathes deeper than
-    /// the floor; a first fault in a quiet hour gets exactly the 10s floor
-    /// ("historical" excludes the fault being recorded).
+    /// `base_secs`, the fault window, the recency/diurnal ceilings and the cap
+    /// all come from the live `RoutingPolicy` (defaults: base 15s, window 180s,
+    /// recency ≤ 8×, diurnal ≤ 1.6×, cap 90s). Rapid overload bursts stretch
+    /// geometrically toward the cap; a first fault in a typically-busy UTC hour
+    /// breathes a little deeper than the floor; a first fault in a quiet hour
+    /// gets exactly the base floor ("historical" excludes the fault being
+    /// recorded).
     pub async fn record_overload_fault(&self, now: Instant) -> Duration {
         // Evict + push + count under a single guard (the count feeds the
         // geometric exponent — must not race with concurrent burst faults)
+        let policy = current_routing_policy();
         let recent_faults = {
-            let window = Duration::from_secs(FAULT_WINDOW_SECS);
+            let window = Duration::from_secs(policy.fault_window_secs);
             let mut hist = self.fault_history.write().await;
             while let Some(front) = hist.front() {
                 if now.saturating_duration_since(*front) > window {
@@ -280,11 +334,11 @@ impl ProviderState {
         let historical = self.diurnal.get(hour);
         self.diurnal.bump(hour);
 
-        let recency = 1u64 << (recent_faults.saturating_sub(1)).min(5); // 1×..32×
-        let diurnal_factor = 1.0 + (historical.min(8) as f64) * 0.35; // 1×..~3.8×
+        let recency = 1u64 << (recent_faults.saturating_sub(1)).min(3); // 1×..8×
+        let diurnal_factor = 1.0 + (historical.min(4) as f64) * 0.15; // 1×..~1.6×
         let secs =
-            ((OVERLOAD_BASE_COOLDOWN_SECS as f64) * recency as f64 * diurnal_factor).round() as u64;
-        let secs = secs.max(1).min(OVERLOAD_MAX_COOLDOWN_SECS);
+            ((policy.overload_base_cooldown_secs as f64) * recency as f64 * diurnal_factor).round() as u64;
+        let secs = secs.max(1).min(policy.overload_max_cooldown_secs);
 
         self.last_overload_cooldown_ms
             .store(secs * 1000, Ordering::Relaxed);
@@ -297,12 +351,11 @@ impl ProviderState {
         Duration::from_secs(secs)
     }
 
-    /// Success-side deflation: evaporate the oldest fault from the window so a
-    /// recovered provider stops growing its breathing room (the diurnal
-    /// histogram keeps the long-term memory via its own hourly fade).
+    /// Success-side deflation: clear recent fault history when a request succeeds so a
+    /// recovered provider is not punished by prior burst timeouts.
     pub async fn record_overload_success(&self) {
         let mut hist = self.fault_history.write().await;
-        hist.pop_front();
+        hist.clear();
     }
 }
 

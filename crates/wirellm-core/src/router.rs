@@ -41,20 +41,22 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
             }
 
             // 1. Dynamic Idle Penalty Decay (Aging)
+            let policy = crate::state::current_routing_policy();
             {
                 let mut failures = provider.consecutive_failures.write().await;
                 let mut last_attempt = provider.last_attempt_time.write().await;
                 if *failures > 0 {
                     if let Some(last_time) = *last_attempt {
                         let elapsed = now.saturating_duration_since(last_time);
-                        let decay_steps = elapsed.as_secs() / 300; // 5 minutes = 300 seconds
+                        let decay_secs = policy.decay_interval_secs.max(15);
+                        let decay_steps = elapsed.as_secs() / decay_secs;
                         if decay_steps > 0 {
                             *failures = failures.saturating_sub(decay_steps as u32);
                             *last_attempt =
-                                Some(last_time + Duration::from_secs(decay_steps * 300));
+                                Some(last_time + Duration::from_secs(decay_steps * decay_secs));
 
-                            // If failures age below 3, rehabilitate open circuits
-                            if *failures < 3 {
+                            // If failures age below threshold, rehabilitate open circuits
+                            if *failures < policy.circuit_failure_threshold {
                                 let mut circ = provider.circuit.write().await;
                                 if let CircuitState::Open { .. } = *circ {
                                     *circ = CircuitState::Closed;
@@ -210,15 +212,20 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
             }
         } else {
             let mut failures = provider.consecutive_failures.write().await;
-            *failures += 1;
+            if status_code != Some(429) {
+                *failures += 1;
+            }
 
             let mut last_attempt = provider.last_attempt_time.write().await;
             *last_attempt = Some(now);
 
+            let policy = crate::state::current_routing_policy();
+
             // Handle Failures
             if status_code == Some(429) {
                 // Rate-limited: extract or apply default backoff
-                let cooldown = retry_after.unwrap_or_else(|| Duration::from_secs(10)); // 10s default fallback
+                let cooldown = retry_after
+                    .unwrap_or_else(|| Duration::from_secs(policy.rate_limit_default_cooldown_secs));
                 let candidate = now + cooldown;
                 let mut rl = provider.rate_limited_until.write().await;
                 // Keep the longest window: a Retry-After must not shorten an
@@ -284,11 +291,14 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                     );
                 }
 
-                // Tripped or failed probe: trigger exponential circuit cooldown
-                if *failures >= 3 || is_probe {
-                    let exponent = failures.saturating_sub(3) as u32;
+                // Tripped or failed probe: trigger configurable exponential circuit cooldown
+                let threshold = policy.circuit_failure_threshold.max(1);
+                if *failures >= threshold || is_probe {
+                    let exponent = failures.saturating_sub(threshold).min(4);
                     let multiplier = 2u64.pow(exponent);
-                    let cooldown = Duration::from_secs(60 * multiplier);
+                    let base = policy.circuit_base_cooldown_secs.max(5);
+                    let max_cap = policy.circuit_max_cooldown_secs.max(base);
+                    let cooldown = Duration::from_secs((base * multiplier).min(max_cap));
 
                     let mut state = provider.circuit.write().await;
                     *state = CircuitState::Open {
@@ -453,12 +463,12 @@ mod tests {
     #[tokio::test]
     async fn test_router_decay() {
         let p = setup_provider("prov1");
+        let decay_interval = crate::state::current_routing_policy().decay_interval_secs;
         {
             let mut failures = p.consecutive_failures.write().await;
             *failures = 4;
             let mut last_attempt = p.last_attempt_time.write().await;
-            // 11 minutes ago
-            *last_attempt = Some(Instant::now() - Duration::from_secs(660));
+            *last_attempt = Some(Instant::now() - Duration::from_secs(decay_interval * 2 + 20));
         }
 
         let strategy = AdaptivePriorityStrategy;
@@ -467,7 +477,7 @@ mod tests {
         // Select triggers decay check
         let _ = strategy.select(&candidates).await;
 
-        // Should decay by 2 failures (660s / 300s = 2)
+        // Should decay by 2 failures
         assert_eq!(*p.consecutive_failures.read().await, 2);
     }
 
@@ -554,10 +564,11 @@ mod tests {
         let p = setup_provider("prov1");
         let strategy = AdaptivePriorityStrategy;
 
-        // No history in this hour → the very first fault gets exactly 10s
+        // No history in this hour → the very first fault gets exactly the base floor
         strategy.feedback(&p, false, false, Some(500), None).await;
         let secs = p.last_overload_cooldown_ms.load(Ordering::Relaxed) / 1000;
-        assert_eq!(secs, 10, "quiet hour first fault must be exactly the floor");
+        let base = crate::config::DEFAULT_ROUTING_POLICY.overload_base_cooldown_secs;
+        assert_eq!(secs, base, "quiet hour first fault must be exactly the base floor");
     }
 
     #[tokio::test]
@@ -652,7 +663,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_success_deflates_fault_window() {
+    async fn test_success_clears_fault_window() {
         let p = setup_provider("prov1");
         let strategy = AdaptivePriorityStrategy;
 
@@ -660,9 +671,64 @@ mod tests {
         strategy.feedback(&p, false, false, Some(503), None).await;
         assert_eq!(p.fault_history.read().await.len(), 2);
 
+        // A healthy 200 evaporates the WHOLE burst window — the next single
+        // blip must be judged on its own, not on stale pre-recovery faults.
         strategy.feedback(&p, true, false, Some(200), None).await;
-        assert_eq!(p.fault_history.read().await.len(), 1);
+        assert_eq!(p.fault_history.read().await.len(), 0);
         assert!(p.rate_limited_until.read().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_http_429_never_counts_toward_circuit() {
+        let p = setup_provider("prov1");
+        let strategy = AdaptivePriorityStrategy;
+
+        // Hammer the provider with rate-limit responses: it must stay CLOSED
+        // (429 is upstream throttling, not a health failure) and only carry a
+        // rate-limit window.
+        for _ in 0..10 {
+            strategy
+                .feedback(&p, false, false, Some(429), Some(Duration::from_secs(5)))
+                .await;
+        }
+
+        assert_eq!(
+            *p.consecutive_failures.read().await,
+            0,
+            "429 must never increment the circuit failure counter"
+        );
+        assert!(
+            matches!(*p.circuit.read().await, CircuitState::Closed),
+            "429 must never trip the circuit breaker"
+        );
+        assert!(p.rate_limited_until.read().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_circuit_opens_at_threshold_with_capped_base() {
+        let p = setup_provider("prov1");
+        let strategy = AdaptivePriorityStrategy;
+        let policy = crate::config::DEFAULT_ROUTING_POLICY;
+
+        // Drive enough hard 5xx to trip the breaker.
+        for _ in 0..policy.circuit_failure_threshold {
+            strategy.feedback(&p, false, false, Some(503), None).await;
+        }
+
+        let state = *p.circuit.read().await;
+        match state {
+            CircuitState::Open { until } => {
+                let left = until.saturating_duration_since(Instant::now()).as_secs();
+                assert!(
+                    left <= policy.circuit_base_cooldown_secs,
+                    "initial circuit cooldown must be capped at the base ({}s), got {}s",
+                    policy.circuit_base_cooldown_secs,
+                    left
+                );
+                assert!(left > 0, "circuit must actually be open");
+            },
+            other => panic!("expected Open circuit at threshold, got {:?}", other),
+        }
     }
 
     #[tokio::test]

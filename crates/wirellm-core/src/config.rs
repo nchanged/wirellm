@@ -17,6 +17,76 @@ pub struct ServerConfig {
     pub bind_family: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutingPolicy {
+    /// Per-attempt HTTP response-header timeout for streaming requests (seconds).
+    pub stream_header_timeout_secs: u64,
+    /// Per-attempt HTTP response-header timeout for non-streaming requests (seconds).
+    pub nonstream_header_timeout_secs: u64,
+    /// Rolling window used to count recent overload faults (seconds).
+    pub fault_window_secs: u64,
+    /// Base breathing room applied after the 1st overload fault (seconds).
+    pub overload_base_cooldown_secs: u64,
+    /// Maximum cap on any single overload breathing window (seconds).
+    pub overload_max_cooldown_secs: u64,
+    /// Consecutive non-429 failures required to trip the circuit breaker.
+    pub circuit_failure_threshold: u32,
+    /// Base circuit breaker open cooldown on initial trip (seconds).
+    pub circuit_base_cooldown_secs: u64,
+    /// Maximum cap on circuit breaker open cooldown (seconds).
+    pub circuit_max_cooldown_secs: u64,
+    /// Default fallback cooldown on HTTP 429 when upstream omits Retry-After (seconds).
+    pub rate_limit_default_cooldown_secs: u64,
+    /// Idle duration required to decay 1 consecutive failure (seconds).
+    pub decay_interval_secs: u64,
+}
+
+/// Canonical, compile-time default routing policy — the single source of truth.
+/// The runtime atomics (`state.rs`), the DB fallback, and the dashboard's
+/// default form all derive from these numbers; never re-type them elsewhere.
+pub const DEFAULT_ROUTING_POLICY: RoutingPolicy = RoutingPolicy {
+    stream_header_timeout_secs: 22,
+    // Non-streaming upstreams send response headers only AFTER the full
+    // completion is generated, so this must cover whole-generation time (the
+    // old `upstream_timeout_secs` behaviour), NOT act as a first-byte cap.
+    // Default matches the shipped upstream timeout, so it is a no-op unless an
+    // operator deliberately lowers it to force faster non-stream cascades.
+    nonstream_header_timeout_secs: 300,
+    fault_window_secs: 180,
+    overload_base_cooldown_secs: 15,
+    overload_max_cooldown_secs: 90,
+    circuit_failure_threshold: 3,
+    circuit_base_cooldown_secs: 30,
+    circuit_max_cooldown_secs: 120,
+    rate_limit_default_cooldown_secs: 10,
+    decay_interval_secs: 180,
+};
+
+impl Default for RoutingPolicy {
+    fn default() -> Self {
+        DEFAULT_ROUTING_POLICY
+    }
+}
+
+impl RoutingPolicy {
+    /// Enforces safe lower bounds on every field. Call after applying any
+    /// external patch so a value of 0 (or a window shorter than a single
+    /// request) can never stall or livelock the router. Also the last line of
+    /// defence inside `state::apply_routing_policy`.
+    pub fn clamp(&mut self) {
+        self.stream_header_timeout_secs = self.stream_header_timeout_secs.max(3);
+        self.nonstream_header_timeout_secs = self.nonstream_header_timeout_secs.max(5);
+        self.fault_window_secs = self.fault_window_secs.max(10);
+        self.overload_base_cooldown_secs = self.overload_base_cooldown_secs.max(1);
+        self.overload_max_cooldown_secs = self.overload_max_cooldown_secs.max(5);
+        self.circuit_failure_threshold = self.circuit_failure_threshold.max(1);
+        self.circuit_base_cooldown_secs = self.circuit_base_cooldown_secs.max(5);
+        self.circuit_max_cooldown_secs = self.circuit_max_cooldown_secs.max(10);
+        self.rate_limit_default_cooldown_secs = self.rate_limit_default_cooldown_secs.max(1);
+        self.decay_interval_secs = self.decay_interval_secs.max(15);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub name: String,
@@ -422,5 +492,56 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Invalid header name"));
+    }
+
+    #[test]
+    fn test_routing_policy_default_is_the_canonical_const() {
+        // The Default impl and the runtime atomics must both read the single
+        // source of truth — this guards against a second, drifting copy.
+        assert_eq!(RoutingPolicy::default(), DEFAULT_ROUTING_POLICY);
+    }
+
+    #[test]
+    fn test_routing_policy_clamp_enforces_floors() {
+        // A hostile/zeroed patch must be lifted to safe minimums, never stored
+        // as-is (a 0s timeout or 0-fault circuit would deadlock routing).
+        let mut p = RoutingPolicy {
+            stream_header_timeout_secs: 0,
+            nonstream_header_timeout_secs: 0,
+            fault_window_secs: 0,
+            overload_base_cooldown_secs: 0,
+            overload_max_cooldown_secs: 0,
+            circuit_failure_threshold: 0,
+            circuit_base_cooldown_secs: 0,
+            circuit_max_cooldown_secs: 0,
+            rate_limit_default_cooldown_secs: 0,
+            decay_interval_secs: 0,
+        };
+        p.clamp();
+
+        assert_eq!(p.stream_header_timeout_secs, 3);
+        assert_eq!(p.nonstream_header_timeout_secs, 5);
+        assert_eq!(p.fault_window_secs, 10);
+        assert_eq!(p.overload_base_cooldown_secs, 1);
+        assert_eq!(p.overload_max_cooldown_secs, 5);
+        assert_eq!(p.circuit_failure_threshold, 1);
+        assert_eq!(p.circuit_base_cooldown_secs, 5);
+        assert_eq!(p.circuit_max_cooldown_secs, 10);
+        assert_eq!(p.rate_limit_default_cooldown_secs, 1);
+        assert_eq!(p.decay_interval_secs, 15);
+
+        // Values ABOVE the floors must be preserved untouched.
+        let mut q = DEFAULT_ROUTING_POLICY;
+        q.clamp();
+        assert_eq!(q, DEFAULT_ROUTING_POLICY);
+    }
+
+    #[test]
+    fn test_routing_policy_serde_roundtrip() {
+        // The policy is persisted as JSON in server_settings; a round-trip must
+        // be lossless or a daemon restart would silently reset tuning.
+        let json = serde_json::to_string(&DEFAULT_ROUTING_POLICY).unwrap();
+        let back: RoutingPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, DEFAULT_ROUTING_POLICY);
     }
 }
