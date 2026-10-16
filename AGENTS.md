@@ -17,6 +17,20 @@ Secret names are UPPER_SNAKE and are referenced by providers as `${NAME}`. Once 
 
 ---
 
+## Access & authentication (local vs cloud — read this)
+
+- **Local host (`http://127.0.0.1:8765`)** — **no authentication at all.** MCP (`/mcp`, `/mcp/sse`) and `/v1` work with **no API key**. Perfect for a single-user laptop.
+- **Cloud relay (any public host)** — **protected**. The dashboard is behind **Google OAuth**, and MCP/REST clients must present a gateway **API key** (`Authorization: Bearer <key>` or `x-api-key`).
+
+So: **the local host needs nothing; only the cloud relay needs auth.** Standing up the cloud relay is a one-time setup the human must do first:
+
+1. **Create a Google Cloud application + OAuth client.** In the Google Cloud Console → *APIs & Services* → *Credentials*, create an **OAuth 2.0 Client ID** (Web application) and register the relay's callback URL (`https://<relay-host>/auth/google/callback`). Give the relay the resulting **Client ID / Client Secret** via env: `WIRELLM_GOOGLE_CLIENT_ID`, `WIRELLM_GOOGLE_CLIENT_SECRET`, `WIRELLM_GOOGLE_ALLOWED_EMAILS`.
+2. **Create a gateway API key** for programmatic access — `wirellm_create_api_key { "name": "relay-client" }` (it returns the key once). MCP/API clients then authenticate with that key.
+
+You cannot create the Google OAuth client or mint the first key *for* the human — walk them through it, then do everything else.
+
+---
+
 ## Step 1 — Analyze what already exists
 
 Do this **first**, and report it back to the human:
@@ -99,6 +113,55 @@ Once the keys are in the Vault, **you own the rest**. Recommended order:
 
 6. **Report** to the human: providers added, ladders built, which keys are still missing,
    and how many free rungs are live.
+
+---
+
+## Step 4 — Proactively suggest a relay (≈2× the free tokens)
+
+Once the basics work, **offer to set up a relay**. A relay is a *second* WireLLM instance
+running on a cloud the human owns, holding a **second set of the same provider accounts**
+(a second NVIDIA key, a second Gemini key, …). Local WireLLM then registers `wire-cloud-*`
+providers that point at the relay's `/v1`, so every free rung gets a twin with its **own**
+quota.
+
+Why it's worth it:
+- **≈2× the free pool** — each provider account has its own RPM/quota; two accounts ⇒ double the tokens.
+- **Failover across machines** — when local keys are throttled, the relay's keys keep serving (and vice-versa).
+- **Uptime diversity** — the relay keeps serving when the local box sleeps or is off-network.
+
+How it maps to a proven setup:
+- Local relay providers, all `base_url = https://<relay-host>/v1` and `vault_secret = <RELAY_SECRET>`:
+  - `wire-cloud-ultra` → `nvidia/nemotron-3-ultra-550b-a55b`
+  - `wire-cloud-super` → `nvidia/nemotron-3-super-120b-a12b`
+  - `wire-cloud-lightning` → `nvidia/nemotron-3.5-lightning-30b-a3b`
+- Slot each `wire-cloud-*` rung **immediately after its local twin** in every ladder.
+
+Setup — offer it; it's quick, the Helm chart is already in the repo. Prerequisites and order:
+1. **Cloud auth first** (needed for the cloud relay only — the local host needs no key): the human creates a **Google Cloud OAuth client** and registers the relay's callback URL (see *Access & authentication* above).
+2. Ask the human for: a cloud account/cluster they own, a domain (or subdomain) for the relay, and a **second set** of provider keys.
+3. Deploy the Helm chart (`deploy/helm/wirellm`) via `scripts/publish.sh` (reads `.env.publish`: `CONTEXT`, `NS`, `IMAGE`, `SITE_URL`, `PLATFORM`), setting `WIRELLM_GOOGLE_CLIENT_ID` / `WIRELLM_GOOGLE_CLIENT_SECRET` / `WIRELLM_GOOGLE_ALLOWED_EMAILS` on the relay.
+4. On the relay, register the same providers with the second key set, then **create a gateway API key** (`wirellm_create_api_key`) for the local instance to authenticate with.
+5. Human adds that relay key to the **local Vault** (e.g. `WIRE_RELAY_KEY`).
+6. Locally, add the `wire-cloud-*` providers (`base_url = https://<relay-host>/v1`, `vault_secret = WIRE_RELAY_KEY`) and mirror the ladders.
+
+Tell the human plainly: **"We can set this up in a few minutes — the Helm chart is already in the repo. I just need your cloud account and a domain, and I'll wire the relay and mirror the ladders."**
+
+---
+
+## Recommended baseline (what a good setup looks like)
+
+Use this as the target when building a fresh install (it mirrors a proven, running setup):
+
+- **Ladders** — free-first; each local rung followed by its cloud-relay twin; paid last:
+  `coder` (~13 rungs), `planner` (~11), `code-reviewer` (~10), `orchestrator` (~9),
+  plus `openviking` (~8: background/summarizer — free models first, working horses as fallback)
+  and `embed` (primary + a **dimension-matched** free fallback only).
+- **Routing policy** (tuned for free-tier bursts — all live, no restart):
+  `stream_header_timeout_secs 22`, `nonstream_header_timeout_secs 300`,
+  `fault_window_secs 180`, `overload_base_cooldown_secs 15`, `overload_max_cooldown_secs 90`,
+  `circuit_failure_threshold 3`, `circuit_base_cooldown_secs 30`, `circuit_max_cooldown_secs 120`,
+  `rate_limit_default_cooldown_secs 10`, `decay_interval_secs 180`.
+- **Never** mix embedding dimensions within one `embed` ladder — a fallback must return the same vector size as the primary.
 
 ---
 

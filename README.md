@@ -138,7 +138,13 @@ Then route your own requests to http://127.0.0.1:8765/v1 using
 wirellm/coder, wirellm/planner, or wirellm/orchestrator.
 ```
 
-The full agent playbook — tool-by-tool workflow, the recommended free-key list, and guardrails — lives in [`AGENTS.md`](AGENTS.md).
+The full agent playbook — tool-by-tool workflow, the recommended free-key list, guardrails, and the cloud-relay setup lives in [`AGENTS.md`](AGENTS.md).
+
+### Optional: a cloud relay (≈2× your free tokens)
+
+Point a second WireLLM at a cloud you own and it serves a **second set of provider accounts** — doubling your free pool and adding failover when your laptop sleeps. The Helm chart ships in the repo (`deploy/helm/wirellm`); just ask your agent to set it up — it will tell you exactly what it needs.
+
+> ⚠️ **Cloud needs auth; local does not.** The **local host requires no key** — MCP and `/v1` are open on `127.0.0.1`. A **public relay is protected**: the dashboard is behind **Google OAuth**, and MCP/API clients use a gateway **API key**. So the human must, once: create an **OAuth client in Google Cloud** (register `https://<relay-host>/auth/google/callback`), then mint an API key with `wirellm_create_api_key`.
 
 ---
 
