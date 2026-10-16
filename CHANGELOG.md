@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Live-tunable routing policy**: Header timeouts, overload breathing room, circuit-breaker thresholds/cooldowns, the 429 fallback and failure-decay interval are now runtime settings (persisted in `server_settings`), exposed via `GET/POST /api/routing-policy`, the MCP tools `wirellm_get_routing_policy` / `wirellm_set_routing_policy`, and a **Timeouts & Cooldowns** panel on the dashboard. No Rust edits or restarts to retune the router.
+- **Per-attempt header timeout**: WireLLM bounds how long it waits for upstream response headers (stream 22s by default) so a slow or hung upstream fails over to the next ladder rung before the client's own header timeout fires. Non-streaming requests keep the full generation budget (default 300s, matching the upstream timeout) since buffered upstreams only send headers after generating. A client disconnect during that wait records overload feedback so the next attempt skips the hung rung.
+
+### Changed
+- **Lighter, faster-adapting cooldowns** (fault memory 10 min → 3 min): the breathing-room ladder is now ~15s → 30s → 60s → 90s (cap) instead of multiplying up to 300s, and the circuit breaker starts at 3 consecutive failures with a 30s → 120s (cap) cooldown instead of growing to 240s+.
+- **HTTP 429 no longer counts toward the circuit breaker** — rate limiting is upstream throttling, not a provider health failure, so it only sets a rate-limit window.
+- **A successful response clears the recent-fault burst window entirely** (previously it only popped one entry), so a recovered provider is judged on new faults rather than stale pre-recovery ones.
+
 ## [0.2.1] - 2026-10-13
 
 ### Added

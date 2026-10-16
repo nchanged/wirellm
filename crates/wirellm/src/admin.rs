@@ -191,8 +191,12 @@ pub async fn build_status_response(
                 CircuitState::Closed => "Closed (Healthy)".to_string(),
                 CircuitState::HalfOpen => "Half-Open (Probing)".to_string(),
                 CircuitState::Open { until } => {
-                    let left = until.saturating_duration_since(now).as_secs();
-                    format!("Open (Cooldown: {}s left)", left)
+                    if now >= until {
+                        "Half-Open (Ready to Probe)".to_string()
+                    } else {
+                        let left = until.saturating_duration_since(now).as_secs();
+                        format!("Open (Cooldown: {}s left)", left)
+                    }
                 },
             };
 
@@ -736,6 +740,77 @@ pub async fn get_setup_recommendations() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "markdown": crate::mcp::RECOMMENDED_SETUP_MD,
     }))
+}
+
+#[derive(Deserialize, Default)]
+pub struct RoutingPolicyPatch {
+    pub stream_header_timeout_secs: Option<u64>,
+    pub nonstream_header_timeout_secs: Option<u64>,
+    pub fault_window_secs: Option<u64>,
+    pub overload_base_cooldown_secs: Option<u64>,
+    pub overload_max_cooldown_secs: Option<u64>,
+    pub circuit_failure_threshold: Option<u32>,
+    pub circuit_base_cooldown_secs: Option<u64>,
+    pub circuit_max_cooldown_secs: Option<u64>,
+    pub rate_limit_default_cooldown_secs: Option<u64>,
+    pub decay_interval_secs: Option<u64>,
+}
+
+/// GET /api/routing-policy - Returns the active timeout & cooldown policy
+pub async fn get_routing_policy() -> Json<wirellm_core::config::RoutingPolicy> {
+    Json(wirellm_core::state::current_routing_policy())
+}
+
+/// POST/PUT /api/routing-policy - Updates and persists the timeout & cooldown policy
+pub async fn update_routing_policy(
+    State(reloadable): State<ReloadableState>,
+    Json(patch): Json<RoutingPolicyPatch>,
+) -> Result<Json<wirellm_core::config::RoutingPolicy>, (StatusCode, Json<serde_json::Value>)> {
+    let mut policy = reloadable
+        .db
+        .get_routing_policy()
+        .unwrap_or_else(|_| wirellm_core::state::current_routing_policy());
+
+    if let Some(v) = patch.stream_header_timeout_secs {
+        policy.stream_header_timeout_secs = v;
+    }
+    if let Some(v) = patch.nonstream_header_timeout_secs {
+        policy.nonstream_header_timeout_secs = v;
+    }
+    if let Some(v) = patch.fault_window_secs {
+        policy.fault_window_secs = v;
+    }
+    if let Some(v) = patch.overload_base_cooldown_secs {
+        policy.overload_base_cooldown_secs = v;
+    }
+    if let Some(v) = patch.overload_max_cooldown_secs {
+        policy.overload_max_cooldown_secs = v;
+    }
+    if let Some(v) = patch.circuit_failure_threshold {
+        policy.circuit_failure_threshold = v;
+    }
+    if let Some(v) = patch.circuit_base_cooldown_secs {
+        policy.circuit_base_cooldown_secs = v;
+    }
+    if let Some(v) = patch.circuit_max_cooldown_secs {
+        policy.circuit_max_cooldown_secs = v;
+    }
+    if let Some(v) = patch.rate_limit_default_cooldown_secs {
+        policy.rate_limit_default_cooldown_secs = v;
+    }
+    if let Some(v) = patch.decay_interval_secs {
+        policy.decay_interval_secs = v;
+    }
+    // Enforce the shared safety floors (single source: RoutingPolicy::clamp)
+    policy.clamp();
+
+    reloadable
+        .db
+        .save_routing_policy(&policy)
+        .map_err(|e| internal_error(e.to_string()))?;
+    wirellm_core::state::apply_routing_policy(&policy);
+
+    Ok(Json(wirellm_core::state::current_routing_policy()))
 }
 
 #[derive(Deserialize)]

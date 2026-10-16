@@ -308,6 +308,33 @@ async fn process_jsonrpc(
                                 "name": { "type": "string", "description": "Name of secret to delete" }
                             }
                         }
+                    },
+                    {
+                        "name": "wirellm_get_routing_policy",
+                        "description": "Get the active timeout, overload breathing room, and circuit breaker cooldown settings.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    },
+                    {
+                        "name": "wirellm_set_routing_policy",
+                        "description": "Update and persist timeout, overload breathing room, and circuit breaker cooldown settings.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "stream_header_timeout_secs": { "type": "integer", "description": "Per-attempt response-header timeout for streaming requests in seconds (default 22)" },
+                                "nonstream_header_timeout_secs": { "type": "integer", "description": "Full non-stream generation budget in seconds — non-stream upstreams send headers only after generating (default 300)" },
+                                "fault_window_secs": { "type": "integer", "description": "Sliding window to count recent overload faults in seconds (default 180)" },
+                                "overload_base_cooldown_secs": { "type": "integer", "description": "Base cooldown after 1st overload fault in seconds (default 15)" },
+                                "overload_max_cooldown_secs": { "type": "integer", "description": "Maximum cap on overload cooldown in seconds (default 90)" },
+                                "circuit_failure_threshold": { "type": "integer", "description": "Consecutive failures required to open circuit breaker (default 3)" },
+                                "circuit_base_cooldown_secs": { "type": "integer", "description": "Initial circuit breaker open duration in seconds (default 30)" },
+                                "circuit_max_cooldown_secs": { "type": "integer", "description": "Maximum cap on circuit breaker open duration in seconds (default 120)" },
+                                "rate_limit_default_cooldown_secs": { "type": "integer", "description": "Fallback cooldown on HTTP 429 when Retry-After header is absent (default 10)" },
+                                "decay_interval_secs": { "type": "integer", "description": "Idle time required to decay 1 consecutive failure in seconds (default 180)" }
+                            }
+                        }
                     }
                 ]
             });
@@ -444,10 +471,16 @@ async fn handle_tool_call(
                         item["circuit"] = json!(match circ {
                             CircuitState::Closed => "Closed (Healthy)".to_string(),
                             CircuitState::HalfOpen => "Half-Open (Probing)".to_string(),
-                            CircuitState::Open { until } => format!(
-                                "Open ({}s cooldown left)",
-                                until.saturating_duration_since(now).as_secs()
-                            ),
+                            CircuitState::Open { until } => {
+                                if now >= until {
+                                    "Half-Open (Ready to Probe)".to_string()
+                                } else {
+                                    format!(
+                                        "Open ({}s cooldown left)",
+                                        until.saturating_duration_since(now).as_secs()
+                                    )
+                                }
+                            },
                         });
                         item["recent_faults"] = json!(rt.fault_history.read().await.len());
                         let rl = *rt.rate_limited_until.read().await;
@@ -813,6 +846,58 @@ async fn handle_tool_call(
                 "content": content,
                 "error": error,
             })).map_err(|e| e.to_string())
+        },
+        "wirellm_get_routing_policy" => {
+            let policy = wirellm_core::state::current_routing_policy();
+            serde_json::to_string_pretty(&policy).map_err(|e| e.to_string())
+        },
+        "wirellm_set_routing_policy" => {
+            let mut policy = reloadable
+                .db
+                .get_routing_policy()
+                .unwrap_or_else(|_| wirellm_core::state::current_routing_policy());
+
+            if let Some(v) = args.get("stream_header_timeout_secs").and_then(|v| v.as_u64()) {
+                policy.stream_header_timeout_secs = v;
+            }
+            if let Some(v) = args.get("nonstream_header_timeout_secs").and_then(|v| v.as_u64()) {
+                policy.nonstream_header_timeout_secs = v;
+            }
+            if let Some(v) = args.get("fault_window_secs").and_then(|v| v.as_u64()) {
+                policy.fault_window_secs = v;
+            }
+            if let Some(v) = args.get("overload_base_cooldown_secs").and_then(|v| v.as_u64()) {
+                policy.overload_base_cooldown_secs = v;
+            }
+            if let Some(v) = args.get("overload_max_cooldown_secs").and_then(|v| v.as_u64()) {
+                policy.overload_max_cooldown_secs = v;
+            }
+            if let Some(v) = args.get("circuit_failure_threshold").and_then(|v| v.as_u64()) {
+                policy.circuit_failure_threshold = v as u32;
+            }
+            if let Some(v) = args.get("circuit_base_cooldown_secs").and_then(|v| v.as_u64()) {
+                policy.circuit_base_cooldown_secs = v;
+            }
+            if let Some(v) = args.get("circuit_max_cooldown_secs").and_then(|v| v.as_u64()) {
+                policy.circuit_max_cooldown_secs = v;
+            }
+            if let Some(v) = args.get("rate_limit_default_cooldown_secs").and_then(|v| v.as_u64()) {
+                policy.rate_limit_default_cooldown_secs = v;
+            }
+            if let Some(v) = args.get("decay_interval_secs").and_then(|v| v.as_u64()) {
+                policy.decay_interval_secs = v;
+            }
+            // Enforce the shared safety floors (single source: RoutingPolicy::clamp)
+            policy.clamp();
+
+            reloadable
+                .db
+                .save_routing_policy(&policy)
+                .map_err(|e| format!("Failed to persist routing policy: {}", e))?;
+            wirellm_core::state::apply_routing_policy(&policy);
+
+            serde_json::to_string_pretty(&wirellm_core::state::current_routing_policy())
+                .map_err(|e| e.to_string())
         },
         unknown => Err(format!("Unknown tool: {}", unknown)),
     }

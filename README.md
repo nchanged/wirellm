@@ -164,8 +164,11 @@ WireLLM exposes:
    - `wirellm_list_virtual_models`: List aliases like `coder`, `planner`, `orchestrator`.
    - `wirellm_update_virtual_model`: Tune provider fallback chains for each virtual model.
    - `wirellm_get_token_stats`: View historical usage and latency.
+   - `wirellm_get_routing_policy`: Read the live timeout, overload-breathing, and circuit-breaker cooldown settings.
+   - `wirellm_set_routing_policy`: Tune & persist those settings (applied live, no restart, no Rust edits).
 2. REST Admin API:
    - GET http://127.0.0.1:8765/api/status
+   - GET/POST http://127.0.0.1:8765/api/routing-policy
    - POST http://127.0.0.1:8765/api/providers
    - POST http://127.0.0.1:8765/api/virtual-models
    - POST http://127.0.0.1:8765/api/providers/:name/reset
