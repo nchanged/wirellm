@@ -340,11 +340,10 @@ pub struct LogsResponse {
     pub lines: Vec<String>,
 }
 
-/// GET /logs — Returns recent server logs from ~/.wirellm/wirellm.log or /tmp/wirellm.log
-pub async fn get_logs(
-    headers: HeaderMap,
-    axum::extract::Query(query): axum::extract::Query<LogsQuery>,
-) -> impl IntoResponse {
+/// Resolves the configured log file, filters by `filter`, and returns
+/// `(total_matched, path, last-`limit`-matching lines)`. Shared by the HTTP
+/// `/logs` endpoint and the MCP `wirellm_get_logs` tool so both behave identically.
+pub async fn read_log_lines(limit: usize, filter: Option<String>) -> (usize, String, Vec<String>) {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let default_log = format!("{}/.wirellm/wirellm.log", home);
     let log_path = std::env::var("WIRELLM_LOG")
@@ -352,40 +351,40 @@ pub async fn get_logs(
         .unwrap_or_else(|_| {
             if std::path::Path::new(&default_log).exists() {
                 default_log
-            } else if std::path::Path::new("/tmp/wirellm.log").exists() {
-                "/tmp/wirellm.log".to_string()
             } else {
                 "/tmp/wirellm.log".to_string()
             }
         });
-    let limit = query.limit.unwrap_or(200).min(2000);
-    let filter = query.filter.map(|f| f.to_lowercase());
+    let limit = limit.min(2000);
+    let filter = filter.map(|f| f.to_lowercase());
 
-    let (lines, count) = match tokio::fs::read_to_string(&log_path).await {
+    match tokio::fs::read_to_string(&log_path).await {
         Ok(content) => {
             let mut matched: Vec<String> = content
                 .lines()
-                .filter(|line| {
-                    if let Some(ref term) = filter {
-                        line.to_lowercase().contains(term)
-                    } else {
-                        true
-                    }
-                })
+                .filter(|line| filter.as_ref().map_or(true, |term| line.to_lowercase().contains(term)))
                 .map(|s| s.to_string())
                 .collect();
-
             let total = matched.len();
             if total > limit {
                 matched = matched.split_off(total - limit);
             }
-            (matched, total)
+            (total, log_path, matched)
         },
         Err(e) => (
-            vec![format!("Log file not accessible at {}: {}", log_path, e)],
             1,
+            log_path.clone(),
+            vec![format!("Log file not accessible at {}: {}", log_path, e)],
         ),
-    };
+    }
+}
+
+/// GET /logs — Returns recent server logs from ~/.wirellm/wirellm.log or /tmp/wirellm.log
+pub async fn get_logs(
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<LogsQuery>,
+) -> impl IntoResponse {
+    let (count, log_path, lines) = read_log_lines(query.limit.unwrap_or(200), query.filter).await;
 
     let wants_text = query.format.as_deref() == Some("text")
         || headers

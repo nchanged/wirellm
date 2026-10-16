@@ -124,6 +124,7 @@ async fn process_jsonrpc(
                                 "api_key_template": { "type": "string", "description": "API key or env var template like ${NVIDIA_API_KEY}" },
                                 "raw_api_key": { "type": "string", "description": "Raw API key to automatically encrypt (AES-256-GCM) and save into the central Vault" },
                                 "models": { "type": "array", "items": { "type": "string" }, "description": "List of model IDs supported by this provider" },
+                                "enabled": { "type": "boolean", "description": "Whether the provider is active (default true). Set false to create/keep it disabled." },
                                 "rpm": { "type": "integer", "description": "Optional rate limit in requests per minute" },
                                 "min_interval_ms": { "type": "integer", "description": "Optional proactive burst spacing in milliseconds" },
                                 "max_concurrency": { "type": "integer", "description": "Optional maximum concurrent requests" },
@@ -204,7 +205,10 @@ async fn process_jsonrpc(
                                             "model": { "type": "string" }
                                         }
                                     }
-                                }
+                                },
+                                "weight_smartness": { "type": "number", "description": "Ranking weight for intelligence (optional; all three weights required together)" },
+                                "weight_speed": { "type": "number", "description": "Ranking weight for speed (optional)" },
+                                "weight_reliability": { "type": "number", "description": "Ranking weight for reliability (optional)" }
                             }
                         }
                     },
@@ -333,6 +337,91 @@ async fn process_jsonrpc(
                                 "circuit_max_cooldown_secs": { "type": "integer", "description": "Maximum cap on circuit breaker open duration in seconds (default 120)" },
                                 "rate_limit_default_cooldown_secs": { "type": "integer", "description": "Fallback cooldown on HTTP 429 when Retry-After header is absent (default 10)" },
                                 "decay_interval_secs": { "type": "integer", "description": "Idle time required to decay 1 consecutive failure in seconds (default 180)" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_delete_virtual_model",
+                        "description": "Delete a virtual model (routing group) by name.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": { "type": "string", "description": "Virtual model name to delete" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_set_provider_enabled",
+                        "description": "Take a provider offline (enabled:false) or bring it back online (enabled:true). Enabling also clears any auto-disable (severed model) marker and pending rate-limit/breathing window. For a provider disabled at the database level, use wirellm_add_provider with enabled:true.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["name", "enabled"],
+                            "properties": {
+                                "name": { "type": "string", "description": "Provider name" },
+                                "enabled": { "type": "boolean", "description": "true = online, false = offline" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_get_analytics",
+                        "description": "Daily token-usage analytics with totals. Provide `days` (0 = all-time), or an explicit inclusive `from`/`to` date range ('YYYY-MM-DD').",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "days": { "type": "integer", "description": "Look back N days (0 = all-time). Ignored when from/to are given." },
+                                "from": { "type": "string", "description": "Start date 'YYYY-MM-DD' (inclusive)" },
+                                "to": { "type": "string", "description": "End date 'YYYY-MM-DD' (inclusive)" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_get_logs",
+                        "description": "Return recent server log lines (structured JSON with the log path). Optionally filter by a case-insensitive substring and cap the count.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "limit": { "type": "integer", "description": "Max lines to return (default 200, max 2000)" },
+                                "filter": { "type": "string", "description": "Case-insensitive substring filter" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_reload",
+                        "description": "Force a hot reload of providers / virtual models / API keys from the database. Note: config-file changes (server settings, routing policy block) are applied at startup — restart the daemon to pick those up.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    },
+                    {
+                        "name": "wirellm_list_api_keys",
+                        "description": "List all registered gateway API keys with masked previews (plaintext is never returned).",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    },
+                    {
+                        "name": "wirellm_create_api_key",
+                        "description": "Create a new gateway API key for authenticating /v1 requests. Returns the full key ONCE (store it immediately); later reads only show a masked preview.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["name"],
+                            "properties": {
+                                "name": { "type": "string", "description": "Human-readable label for the key" },
+                                "key": { "type": "string", "description": "Optional explicit key value; a strong random key is generated when omitted" }
+                            }
+                        }
+                    },
+                    {
+                        "name": "wirellm_delete_api_key",
+                        "description": "Revoke a gateway API key by its id.",
+                        "inputSchema": {
+                            "type": "object",
+                            "required": ["id"],
+                            "properties": {
+                                "id": { "type": "string", "description": "API key id (from wirellm_list_api_keys)" }
                             }
                         }
                     }
@@ -531,6 +620,7 @@ async fn handle_tool_call(
             let min_interval_ms = args.get("min_interval_ms").and_then(|v| v.as_u64());
             let max_concurrency = args.get("max_concurrency").and_then(|v| v.as_u64()).map(|v| v as u32);
             let smartness_score = args.get("smartness_score").and_then(|v| v.as_u64()).map(|v| v as u32);
+            let enabled = args.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
 
             let raw_api_key = args.get("raw_api_key").and_then(|v| v.as_str());
             let vault_secret = args.get("vault_secret").and_then(|v| v.as_str());
@@ -566,7 +656,7 @@ async fn handle_tool_call(
                 .db
                 .upsert_provider(
                     prov_name,
-                    true,
+                    enabled,
                     base_url,
                     &api_key_template,
                     &models,
@@ -616,6 +706,10 @@ async fn handle_tool_call(
                 *p.auto_disabled_reason.write().await = None;
                 p.severed_strikes
                     .store(0, std::sync::atomic::Ordering::Release);
+                // Parity with the REST admin_reset: full rehabilitation also
+                // clears a manual offline toggle.
+                p.manual_disabled
+                    .store(false, std::sync::atomic::Ordering::Release);
                 p.fault_history.write().await.clear();
                 Ok(format!("Provider '{}' circuit breaker reset to Closed (Healthy)", prov_name))
             } else {
@@ -648,9 +742,19 @@ async fn handle_tool_call(
                 }
             }
 
+            // Ranking weights are optional; they apply only when all three are given.
+            let weights = match (
+                args.get("weight_smartness").and_then(|v| v.as_f64()),
+                args.get("weight_speed").and_then(|v| v.as_f64()),
+                args.get("weight_reliability").and_then(|v| v.as_f64()),
+            ) {
+                (Some(sm), Some(sp), Some(rel)) => Some((sm, sp, rel)),
+                _ => None,
+            };
+
             reloadable
                 .db
-                .upsert_virtual_model(vm_name, desc, &targets, None)
+                .upsert_virtual_model(vm_name, desc, &targets, weights)
                 .map_err(|e| format!("Failed to save virtual model: {}", e))?;
             let _ = reloadable.reloader.reload();
             Ok(format!("Virtual model '{}' updated with {} targets", vm_name, targets.len()))
@@ -924,6 +1028,126 @@ async fn handle_tool_call(
                 "config_file_updated": file_updated,
             });
             serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+        },
+        "wirellm_delete_virtual_model" => {
+            let vm_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
+            reloadable
+                .db
+                .delete_virtual_model(vm_name)
+                .map_err(|e| format!("Failed to delete virtual model: {}", e))?;
+            let _ = reloadable.reloader.reload();
+            Ok(format!("Virtual model '{}' deleted successfully", vm_name))
+        },
+        "wirellm_set_provider_enabled" => {
+            let prov_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
+            let enabled = args
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .ok_or("Missing 'enabled' (true/false)")?;
+            let app_state = reloadable.app_state.borrow().clone();
+            match app_state.providers.iter().find(|p| p.name == prov_name) {
+                Some(p) => {
+                    if enabled {
+                        // Mirror admin_online: bring back online AND clear any
+                        // auto-disable (severed model) marker + pending windows.
+                        p.manual_disabled
+                            .store(false, std::sync::atomic::Ordering::Release);
+                        *p.auto_disabled_reason.write().await = None;
+                        p.severed_strikes
+                            .store(0, std::sync::atomic::Ordering::Release);
+                        *p.rate_limited_until.write().await = None;
+                        Ok(format!("Provider '{}' brought online (manual + auto-disable cleared)", prov_name))
+                    } else {
+                        p.manual_disabled
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        Ok(format!("Provider '{}' taken offline (manual disable)", prov_name))
+                    }
+                },
+                None => Err(format!(
+                    "Provider '{}' is not currently loaded (unknown, or disabled in the database). \
+                     Use wirellm_add_provider with enabled:true to load it, or wirellm_list_providers to inspect.",
+                    prov_name
+                )),
+            }
+        },
+        "wirellm_get_analytics" => {
+            let from_in = args.get("from").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let to_in = args.get("to").and_then(|v| v.as_str()).map(|s| s.to_string());
+            // Same validation + reversed-range swap as the REST handler.
+            let (from, to) = crate::admin::normalize_analytics_range(from_in, to_in)?;
+            let (stats, days) = if from.is_some() || to.is_some() {
+                (
+                    reloadable
+                        .db
+                        .get_daily_stats_range(from.clone(), to.clone())
+                        .map_err(|e| e.to_string())?,
+                    0u32,
+                )
+            } else {
+                let days = args.get("days").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
+                (
+                    reloadable.db.get_daily_stats(days).map_err(|e| e.to_string())?,
+                    days,
+                )
+            };
+            let (mut total_requests, mut total_input_tokens, mut total_output_tokens) =
+                (0u64, 0u64, 0u64);
+            for s in &stats {
+                total_requests += s.total_requests;
+                total_input_tokens += s.total_input_tokens;
+                total_output_tokens += s.total_output_tokens;
+            }
+            let out = json!({
+                "days": days,
+                "from": from,
+                "to": to,
+                "total_requests": total_requests,
+                "total_input_tokens": total_input_tokens,
+                "total_output_tokens": total_output_tokens,
+                "estimated_cost_saved_usd": 0.0,
+                "stats": stats,
+            });
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+        },
+        "wirellm_get_logs" => {
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
+            let filter = args.get("filter").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let (count, path, lines) = crate::routes::admin_ops::read_log_lines(limit, filter).await;
+            let out = json!({ "count": count, "path": path, "lines": lines });
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+        },
+        "wirellm_reload" => {
+            reloadable
+                .reloader
+                .reload()
+                .map_err(|e| format!("Reload failed: {}", e))?;
+            Ok("Configuration reloaded (providers / virtual models / API keys from the database). Config-file changes apply at startup.".to_string())
+        },
+        "wirellm_list_api_keys" => {
+            let keys = reloadable.db.list_api_keys().map_err(|e| e.to_string())?;
+            serde_json::to_string_pretty(&keys).map_err(|e| e.to_string())
+        },
+        "wirellm_create_api_key" => {
+            let key_name = args.get("name").and_then(|v| v.as_str()).ok_or("Missing 'name'")?;
+            if key_name.trim().is_empty() {
+                return Err("Key name cannot be empty".to_string());
+            }
+            let raw_key = args.get("key").and_then(|v| v.as_str());
+            let record = reloadable
+                .db
+                .create_api_key(key_name, raw_key)
+                .map_err(|e| format!("Failed to create API key: {}", e))?;
+            let _ = reloadable.reloader.reload();
+            serde_json::to_string_pretty(&record).map_err(|e| e.to_string())
+        },
+        "wirellm_delete_api_key" => {
+            let key_id = args.get("id").and_then(|v| v.as_str()).ok_or("Missing 'id'")?;
+            reloadable
+                .db
+                .delete_api_key(key_id)
+                .map_err(|e| format!("Failed to delete API key: {}", e))?;
+            let _ = reloadable.reloader.reload();
+            Ok(format!("API key '{}' revoked successfully", key_id))
         },
         unknown => Err(format!("Unknown tool: {}", unknown)),
     }
