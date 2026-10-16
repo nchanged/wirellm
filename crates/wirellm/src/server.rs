@@ -87,6 +87,11 @@ pub struct Reloader {
 
 impl Reloader {
     pub fn reload(&self) -> Result<(), String> {
+        // Runtime reloads source configuration from SQLite (the runtime
+        // authority). The config file's `routing_policy` is reconciled into
+        // SQLite once at boot (run_serve + build_app_state); it is deliberately
+        // NOT re-read here, so a stale/failed file write can never revert a live
+        // policy on reload.
         let mut config = match self.db.load_config() {
             Ok(c) if !c.providers.is_empty() => c,
             _ => Config::load_from_file(&self.config_path)
@@ -234,9 +239,19 @@ impl axum::extract::FromRef<ReloadableState> for Reloader {
 }
 
 pub fn build_app_state(config: Config, db: Arc<DbManager>) -> Result<AppState, String> {
-    if let Ok(policy) = db.get_routing_policy() {
-        wirellm_core::state::apply_routing_policy(&policy);
-    }
+    // Routing policy precedence: config file → SQLite row → canonical defaults.
+    // A file-supplied policy is mirrored into SQLite so a later reload (which
+    // reads the DB back) stays consistent with the operator's file edit.
+    let policy = match config.routing_policy.clone() {
+        Some(p) => {
+            if let Err(e) = db.save_routing_policy(&p) {
+                tracing::warn!("Failed to mirror config-file routing policy into SQLite: {}", e);
+            }
+            p
+        },
+        None => db.get_routing_policy().unwrap_or_default(),
+    };
+    wirellm_core::state::apply_routing_policy(&policy);
     let mut providers = Vec::new();
     for p in config.providers {
         if !p.enabled {
@@ -588,6 +603,10 @@ pub async fn run_serve(config_path: PathBuf, cli_port: Option<u16>) -> Result<()
             if let Ok(file_cfg) = Config::load_from_file(&config_path) {
                 let mut merged = cfg;
                 merged.server = file_cfg.server;
+                // The config file's routing_policy (if any) is the operator's
+                // authority at boot — propagate it so build_app_state honours it
+                // (it is otherwise None in the DB-sourced config).
+                merged.routing_policy = file_cfg.routing_policy;
                 merged
             } else {
                 cfg

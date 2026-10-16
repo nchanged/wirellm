@@ -522,6 +522,9 @@ impl DbManager {
             auth: Default::default(),
             providers,
             virtual_models,
+            // The routing policy lives in its own server_settings key and is
+            // resolved by `build_app_state` (file value takes precedence).
+            routing_policy: None,
         })
     }
 

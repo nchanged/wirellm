@@ -311,7 +311,7 @@ async fn process_jsonrpc(
                     },
                     {
                         "name": "wirellm_get_routing_policy",
-                        "description": "Get the active timeout, overload breathing room, and circuit breaker cooldown settings.",
+                        "description": "Get the active timeout, overload breathing room, and circuit breaker cooldown settings, plus the config file path this instance writes them back to.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {}
@@ -319,7 +319,7 @@ async fn process_jsonrpc(
                     },
                     {
                         "name": "wirellm_set_routing_policy",
-                        "description": "Update and persist timeout, overload breathing room, and circuit breaker cooldown settings.",
+                        "description": "Update timeout, overload breathing room, and circuit breaker cooldown settings. Applies live in-memory, persists to the database, AND rewrites the managed routing_policy block in this instance's config file (so the value is visible in the config on disk too).",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -849,7 +849,11 @@ async fn handle_tool_call(
         },
         "wirellm_get_routing_policy" => {
             let policy = wirellm_core::state::current_routing_policy();
-            serde_json::to_string_pretty(&policy).map_err(|e| e.to_string())
+            let out = serde_json::json!({
+                "policy": policy,
+                "config_file": reloadable.reloader.config_path.display().to_string(),
+            });
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
         },
         "wirellm_set_routing_policy" => {
             let mut policy = reloadable
@@ -896,8 +900,30 @@ async fn handle_tool_call(
                 .map_err(|e| format!("Failed to persist routing policy: {}", e))?;
             wirellm_core::state::apply_routing_policy(&policy);
 
-            serde_json::to_string_pretty(&wirellm_core::state::current_routing_policy())
-                .map_err(|e| e.to_string())
+            // Mirror into the on-disk config file (best-effort — a read-only
+            // filesystem, e.g. a cloud pod, must not fail the call).
+            let cfg_path = reloadable.reloader.config_path.clone();
+            let file_updated = match wirellm_core::config::write_routing_policy_to_file(&cfg_path, &policy) {
+                Ok(p) => {
+                    tracing::info!("Routing policy written back to config file {}", p.display());
+                    true
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        "Routing policy applied live + persisted to DB, but config write-back to {} failed: {}",
+                        cfg_path.display(),
+                        e
+                    );
+                    false
+                },
+            };
+
+            let out = serde_json::json!({
+                "policy": wirellm_core::state::current_routing_policy(),
+                "config_file": cfg_path.display().to_string(),
+                "config_file_updated": file_updated,
+            });
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
         },
         unknown => Err(format!("Unknown tool: {}", unknown)),
     }

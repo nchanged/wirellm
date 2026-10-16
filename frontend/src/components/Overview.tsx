@@ -679,7 +679,7 @@ export const Overview: React.FC<OverviewProps> = ({
                   ROUTING TIMEOUTS &amp; COOLDOWN POLICY (LIVE SQLITE CONFIG)
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Changes apply immediately in-memory and persist across restarts without touching Rust code. Also configurable via MCP (<code className="text-[var(--primary)]">wirellm_set_routing_policy</code>).
+                  Changes apply immediately in-memory, persist across restarts, and are written back into the server's config file — no Rust edits. Also configurable via MCP (<code className="text-[var(--primary)]">wirellm_set_routing_policy</code>).
                 </p>
               </div>
               <div className="flex items-center gap-2">
