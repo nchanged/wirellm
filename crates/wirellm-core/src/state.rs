@@ -328,12 +328,6 @@ impl ProviderState {
         }
     }
 
-    /// Returns the auto-disable reason when the provider's model is severed
-    /// upstream (removed/EOL/misconfigured), making it skip routing entirely.
-    pub async fn auto_disabled(&self) -> Option<String> {
-        self.auto_disabled_reason.read().await.clone()
-    }
-
     /// True when the current severed quarantine window has elapsed (or no
     /// timestamp was recorded) — i.e. the provider is due for a fresh probe.
     ///
