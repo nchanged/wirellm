@@ -31,6 +31,12 @@ static LIVE_RATE_LIMIT_DEFAULT_SECS: AtomicU64 =
     AtomicU64::new(DEFAULT_ROUTING_POLICY.rate_limit_default_cooldown_secs);
 static LIVE_DECAY_INTERVAL_SECS: AtomicU64 =
     AtomicU64::new(DEFAULT_ROUTING_POLICY.decay_interval_secs);
+static LIVE_SEVERED_QUARANTINE_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.severed_quarantine_secs);
+static LIVE_SEVERED_QUARANTINE_MAX_SECS: AtomicU64 =
+    AtomicU64::new(DEFAULT_ROUTING_POLICY.severed_quarantine_max_secs);
+static LIVE_SEVERED_QUARANTINE_BACKOFF: AtomicU32 =
+    AtomicU32::new(DEFAULT_ROUTING_POLICY.severed_quarantine_backoff);
 
 pub fn apply_routing_policy(policy: &crate::config::RoutingPolicy) {
     // Clamp first (last line of defence) so no external caller can push an
@@ -47,6 +53,9 @@ pub fn apply_routing_policy(policy: &crate::config::RoutingPolicy) {
     LIVE_CIRCUIT_MAX_SECS.store(p.circuit_max_cooldown_secs, Ordering::Relaxed);
     LIVE_RATE_LIMIT_DEFAULT_SECS.store(p.rate_limit_default_cooldown_secs, Ordering::Relaxed);
     LIVE_DECAY_INTERVAL_SECS.store(p.decay_interval_secs, Ordering::Relaxed);
+    LIVE_SEVERED_QUARANTINE_SECS.store(p.severed_quarantine_secs, Ordering::Relaxed);
+    LIVE_SEVERED_QUARANTINE_MAX_SECS.store(p.severed_quarantine_max_secs, Ordering::Relaxed);
+    LIVE_SEVERED_QUARANTINE_BACKOFF.store(p.severed_quarantine_backoff, Ordering::Relaxed);
 }
 
 pub fn current_routing_policy() -> crate::config::RoutingPolicy {
@@ -61,7 +70,29 @@ pub fn current_routing_policy() -> crate::config::RoutingPolicy {
         circuit_max_cooldown_secs: LIVE_CIRCUIT_MAX_SECS.load(Ordering::Relaxed),
         rate_limit_default_cooldown_secs: LIVE_RATE_LIMIT_DEFAULT_SECS.load(Ordering::Relaxed),
         decay_interval_secs: LIVE_DECAY_INTERVAL_SECS.load(Ordering::Relaxed),
+        severed_quarantine_secs: LIVE_SEVERED_QUARANTINE_SECS.load(Ordering::Relaxed),
+        severed_quarantine_max_secs: LIVE_SEVERED_QUARANTINE_MAX_SECS.load(Ordering::Relaxed),
+        severed_quarantine_backoff: LIVE_SEVERED_QUARANTINE_BACKOFF.load(Ordering::Relaxed),
     }
+}
+
+/// Escalating quarantine window for a severed (auto-disabled) model:
+/// `base × backoff^(n − 1)`, capped at `max`. `n` is the number of auto-disables
+/// without an intervening success (`n = 1` → the base window). Saturating and
+/// explicitly capped so a pathological exponent can never overflow.
+pub fn severed_quarantine_secs(disable_count: u32, policy: &crate::config::RoutingPolicy) -> u64 {
+    let base = policy.severed_quarantine_secs.max(1);
+    let mult = u64::from(policy.severed_quarantine_backoff.max(1));
+    let cap = policy.severed_quarantine_max_secs.max(base);
+    let steps = disable_count.saturating_sub(1).min(32);
+    let mut secs = base;
+    for _ in 0..steps {
+        if secs >= cap {
+            return cap;
+        }
+        secs = secs.saturating_mul(mult);
+    }
+    secs.min(cap)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,9 +242,15 @@ pub struct ProviderState {
     // Optional DB handle to persist the diurnal histogram across restarts
     pub fault_pattern_store: Option<Arc<DbManager>>,
     // Severed upstream (model removed/EOL/misconfigured, e.g. HTTP 404/410):
-    // provider is skipped in routing until an admin clears the reason.
+    // provider is skipped in routing until its escalating quarantine elapses
+    // (then it is lazily re-admitted for a fresh probe), or an admin clears it.
     // Two strikes required so a single transient 404 can't hard-kill a provider.
     pub auto_disabled_reason: Arc<RwLock<Option<String>>>,
+    // When the current auto-disable began — drives the escalating quarantine.
+    pub auto_disabled_at: Arc<RwLock<Option<Instant>>>,
+    // Times this provider has auto-disabled without an intervening success —
+    // the backoff exponent. Reset on success and on manual re-enable.
+    pub severed_disable_count: Arc<AtomicU32>,
     pub severed_strikes: Arc<AtomicU32>,
 }
 
@@ -295,6 +332,86 @@ impl ProviderState {
     /// upstream (removed/EOL/misconfigured), making it skip routing entirely.
     pub async fn auto_disabled(&self) -> Option<String> {
         self.auto_disabled_reason.read().await.clone()
+    }
+
+    /// True when the current severed quarantine window has elapsed (or no
+    /// timestamp was recorded) — i.e. the provider is due for a fresh probe.
+    async fn quarantine_elapsed(&self, now: Instant, window: Duration) -> bool {
+        match *self.auto_disabled_at.read().await {
+            Some(at) => now.saturating_duration_since(at) >= window,
+            None => true,
+        }
+    }
+
+    /// Lazily re-admits a severed provider once its escalating quarantine window
+    /// has elapsed (see `severed_quarantine_secs`). Returns the active skip
+    /// reason while still quarantined, or `None` once released back into routing
+    /// (the next attempt then probes upstream exactly once).
+    ///
+    /// Hot path: a healthy provider pays a single read lock. The write lock is
+    /// taken only when a quarantine has actually expired, so recovery happens
+    /// exactly once under concurrency.
+    pub async fn severed_hold(
+        &self,
+        now: Instant,
+        policy: &crate::config::RoutingPolicy,
+    ) -> Option<String> {
+        let count = self.severed_disable_count.load(Ordering::Relaxed);
+        let window = Duration::from_secs(severed_quarantine_secs(count, policy));
+
+        // Fast path: read-only.
+        {
+            let guard = self.auto_disabled_reason.read().await;
+            if guard.is_none() {
+                return None;
+            }
+            if !self.quarantine_elapsed(now, window).await {
+                return guard.clone();
+            }
+        }
+
+        // Quarantine elapsed — re-admit under the write lock, re-checking so a
+        // concurrent thread cannot release (or a fresh severance cannot re-arm)
+        // behind our back.
+        let mut guard = self.auto_disabled_reason.write().await;
+        match guard.as_ref() {
+            None => None,
+            Some(reason) => {
+                if self.quarantine_elapsed(now, window).await {
+                    let last = reason.clone();
+                    *guard = None;
+                    *self.auto_disabled_at.write().await = None;
+                    self.severed_strikes.store(0, Ordering::Relaxed);
+                    tracing::info!(
+                        target: "wirellm_core::router",
+                        "Severed quarantine elapsed for {} — re-admitting for a fresh probe (last: {})",
+                        self.name,
+                        last
+                    );
+                    None
+                } else {
+                    guard.clone()
+                }
+            }
+        }
+    }
+
+    /// Seconds until a severed provider is re-probed, for dashboards/status.
+    /// `None` when the provider is not auto-disabled.
+    pub async fn severed_retry_secs(
+        &self,
+        now: Instant,
+        policy: &crate::config::RoutingPolicy,
+    ) -> Option<u64> {
+        let guard = self.auto_disabled_reason.read().await;
+        guard.as_ref()?;
+        let count = self.severed_disable_count.load(Ordering::Relaxed);
+        let window = severed_quarantine_secs(count, policy);
+        let elapsed = match *self.auto_disabled_at.read().await {
+            Some(at) => now.saturating_duration_since(at).as_secs(),
+            None => window,
+        };
+        Some(window.saturating_sub(elapsed))
     }
 
     /// Records an overload fault (HTTP 5xx or connection failure) and returns
@@ -447,6 +564,8 @@ mod tests {
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         // Deliberately index providers so protocol-smartness is anti-ordered —

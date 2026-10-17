@@ -301,6 +301,8 @@ pub fn build_app_state(config: Config, db: Arc<DbManager>) -> Result<AppState, S
             diurnal: Arc::new(diurnal),
             fault_pattern_store: Some(db.clone()),
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         });
     }

@@ -160,7 +160,8 @@ Use this as the target when building a fresh install (it mirrors a proven, runni
   `stream_header_timeout_secs 22`, `nonstream_header_timeout_secs 300`,
   `fault_window_secs 180`, `overload_base_cooldown_secs 15`, `overload_max_cooldown_secs 90`,
   `circuit_failure_threshold 3`, `circuit_base_cooldown_secs 30`, `circuit_max_cooldown_secs 120`,
-  `rate_limit_default_cooldown_secs 10`, `decay_interval_secs 180`.
+  `rate_limit_default_cooldown_secs 10`, `decay_interval_secs 180`,
+  `severed_quarantine_secs 3600`, `severed_quarantine_max_secs 21600`, `severed_quarantine_backoff 2`.
 - **Never** mix embedding dimensions within one `embed` ladder — a fallback must return the same vector size as the primary.
 
 ---

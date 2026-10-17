@@ -51,6 +51,8 @@ pub struct ProviderRuntimeDetail {
     pub recent_faults: u32,
     pub breathing_room_secs: u64,
     pub auto_disabled_reason: Option<String>,
+    /// Seconds until a severed (auto-disabled) provider is re-probed; None when healthy.
+    pub auto_disabled_retry_secs: Option<u64>,
     pub has_encrypted_key: bool,
     pub key_preview: String,
 }
@@ -141,6 +143,7 @@ pub async fn build_status_response(
     let app_state = reloadable.app_state.borrow().clone();
     let uptime_secs = reloadable.start_time.elapsed().as_secs();
     let now = Instant::now();
+    let policy = wirellm_core::state::current_routing_policy();
 
     // Query DB provider summaries
     let db_summaries = reloadable
@@ -185,6 +188,7 @@ pub async fn build_status_response(
             in_fl,
             recent_faults,
             auto_disabled_reason,
+            auto_disabled_retry_secs,
         ) = if let Some(p) = rt {
             let circ = *p.circuit.read().await;
             let c_str = match circ {
@@ -250,6 +254,7 @@ pub async fn build_status_response(
                 inflight,
                 p.fault_history.read().await.len() as u32,
                 p.auto_disabled().await,
+                p.severed_retry_secs(now, &policy).await,
             )
         } else {
             (
@@ -266,6 +271,7 @@ pub async fn build_status_response(
                 false,
                 0,
                 0,
+                None,
                 None,
             )
         };
@@ -299,6 +305,7 @@ pub async fn build_status_response(
             recent_faults,
             breathing_room_secs: rate_limited_until_secs.unwrap_or(0),
             auto_disabled_reason,
+            auto_disabled_retry_secs,
             has_encrypted_key: summary.has_encrypted_key,
             key_preview: summary.key_preview,
         });
@@ -767,6 +774,9 @@ pub struct RoutingPolicyPatch {
     pub circuit_max_cooldown_secs: Option<u64>,
     pub rate_limit_default_cooldown_secs: Option<u64>,
     pub decay_interval_secs: Option<u64>,
+    pub severed_quarantine_secs: Option<u64>,
+    pub severed_quarantine_max_secs: Option<u64>,
+    pub severed_quarantine_backoff: Option<u32>,
 }
 
 /// GET /api/routing-policy - Returns the active timeout & cooldown policy
@@ -813,6 +823,15 @@ pub async fn update_routing_policy(
     }
     if let Some(v) = patch.decay_interval_secs {
         policy.decay_interval_secs = v;
+    }
+    if let Some(v) = patch.severed_quarantine_secs {
+        policy.severed_quarantine_secs = v;
+    }
+    if let Some(v) = patch.severed_quarantine_max_secs {
+        policy.severed_quarantine_max_secs = v;
+    }
+    if let Some(v) = patch.severed_quarantine_backoff {
+        policy.severed_quarantine_backoff = v;
     }
     // Enforce the shared safety floors (single source: RoutingPolicy::clamp)
     policy.clamp();

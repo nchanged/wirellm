@@ -26,6 +26,7 @@ pub struct ModelsResponse {
 pub async fn list_models(State(app_state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut data = Vec::new();
     let now = Instant::now();
+    let policy = wirellm_core::state::current_routing_policy();
 
     for (vm_name, targets) in &app_state.virtual_models {
         let mut is_healthy = false;
@@ -36,8 +37,10 @@ pub async fn list_models(State(app_state): State<Arc<AppState>>) -> impl IntoRes
                 .iter()
                 .find(|p| p.name == target.provider)
             {
-                // Check if provider is healthy (Closed, or expired cooldown ready for HalfOpen)
-                if provider.auto_disabled_reason.read().await.is_some() {
+                // Check if provider is healthy (Closed, or expired cooldown ready for HalfOpen).
+                // `severed_hold` also releases an elapsed severed quarantine so a
+                // recovered model reappears instead of staying hidden.
+                if provider.severed_hold(now, &policy).await.is_some() {
                     continue;
                 }
                 let circuit = *provider.circuit.read().await;
@@ -75,7 +78,7 @@ pub async fn list_models(State(app_state): State<Arc<AppState>>) -> impl IntoRes
         if provider.manual_disabled.load(std::sync::atomic::Ordering::Relaxed) {
             continue;
         }
-        if provider.auto_disabled_reason.read().await.is_some() {
+        if provider.severed_hold(now, &policy).await.is_some() {
             continue;
         }
         let circuit = *provider.circuit.read().await;

@@ -1496,6 +1496,9 @@ mod tests {
             circuit_max_cooldown_secs: 240,
             rate_limit_default_cooldown_secs: 7,
             decay_interval_secs: 300,
+            severed_quarantine_secs: 1800,
+            severed_quarantine_max_secs: 7200,
+            severed_quarantine_backoff: 3,
         };
         db.save_routing_policy(&custom).unwrap();
         assert_eq!(db.get_routing_policy().unwrap(), custom);

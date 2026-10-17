@@ -336,7 +336,10 @@ async fn process_jsonrpc(
                                 "circuit_base_cooldown_secs": { "type": "integer", "description": "Initial circuit breaker open duration in seconds (default 30)" },
                                 "circuit_max_cooldown_secs": { "type": "integer", "description": "Maximum cap on circuit breaker open duration in seconds (default 120)" },
                                 "rate_limit_default_cooldown_secs": { "type": "integer", "description": "Fallback cooldown on HTTP 429 when Retry-After header is absent (default 10)" },
-                                "decay_interval_secs": { "type": "integer", "description": "Idle time required to decay 1 consecutive failure in seconds (default 180)" }
+                                "decay_interval_secs": { "type": "integer", "description": "Idle time required to decay 1 consecutive failure in seconds (default 180)" },
+                                "severed_quarantine_secs": { "type": "integer", "description": "Auto-recovery delay after a severed (404/410) model auto-disables a provider, before it is re-probed, in seconds (default 3600 = 1h)" },
+                                "severed_quarantine_max_secs": { "type": "integer", "description": "Ceiling on the escalating severed quarantine in seconds (default 21600 = 6h)" },
+                                "severed_quarantine_backoff": { "type": "integer", "description": "Multiplier applied to the severed quarantine on each repeat severance without a success; 2 = 1h,2h,4h,... (default 2)" }
                             }
                         }
                     },
@@ -547,6 +550,7 @@ async fn handle_tool_call(
             // Merge live routing state (circuit, breathing room, auto-disable) into each row
             if let Some(arr) = value.as_array_mut() {
                 let now = std::time::Instant::now();
+                let policy = wirellm_core::state::current_routing_policy();
                 for item in arr.iter_mut() {
                     let name: Option<String> = item
                         .get("name")
@@ -578,6 +582,8 @@ async fn handle_tool_call(
                             _ => 0,
                         });
                         item["auto_disabled_reason"] = json!(rt.auto_disabled().await);
+                        item["auto_disabled_retry_secs"] =
+                            json!(rt.severed_retry_secs(now, &policy).await);
                     }
                 }
             }
@@ -704,6 +710,9 @@ async fn handle_tool_call(
                 *p.circuit.write().await = wirellm_core::state::CircuitState::Closed;
                 *p.rate_limited_until.write().await = None;
                 *p.auto_disabled_reason.write().await = None;
+                *p.auto_disabled_at.write().await = None;
+                p.severed_disable_count
+                    .store(0, std::sync::atomic::Ordering::Release);
                 p.severed_strikes
                     .store(0, std::sync::atomic::Ordering::Release);
                 // Parity with the REST admin_reset: full rehabilitation also
@@ -995,6 +1004,15 @@ async fn handle_tool_call(
             if let Some(v) = args.get("decay_interval_secs").and_then(|v| v.as_u64()) {
                 policy.decay_interval_secs = v;
             }
+            if let Some(v) = args.get("severed_quarantine_secs").and_then(|v| v.as_u64()) {
+                policy.severed_quarantine_secs = v;
+            }
+            if let Some(v) = args.get("severed_quarantine_max_secs").and_then(|v| v.as_u64()) {
+                policy.severed_quarantine_max_secs = v;
+            }
+            if let Some(v) = args.get("severed_quarantine_backoff").and_then(|v| v.as_u64()) {
+                policy.severed_quarantine_backoff = v as u32;
+            }
             // Enforce the shared safety floors (single source: RoutingPolicy::clamp)
             policy.clamp();
 
@@ -1053,6 +1071,9 @@ async fn handle_tool_call(
                         p.manual_disabled
                             .store(false, std::sync::atomic::Ordering::Release);
                         *p.auto_disabled_reason.write().await = None;
+                        *p.auto_disabled_at.write().await = None;
+                        p.severed_disable_count
+                            .store(0, std::sync::atomic::Ordering::Release);
                         p.severed_strikes
                             .store(0, std::sync::atomic::Ordering::Release);
                         *p.rate_limited_until.write().await = None;

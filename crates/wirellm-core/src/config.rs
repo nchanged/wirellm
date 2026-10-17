@@ -39,6 +39,32 @@ pub struct RoutingPolicy {
     pub rate_limit_default_cooldown_secs: u64,
     /// Idle duration required to decay 1 consecutive failure (seconds).
     pub decay_interval_secs: u64,
+    /// First auto-recovery delay after a severed (HTTP 404/410) model
+    /// auto-disables a provider (seconds). The provider is skipped for this
+    /// window, then lazily re-admitted for a fresh probe — so a "listed but
+    /// unroutable" model (e.g. a temporarily over-capacity pool) rejoins on its
+    /// own instead of waiting for a human.
+    #[serde(default = "default_severed_quarantine_secs")]
+    pub severed_quarantine_secs: u64,
+    /// Ceiling on the escalating severed quarantine (seconds). Each repeat
+    /// severance without an intervening success stretches the window until it
+    /// hits this cap, so a genuinely-retired model settles into rare re-probes.
+    #[serde(default = "default_severed_quarantine_max_secs")]
+    pub severed_quarantine_max_secs: u64,
+    /// Multiplier applied to the severed quarantine on each repeat severance
+    /// (integer ≥ 1; 2 → base, 2×base, 4×base, … capped at the max).
+    #[serde(default = "default_severed_quarantine_backoff")]
+    pub severed_quarantine_backoff: u32,
+}
+
+fn default_severed_quarantine_secs() -> u64 {
+    DEFAULT_ROUTING_POLICY.severed_quarantine_secs
+}
+fn default_severed_quarantine_max_secs() -> u64 {
+    DEFAULT_ROUTING_POLICY.severed_quarantine_max_secs
+}
+fn default_severed_quarantine_backoff() -> u32 {
+    DEFAULT_ROUTING_POLICY.severed_quarantine_backoff
 }
 
 /// Canonical, compile-time default routing policy — the single source of truth.
@@ -60,6 +86,13 @@ pub const DEFAULT_ROUTING_POLICY: RoutingPolicy = RoutingPolicy {
     circuit_max_cooldown_secs: 120,
     rate_limit_default_cooldown_secs: 10,
     decay_interval_secs: 180,
+    // A severed model is quarantined for 1h, then lazily re-probed. Repeated
+    // severances without a recovery double the window (1h → 2h → 4h → 6h cap)
+    // so a flaky pool returns quickly while a truly-retired model is only
+    // re-probed a handful of times per day.
+    severed_quarantine_secs: 3600,
+    severed_quarantine_max_secs: 21600,
+    severed_quarantine_backoff: 2,
 };
 
 impl Default for RoutingPolicy {
@@ -84,6 +117,12 @@ impl RoutingPolicy {
         self.circuit_max_cooldown_secs = self.circuit_max_cooldown_secs.max(10);
         self.rate_limit_default_cooldown_secs = self.rate_limit_default_cooldown_secs.max(1);
         self.decay_interval_secs = self.decay_interval_secs.max(15);
+        // A severed quarantine of 0s would thrash upstream with 404s; a backoff
+        // < 1 would never grow the window. The max is raised to at least the
+        // base by `state::severed_quarantine_secs`, so a 1s floor here is safe.
+        self.severed_quarantine_secs = self.severed_quarantine_secs.max(1);
+        self.severed_quarantine_max_secs = self.severed_quarantine_max_secs.max(1);
+        self.severed_quarantine_backoff = self.severed_quarantine_backoff.max(1);
     }
 }
 
@@ -675,6 +714,9 @@ mod tests {
             circuit_max_cooldown_secs: 0,
             rate_limit_default_cooldown_secs: 0,
             decay_interval_secs: 0,
+            severed_quarantine_secs: 0,
+            severed_quarantine_max_secs: 0,
+            severed_quarantine_backoff: 0,
         };
         p.clamp();
 
@@ -688,6 +730,9 @@ mod tests {
         assert_eq!(p.circuit_max_cooldown_secs, 10);
         assert_eq!(p.rate_limit_default_cooldown_secs, 1);
         assert_eq!(p.decay_interval_secs, 15);
+        assert_eq!(p.severed_quarantine_secs, 1);
+        assert_eq!(p.severed_quarantine_max_secs, 1);
+        assert_eq!(p.severed_quarantine_backoff, 1);
 
         // Values ABOVE the floors must be preserved untouched.
         let mut q = DEFAULT_ROUTING_POLICY;
@@ -702,6 +747,40 @@ mod tests {
         let json = serde_json::to_string(&DEFAULT_ROUTING_POLICY).unwrap();
         let back: RoutingPolicy = serde_json::from_str(&json).unwrap();
         assert_eq!(back, DEFAULT_ROUTING_POLICY);
+    }
+
+    #[test]
+    fn test_routing_policy_legacy_json_gets_severed_defaults() {
+        // A policy row persisted BEFORE the severed-quarantine knobs existed
+        // must still parse (new fields default in) — otherwise an upgrade would
+        // silently reset an operator's custom tuning to the defaults.
+        let legacy = r#"{
+            "stream_header_timeout_secs": 11,
+            "nonstream_header_timeout_secs": 222,
+            "fault_window_secs": 99,
+            "overload_base_cooldown_secs": 5,
+            "overload_max_cooldown_secs": 55,
+            "circuit_failure_threshold": 4,
+            "circuit_base_cooldown_secs": 22,
+            "circuit_max_cooldown_secs": 111,
+            "rate_limit_default_cooldown_secs": 9,
+            "decay_interval_secs": 200
+        }"#;
+        let p: RoutingPolicy = serde_json::from_str(legacy).expect("legacy JSON must parse");
+        assert_eq!(p.stream_header_timeout_secs, 11);
+        assert_eq!(p.decay_interval_secs, 200);
+        assert_eq!(
+            p.severed_quarantine_secs,
+            DEFAULT_ROUTING_POLICY.severed_quarantine_secs
+        );
+        assert_eq!(
+            p.severed_quarantine_max_secs,
+            DEFAULT_ROUTING_POLICY.severed_quarantine_max_secs
+        );
+        assert_eq!(
+            p.severed_quarantine_backoff,
+            DEFAULT_ROUTING_POLICY.severed_quarantine_backoff
+        );
     }
 
     #[test]

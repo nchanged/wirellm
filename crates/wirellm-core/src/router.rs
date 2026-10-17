@@ -35,13 +35,16 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                 continue;
             }
 
-            // Check for auto-disabled (severed upstream: model removed/EOL/404)
-            if provider.auto_disabled_reason.read().await.is_some() {
+            let policy = crate::state::current_routing_policy();
+
+            // Severed upstream (model removed/EOL/404): skipped until its
+            // escalating quarantine elapses, then lazily re-admitted for a
+            // fresh probe (self-healing; no human needed).
+            if provider.severed_hold(now, &policy).await.is_some() {
                 continue;
             }
 
             // 1. Dynamic Idle Penalty Decay (Aging)
-            let policy = crate::state::current_routing_policy();
             {
                 let mut failures = provider.consecutive_failures.write().await;
                 let mut last_attempt = provider.last_attempt_time.write().await;
@@ -192,9 +195,13 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
 
             // Deflate the breathing window: a healthy response evaporates the
             // oldest fault so recovery is picked up quickly. A healthy model
-            // also forgives severed-strike history.
+            // also forgives severed-strike history and resets the severance
+            // escalation so a future, unrelated 404 starts fresh at the base
+            // quarantine.
             provider.record_overload_success().await;
             provider.severed_strikes.store(0, Ordering::Relaxed);
+            provider.severed_disable_count.store(0, Ordering::Relaxed);
+            *provider.auto_disabled_at.write().await = None;
 
             if is_probe {
                 provider.probe_in_flight.store(false, Ordering::SeqCst);
@@ -239,24 +246,34 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                     provider.name, cooldown.as_secs()
                 );
             } else if matches!(status_code, Some(404) | Some(410)) {
-                // Severed upstream: the model is gone for good (EOL'd, removed
-                // or misconfigured). Auto-disable after TWO strikes so a single
-                // transient 404 (deploy blip, relay misroute) can't hard-kill
-                // the provider; the dashboard highlights it until an admin
-                // clears it.
+                // Severed upstream: the model is gone (EOL'd, removed or — far
+                // more often — a "listed but unroutable" pool that is
+                // temporarily over capacity). Auto-disable after TWO strikes so
+                // a single transient 404 (deploy blip, relay misroute) can't
+                // hard-kill the provider; the dashboard highlights it, and the
+                // escalating quarantine re-admits it automatically (1h → 2h →
+                // … capped) so a recovered model rejoins without a human.
                 let strikes = provider.severed_strikes.fetch_add(1, Ordering::Relaxed) + 1;
                 if strikes >= 2 {
+                    let count = provider
+                        .severed_disable_count
+                        .fetch_add(1, Ordering::Relaxed)
+                        + 1;
+                    let window = crate::state::severed_quarantine_secs(count, &policy);
                     let reason = format!(
                         "model unavailable upstream (HTTP {}, {} strikes)",
                         status_code.unwrap(),
                         strikes
                     );
                     *provider.auto_disabled_reason.write().await = Some(reason);
+                    *provider.auto_disabled_at.write().await = Some(now);
                     info!(
                         target: "wirellm_core::router",
-                        "Auto-disabled {} — {}. Manual re-enable required.",
+                        "Auto-disabled {} — {}. Re-probing in {}s (quarantine #{}).",
                         provider.name,
-                        provider.auto_disabled_reason.read().await.clone().unwrap_or_default()
+                        provider.auto_disabled_reason.read().await.clone().unwrap_or_default(),
+                        window,
+                        count
                     );
                 } else {
                     info!(
@@ -356,6 +373,8 @@ mod tests {
             diurnal: Arc::new(crate::state::FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
@@ -663,6 +682,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_severed_quarantine_readmits_after_expiry() {
+        let p = setup_provider("flaky");
+        let strategy = AdaptivePriorityStrategy;
+
+        // Two 404s → auto-disabled with the base quarantine armed.
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        assert!(p.auto_disabled_reason.read().await.is_some());
+        assert_eq!(p.severed_disable_count.load(Ordering::Relaxed), 1);
+
+        // Inside the window the provider stays benched.
+        assert!(strategy.select(&[&p]).await.is_none());
+
+        // Backdate the disable past the 1h base quarantine → re-admitted with a
+        // cleared marker so the very next attempt probes upstream again.
+        *p.auto_disabled_at.write().await = Some(Instant::now() - Duration::from_secs(3601));
+        let selected = strategy.select(&[&p]).await;
+        assert!(
+            selected.is_some(),
+            "an elapsed quarantine must re-admit the severed provider"
+        );
+        assert!(p.auto_disabled_reason.read().await.is_none());
+        assert_eq!(p.severed_strikes.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_severed_quarantine_escalates_and_caps() {
+        let policy = crate::config::DEFAULT_ROUTING_POLICY;
+        // base 3600, backoff ×2, cap 21600 → 1h, 2h, 4h, then capped at 6h.
+        assert_eq!(crate::state::severed_quarantine_secs(1, &policy), 3600);
+        assert_eq!(crate::state::severed_quarantine_secs(2, &policy), 7200);
+        assert_eq!(crate::state::severed_quarantine_secs(3, &policy), 14400);
+        assert_eq!(crate::state::severed_quarantine_secs(4, &policy), 21600);
+        // A pathological exponent must saturate at the cap, never overflow.
+        assert_eq!(
+            crate::state::severed_quarantine_secs(u32::MAX, &policy),
+            21600
+        );
+    }
+
+    #[tokio::test]
+    async fn test_severed_escalation_survives_readmit_but_success_resets() {
+        let p = setup_provider("flaky");
+        let strategy = AdaptivePriorityStrategy;
+
+        // First severance (2 strikes) → quarantine #1.
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        assert_eq!(p.severed_disable_count.load(Ordering::Relaxed), 1);
+
+        // Quarantine elapses; a fresh 404 pair with NO success in between must
+        // escalate to #2, not silently restart at the base window.
+        *p.auto_disabled_at.write().await = Some(Instant::now() - Duration::from_secs(3601));
+        assert!(strategy.select(&[&p]).await.is_some());
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        assert_eq!(p.severed_disable_count.load(Ordering::Relaxed), 2);
+
+        // A real recovery (200) wipes the escalation history entirely.
+        strategy.feedback(&p, true, false, Some(200), None).await;
+        assert_eq!(p.severed_disable_count.load(Ordering::Relaxed), 0);
+        assert!(p.auto_disabled_at.read().await.is_none());
+        assert_eq!(p.severed_strikes.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
     async fn test_success_clears_fault_window() {
         let p = setup_provider("prov1");
         let strategy = AdaptivePriorityStrategy;
@@ -735,6 +820,8 @@ mod tests {
     async fn test_auto_disabled_provider_never_selected() {
         let p = setup_provider("prov1");
         *p.auto_disabled_reason.write().await = Some("model unavailable upstream (HTTP 404)".to_string());
+        // Disabled *just now* — inside its quarantine window, so still benched.
+        *p.auto_disabled_at.write().await = Some(Instant::now());
 
         let strategy = AdaptivePriorityStrategy;
         let candidates = vec![&p];

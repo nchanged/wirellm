@@ -27,6 +27,8 @@ pub struct RouteEntry {
     pub recent_faults: u32,
     pub breathing_room_secs: u64,
     pub auto_disabled_reason: Option<String>,
+    /// Seconds until a severed (auto-disabled) provider is re-probed; None when healthy.
+    pub auto_disabled_retry_secs: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -51,6 +53,8 @@ pub struct ProviderStatus {
     pub recent_faults: u32,
     pub breathing_room_secs: u64,
     pub auto_disabled_reason: Option<String>,
+    /// Seconds until a severed (auto-disabled) provider is re-probed; None when healthy.
+    pub auto_disabled_retry_secs: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -68,6 +72,7 @@ pub async fn get_status(
     let mut status_list = Vec::new();
     let mut total_requests: u64 = 0;
     let now = Instant::now();
+    let policy = wirellm_core::state::current_routing_policy();
 
     for provider in &app_state.providers {
         let circ = *provider.circuit.read().await;
@@ -122,6 +127,7 @@ pub async fn get_status(
         let in_flight = provider.in_flight.load(std::sync::atomic::Ordering::Relaxed);
         let recent_faults = provider.fault_history.read().await.len() as u32;
         let auto_disabled_reason = provider.auto_disabled().await;
+        let auto_disabled_retry_secs = provider.severed_retry_secs(now, &policy).await;
 
         total_requests += requests;
 
@@ -146,6 +152,7 @@ pub async fn get_status(
             recent_faults,
             breathing_room_secs: rate_limited_until_secs.unwrap_or(0),
             auto_disabled_reason,
+            auto_disabled_retry_secs,
         });
     }
 
@@ -200,12 +207,13 @@ pub async fn get_status(
                 },
                 None => ("Unknown".to_string(), 0, 0, None, 0, false, None, false, None, 0),
             };
-            let recent_faults_and_reason = match provider_state {
+            let (recent_faults, auto_disabled_reason, auto_disabled_retry_secs) = match provider_state {
                 Some(p) => (
                     p.fault_history.read().await.len() as u32,
                     p.auto_disabled().await,
+                    p.severed_retry_secs(now, &policy).await,
                 ),
-                None => (0, None),
+                None => (0, None, None),
             };
             entries.push(RouteEntry {
                 provider: target.provider.clone(),
@@ -220,9 +228,10 @@ pub async fn get_status(
                 is_burst_limited,
                 rate_limited_until_secs,
                 in_flight,
-                recent_faults: recent_faults_and_reason.0,
+                recent_faults,
                 breathing_room_secs: rate_limited_until_secs.unwrap_or(0),
-                auto_disabled_reason: recent_faults_and_reason.1,
+                auto_disabled_reason,
+                auto_disabled_retry_secs,
             });
         }
         virtual_models.insert(vm_name.clone(), entries);
@@ -269,6 +278,10 @@ pub async fn admin_online(
             // e.g. after fixing the model name in config or the upstream
             // restoring a removed model — and any pending breathing window.
             *provider.auto_disabled_reason.write().await = None;
+            *provider.auto_disabled_at.write().await = None;
+            provider
+                .severed_disable_count
+                .store(0, std::sync::atomic::Ordering::Release);
             provider
                 .severed_strikes
                 .store(0, std::sync::atomic::Ordering::Release);
@@ -304,6 +317,10 @@ pub async fn admin_reset(
                 .manual_disabled
                 .store(false, std::sync::atomic::Ordering::Release);
             *provider.auto_disabled_reason.write().await = None;
+            *provider.auto_disabled_at.write().await = None;
+            provider
+                .severed_disable_count
+                .store(0, std::sync::atomic::Ordering::Release);
             provider
                 .severed_strikes
                 .store(0, std::sync::atomic::Ordering::Release);

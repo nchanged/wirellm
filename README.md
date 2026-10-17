@@ -48,7 +48,7 @@ Autonomous agents fire rapid multi-step loops (plan, tool-call, review) that ins
 - **Sliding-window RPM accounting** (`max_rpm`) — diverts pre-emptively before an upstream `429`.
 - **In-flight concurrency caps** (`max_concurrency`) — fans parallel tool calls across the pool.
 - **Adaptive breathing room** — a 5xx/timeout raises a short, self-tapering cooldown; a success clears it immediately.
-- **Severed-model auto-disable** — a model that's gone (HTTP 404/410) is quarantined after two strikes and surfaced before it wastes a request.
+- **Severed-model auto-disable** — a model that 404/410s twice is benched and surfaced; an escalating quarantine (1h → 6h) then re-probes it automatically, so a recovered model rejoins with no human in the loop.
 - **Circuit breakers** — hard failures trip a capped, exponential cooldown; `429`s never do (they're throttling, not health).
 
 ### 5. Encrypted Vault, zero secret leaks

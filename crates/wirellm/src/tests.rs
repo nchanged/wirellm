@@ -94,6 +94,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -124,6 +126,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -229,6 +233,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -338,6 +344,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -368,6 +376,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -435,6 +445,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -556,6 +568,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -586,6 +600,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -694,6 +710,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -818,6 +836,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -916,6 +936,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mut vm = std::collections::HashMap::new();
@@ -1004,6 +1026,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -1105,6 +1129,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -1206,6 +1232,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
         let mut vm = std::collections::HashMap::new();
@@ -1677,6 +1705,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -1808,6 +1838,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 
@@ -2232,6 +2264,8 @@ use crate::server::*;
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         };
 

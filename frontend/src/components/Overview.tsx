@@ -71,6 +71,9 @@ interface RoutingPolicyConfig {
   circuit_max_cooldown_secs: number;
   rate_limit_default_cooldown_secs: number;
   decay_interval_secs: number;
+  severed_quarantine_secs: number;
+  severed_quarantine_max_secs: number;
+  severed_quarantine_backoff: number;
 }
 
 const DEFAULT_ROUTING_POLICY: RoutingPolicyConfig = {
@@ -84,6 +87,9 @@ const DEFAULT_ROUTING_POLICY: RoutingPolicyConfig = {
   circuit_max_cooldown_secs: 120,
   rate_limit_default_cooldown_secs: 10,
   decay_interval_secs: 180,
+  severed_quarantine_secs: 3600,
+  severed_quarantine_max_secs: 21600,
+  severed_quarantine_backoff: 2,
 };
 
 function evaluateTarget(
@@ -108,10 +114,20 @@ function evaluateTarget(
 
   // Severed upstream (model removed/EOL): auto-disabled providers must render
   // as blocked — pre-gap they were indistinguishable from healthy standby.
+  // The quarantine is finite now, so surface the automatic re-probe countdown.
   if (p.auto_disabled_reason) {
+    const retry = p.auto_disabled_retry_secs;
+    const retryLabel =
+      retry == null
+        ? ''
+        : retry >= 3600
+          ? ` · retry in ${Math.ceil(retry / 3600)}h`
+          : retry >= 60
+            ? ` · retry in ${Math.ceil(retry / 60)}m`
+            : ` · retry in ${retry}s`;
     return {
       status: 'blocked',
-      reason: `Auto-disabled: ${p.auto_disabled_reason}`,
+      reason: `Auto-disabled: ${p.auto_disabled_reason}${retryLabel}`,
       inFlight,
       circuit: p.circuit,
     };
@@ -761,6 +777,21 @@ export const Overview: React.FC<OverviewProps> = ({
                   label: 'Background Decay Tick (s)',
                   hint: 'Auto-heal failure counter interval',
                 },
+                {
+                  key: 'severed_quarantine_secs' as const,
+                  label: 'Severed Quarantine (s)',
+                  hint: 'First re-probe after auto-disable',
+                },
+                {
+                  key: 'severed_quarantine_max_secs' as const,
+                  label: 'Severed Quarantine Cap (s)',
+                  hint: 'Ceiling on escalation',
+                },
+                {
+                  key: 'severed_quarantine_backoff' as const,
+                  label: 'Severed Backoff (×)',
+                  hint: 'Multiplier per repeat severance',
+                },
               ].map((field) => (
                 <label
                   key={field.key}
@@ -770,7 +801,7 @@ export const Overview: React.FC<OverviewProps> = ({
                   <input
                     type="number"
                     min={1}
-                    max={3600}
+                    max={86400}
                     value={routingPolicy[field.key]}
                     onChange={(e) =>
                       setRoutingPolicy((prev) => ({

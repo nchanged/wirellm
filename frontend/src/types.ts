@@ -26,6 +26,7 @@ export interface ProviderRuntimeDetail {
   in_flight: number;
   breathing_room_secs?: number;
   auto_disabled_reason?: string | null;
+  auto_disabled_retry_secs?: number | null;
   has_encrypted_key?: boolean;
   key_preview?: string;
 }

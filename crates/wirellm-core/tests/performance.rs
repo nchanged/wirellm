@@ -38,6 +38,8 @@ async fn test_routing_loop_latency_performance() {
             diurnal: Arc::new(FaultHistogram::new()),
             fault_pattern_store: None,
             auto_disabled_reason: Arc::new(RwLock::new(None)),
+            auto_disabled_at: Arc::new(RwLock::new(None)),
+            severed_disable_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             severed_strikes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         });
     }
