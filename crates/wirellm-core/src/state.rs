@@ -336,6 +336,11 @@ impl ProviderState {
 
     /// True when the current severed quarantine window has elapsed (or no
     /// timestamp was recorded) — i.e. the provider is due for a fresh probe.
+    ///
+    /// A missing timestamp deliberately fails *open* (release, not skip): a
+    /// provider stuck benched forever is worse than one wasted probe. In-band,
+    /// `reason` and the timestamp are always armed and cleared together, so
+    /// this branch only guards against externally-set state.
     async fn quarantine_elapsed(&self, now: Instant, window: Duration) -> bool {
         match *self.auto_disabled_at.read().await {
             Some(at) => now.saturating_duration_since(at) >= window,
@@ -346,11 +351,12 @@ impl ProviderState {
     /// Lazily re-admits a severed provider once its escalating quarantine window
     /// has elapsed (see `severed_quarantine_secs`). Returns the active skip
     /// reason while still quarantined, or `None` once released back into routing
-    /// (the next attempt then probes upstream exactly once).
+    /// (the provider is then a normal candidate again, subject to the usual
+    /// per-provider pacing).
     ///
     /// Hot path: a healthy provider pays a single read lock. The write lock is
-    /// taken only when a quarantine has actually expired, so recovery happens
-    /// exactly once under concurrency.
+    /// taken only when a quarantine has actually expired, so the release
+    /// happens exactly once under concurrency.
     pub async fn severed_hold(
         &self,
         now: Instant,

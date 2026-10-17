@@ -581,7 +581,7 @@ async fn handle_tool_call(
                             Some(until) if now < until => until.saturating_duration_since(now).as_secs(),
                             _ => 0,
                         });
-                        item["auto_disabled_reason"] = json!(rt.auto_disabled().await);
+                        item["auto_disabled_reason"] = json!(rt.severed_hold(now, &policy).await);
                         item["auto_disabled_retry_secs"] =
                             json!(rt.severed_retry_secs(now, &policy).await);
                     }

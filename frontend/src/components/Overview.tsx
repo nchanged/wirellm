@@ -120,11 +120,13 @@ function evaluateTarget(
     const retryLabel =
       retry == null
         ? ''
-        : retry >= 3600
-          ? ` · retry in ${Math.ceil(retry / 3600)}h`
-          : retry >= 60
-            ? ` · retry in ${Math.ceil(retry / 60)}m`
-            : ` · retry in ${retry}s`;
+        : retry <= 0
+          ? ' · retrying now'
+          : retry >= 3600
+            ? ` · retry in ${Math.ceil(retry / 3600)}h`
+            : retry >= 60
+              ? ` · retry in ${Math.ceil(retry / 60)}m`
+              : ` · retry in ${retry}s`;
     return {
       status: 'blocked',
       reason: `Auto-disabled: ${p.auto_disabled_reason}${retryLabel}`,
@@ -801,7 +803,7 @@ export const Overview: React.FC<OverviewProps> = ({
                   <input
                     type="number"
                     min={1}
-                    max={86400}
+                    max={field.key === 'severed_quarantine_max_secs' ? 86400 : 3600}
                     value={routingPolicy[field.key]}
                     onChange={(e) =>
                       setRoutingPolicy((prev) => ({

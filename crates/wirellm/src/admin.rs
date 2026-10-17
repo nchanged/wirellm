@@ -253,7 +253,7 @@ pub async fn build_status_response(
                 burst,
                 inflight,
                 p.fault_history.read().await.len() as u32,
-                p.auto_disabled().await,
+                p.severed_hold(now, &policy).await,
                 p.severed_retry_secs(now, &policy).await,
             )
         } else {

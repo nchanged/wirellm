@@ -195,12 +195,14 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
 
             // Deflate the breathing window: a healthy response evaporates the
             // oldest fault so recovery is picked up quickly. A healthy model
-            // also forgives severed-strike history and resets the severance
-            // escalation so a future, unrelated 404 starts fresh at the base
-            // quarantine.
+            // also forgives severed-strike history and clears any severance
+            // marker — a direct probe or an in-flight request that still
+            // succeeds proves the model is alive, so it must rejoin immediately
+            // (and a future, unrelated 404 starts fresh at the base quarantine).
             provider.record_overload_success().await;
             provider.severed_strikes.store(0, Ordering::Relaxed);
             provider.severed_disable_count.store(0, Ordering::Relaxed);
+            *provider.auto_disabled_reason.write().await = None;
             *provider.auto_disabled_at.write().await = None;
 
             if is_probe {
@@ -250,37 +252,44 @@ impl RoutingStrategy for AdaptivePriorityStrategy {
                 // more often — a "listed but unroutable" pool that is
                 // temporarily over capacity). Auto-disable after TWO strikes so
                 // a single transient 404 (deploy blip, relay misroute) can't
-                // hard-kill the provider; the dashboard highlights it, and the
-                // escalating quarantine re-admits it automatically (1h → 2h →
-                // … capped) so a recovered model rejoins without a human.
+                // hard-kill the provider; the escalating quarantine then
+                // re-admits it automatically (1h → 2h → … capped).
+                //
+                // The transition to disabled happens exactly ONCE, under the
+                // write lock: stragglers from requests already in flight when
+                // the disable landed must neither inflate the escalation nor
+                // restart the countdown.
                 let strikes = provider.severed_strikes.fetch_add(1, Ordering::Relaxed) + 1;
-                if strikes >= 2 {
-                    let count = provider
-                        .severed_disable_count
-                        .fetch_add(1, Ordering::Relaxed)
-                        + 1;
-                    let window = crate::state::severed_quarantine_secs(count, &policy);
-                    let reason = format!(
-                        "model unavailable upstream (HTTP {}, {} strikes)",
-                        status_code.unwrap(),
-                        strikes
-                    );
-                    *provider.auto_disabled_reason.write().await = Some(reason);
-                    *provider.auto_disabled_at.write().await = Some(now);
-                    info!(
-                        target: "wirellm_core::router",
-                        "Auto-disabled {} — {}. Re-probing in {}s (quarantine #{}).",
-                        provider.name,
-                        provider.auto_disabled_reason.read().await.clone().unwrap_or_default(),
-                        window,
-                        count
-                    );
-                } else {
+                if strikes < 2 {
                     info!(
                         target: "wirellm_core::router",
                         "Severed response (HTTP {}) from {} — strike {}/2 before auto-disable",
                         status_code.unwrap(), provider.name, strikes
                     );
+                } else {
+                    let mut guard = provider.auto_disabled_reason.write().await;
+                    if guard.is_none() {
+                        let count = provider
+                            .severed_disable_count
+                            .fetch_add(1, Ordering::Relaxed)
+                            + 1;
+                        let window = crate::state::severed_quarantine_secs(count, &policy);
+                        let reason = format!(
+                            "model unavailable upstream (HTTP {}, {} strikes)",
+                            status_code.unwrap(),
+                            strikes
+                        );
+                        *guard = Some(reason.clone());
+                        // Keep the canonical lock order: reason, then `at`.
+                        *provider.auto_disabled_at.write().await = Some(now);
+                        // Fresh spell — the next severance needs two new strikes.
+                        provider.severed_strikes.store(0, Ordering::Relaxed);
+                        info!(
+                            target: "wirellm_core::router",
+                            "Auto-disabled {} — {}. Re-probing in {}s (quarantine #{}).",
+                            provider.name, reason, window, count
+                        );
+                    }
                 }
             } else {
                 // Capacity errors (5xx) and connection failures: adaptive
@@ -745,6 +754,52 @@ mod tests {
         assert_eq!(p.severed_disable_count.load(Ordering::Relaxed), 0);
         assert!(p.auto_disabled_at.read().await.is_none());
         assert_eq!(p.severed_strikes.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn test_severed_disable_is_single_shot() {
+        let p = setup_provider("flaky");
+        let strategy = AdaptivePriorityStrategy;
+
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        assert_eq!(p.severed_disable_count.load(Ordering::Relaxed), 1);
+        let first_at = *p.auto_disabled_at.read().await;
+        assert!(first_at.is_some());
+
+        // Stragglers from requests already in flight when the disable landed
+        // must NOT inflate the escalation nor restart the countdown.
+        for _ in 0..5 {
+            strategy.feedback(&p, false, false, Some(404), None).await;
+        }
+        assert_eq!(
+            p.severed_disable_count.load(Ordering::Relaxed),
+            1,
+            "404s received while already quarantined must not escalate"
+        );
+        assert_eq!(
+            *p.auto_disabled_at.read().await,
+            first_at,
+            "the quarantine countdown must not be restarted by stragglers"
+        );
+        assert!(p.auto_disabled_reason.read().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_success_clears_severed_marker() {
+        let p = setup_provider("flaky");
+        let strategy = AdaptivePriorityStrategy;
+
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        strategy.feedback(&p, false, false, Some(404), None).await;
+        assert!(p.auto_disabled_reason.read().await.is_some());
+
+        // An in-flight request or a direct probe that still succeeds proves the
+        // model is alive: it must rejoin immediately, not sit out the window.
+        strategy.feedback(&p, true, false, Some(200), None).await;
+        assert!(p.auto_disabled_reason.read().await.is_none());
+        assert!(p.auto_disabled_at.read().await.is_none());
+        assert_eq!(p.severed_disable_count.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

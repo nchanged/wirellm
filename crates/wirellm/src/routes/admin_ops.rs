@@ -126,7 +126,9 @@ pub async fn get_status(
         let is_burst_limited = provider.is_burst_limited(now).await;
         let in_flight = provider.in_flight.load(std::sync::atomic::Ordering::Relaxed);
         let recent_faults = provider.fault_history.read().await.len() as u32;
-        let auto_disabled_reason = provider.auto_disabled().await;
+        // `severed_hold` (not the raw marker) so an elapsed quarantine is
+        // released and status never reports a recovered model as blocked.
+        let auto_disabled_reason = provider.severed_hold(now, &policy).await;
         let auto_disabled_retry_secs = provider.severed_retry_secs(now, &policy).await;
 
         total_requests += requests;
@@ -210,7 +212,7 @@ pub async fn get_status(
             let (recent_faults, auto_disabled_reason, auto_disabled_retry_secs) = match provider_state {
                 Some(p) => (
                     p.fault_history.read().await.len() as u32,
-                    p.auto_disabled().await,
+                    p.severed_hold(now, &policy).await,
                     p.severed_retry_secs(now, &policy).await,
                 ),
                 None => (0, None, None),
