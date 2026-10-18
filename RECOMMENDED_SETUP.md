@@ -35,6 +35,27 @@ NOTE: If WireLLM is running remotely in the cloud and API token access is enable
 | **Requesty (Free)** | `https://router.requesty.ai/v1` | yes (`REQUESTY_AI`) | 13 free models: `nvidia/nemotron-3-ultra-550b-a55b` (1M), `nvidia/nemotron-3-super-120b-a12b` (1M), `nvidia/nemotron-3.5-lightning-30b-a3b` (1M), `google/gemma-4-31b-it` (262K), `mistral/leanstral-1-5` (262K), `novita/ling-3.1-flash` (262K) | **200 requests/day TOTAL shared across all free models** (account-level, not per model) | Code: **9.6 / 10**<br>Reason: **9.4 / 10**<br>Speed: **9.0 / 10** | Excellent 1M-ctx nemotron trio — effectively a third relay (their account + infra). Shared daily budget ⇒ register with conservative pacing (rpm 5) and place mid-ladder as bonus depth, never as primary capacity. |
 | **Kilo AI Gateway (Free pool)** | `https://api.kilo.ai/api/gateway/v1` | **NO KEY NEEDED** | 14 `:free` models: `nvidia/nemotron-3-ultra-550b-a55b:free` (1M), `nvidia/nemotron-3.5-lightning:free` (1M), `thinkingmachines/inkling-small:free` (1M), `nvidia/nemotron-3-super-120b-a12b:free`, `cohere/north-mini-code:free`, `poolside/laguna-s-2.1:free`, `dots-studio/dots-3-note-preview:free`, `kilo-auto/free` router | 200 requests/hour per IP; invalid bearer tokens 401 — send no header (key-less registration) | Code: **9.0 / 10**<br>Reason: **8.8 / 10**<br>Speed: **7 / 10** | Catalog can lag reality (stale rows 404; unlisted models may answer). Custom header `Authorization: "Bearer "` (empty) also works. |
 
+### 2a. Getting the keys into the Vault (the only manual step)
+
+Each row above names its Vault secret in the `Key?` column. The human signs up **once per provider** and drops the key into the **Central Vault** — either:
+
+- **Dashboard** → *Vault* tab → create a secret (name = the `Key?` value), **or**
+- tell the agent the key is ready and let it call `wirellm_set_secret` (never paste keys into chat).
+
+Where to obtain each key:
+
+| Provider | Sign up / create key | Vault secret |
+| :--- | :--- | :--- |
+| NVIDIA NIM | https://build.nvidia.com | `NVIDIA_API_KEY` |
+| Google Gemini Studio | https://aistudio.google.com/apikey | `GEMINI_API_KEY` |
+| GroqCloud | https://console.groq.com/keys | `GROQ_API_KEY` |
+| OpenRouter | https://openrouter.ai/keys | `OPENROUTER_API_KEY` |
+| Requesty | https://requesty.ai → API keys | `REQUESTY_AI` |
+| UnoRouter | https://unorouter.com | `UNOROUTER` |
+| Kilo AI Gateway | — **no signup, no key at all** | — |
+
+Once a secret exists, the agent never needs the plaintext again — providers bind to it by name (`vault_secret`).
+
 ### 2b. Additional free sources (researched 2026-10-18, not yet registered)
 
 | Provider | Free Models | Limits | Notes |
