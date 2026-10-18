@@ -38,7 +38,7 @@ Do this **first**, and report it back to the human:
 ```
 wirellm_get_status                       # providers, circuits, live health, totals
 wirellm_list_providers                   # what's registered, models, enabled?
-wirellm_list_virtual_models              # ladders (coder / planner / orchestrator / …)
+wirellm_list_virtual_models              # ladders (main / embed / openviking / …)
 wirellm_list_secrets                     # which keys are already in the Vault (masked)
 wirellm_get_routing_policy               # current timeouts / cooldowns
 ```
@@ -58,14 +58,17 @@ Free tiers are the whole point — pool as many as possible. Recommend the human
 | **OpenRouter** | Huge pool of `:free` models | https://openrouter.ai/keys | `https://openrouter.ai/api/v1` |
 | **Groq** | Very fast free tier (gpt-oss, qwen) | https://console.groq.com/keys | `https://api.groq.com/openai/v1` |
 | **Google Gemini** | Generous free tier + embeddings | https://aistudio.google.com/apikey | `https://generativelanguage.googleapis.com/v1beta/openai/` |
-| **Cerebras** | Fast free tier | https://cloud.cerebras.ai | `https://api.cerebras.ai/v1` |
-| **SambaNova** | Free tier (DeepSeek, Llama) | https://cloud.sambanova.ai | `https://api.sambanova.ai/v1` |
+| **Requesty** | 13 free models incl. the 1M-ctx nemotron trio — but **200 req/day TOTAL shared account-level**, so pace conservatively (rpm 5) | https://requesty.ai | `https://router.requesty.ai/v1` |
+| **Kilo AI Gateway** | 14 `:free` models, **NO KEY NEEDED** — register key-less (omit all key arguments; 200 req/hr/IP) | — (no signup) | `https://api.kilo.ai/api/gateway/v1` |
 | **UnoRouter** | ~130 aggregated `:free` models (~1 req/min/model) | https://unorouter.com | `https://api.unorouter.com/v1` |
 
-Optional, **paid — keep last** in every ladder: DeepSeek, OpenAI, Anthropic (the human's own keys).
+> ⚠️ **Cerebras** no longer has a clean free tier — the daily token tier was replaced (July 2026) by a one-time $5 credit requiring a payment method. Skip unless the human wants to pay.
+> **SambaNova** has a permanent free tier but its ToS forbids proxying to third parties — flag that before registering it.
+
+Optional, **paid — never wired**: DeepSeek, OpenAI, Anthropic (the human's own keys). Per the paid-model policy, paid providers are registered but **benched** (`enabled: false`) — nothing paid may appear in any ladder.
 
 Ask the human to create keys and drop them in the **Vault** with these names (or their own):
-`NVIDIA_API_KEY`, `OPENCODE_ZEN_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `CEREBRAS_API_KEY`, `SAMBANOVA_API_KEY`, `UNOROUTER`.
+`NVIDIA_API_KEY`, `OPENCODE_ZEN_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `REQUESTY_AI`, `UNOROUTER`. Kilo needs **no secret at all**.
 
 > You can't generate keys and you can't test a key that isn't in the Vault. If a provider is failing with 401/403, tell the human the secret name it needs.
 
@@ -92,16 +95,19 @@ Once the keys are in the Vault, **you own the rest**. Recommended order:
    }
    ```
 
-3. **Build role ladders**, free tiers first, paid last. Interleave duplicate pools and
-   keep a fast, reliable model as a cushion mid-ladder:
+3. **Build the consolidated `main` ladder**, free tiers first, paid never. Sort rungs
+   **largest-context-first** (1M-ctx rungs on top; smallest context, e.g. Groq 131K, dead
+   last), interleave duplicate pools, and keep a fast, reliable model as a cushion mid-ladder:
    ```
-   wirellm_update_virtual_model { "name": "coder", "targets": [ … ] }
+   wirellm_update_virtual_model { "name": "main", "targets": [ … ] }
    ```
-   Do this for `coder`, `planner`, `orchestrator`, `code-reviewer` (and `embed` if embeddings are needed).
+   Plus `embed` if embeddings are needed (**never mix vector dimensions** — a fallback must
+   return the same size as the primary), and background/summarizer ladders (e.g. `openviking`)
+   that use free models first with workhorses as fallback.
 
 4. **Probe every ladder** and report what actually served it:
    ```
-   wirellm_test_virtual_model { "name": "coder", "max_tokens": 64 }
+   wirellm_test_virtual_model { "name": "main", "max_tokens": 64 }
    ```
 
 5. **Tune resilience** for real agent bursts:
@@ -116,9 +122,11 @@ Once the keys are in the Vault, **you own the rest**. Recommended order:
 
 ---
 
-## Step 4 — Proactively suggest a relay (≈2× the free tokens)
+## Step 4 — Optionally suggest a relay (≈2× the free tokens)
 
-Once the basics work, **offer to set up a relay**. A relay is a *second* WireLLM instance
+Once the basics work, **offer — don't push — a relay**. Many installs run fine on the base
+pool alone; a relay is for humans who routinely exhaust their free quotas or want
+cross-machine failover. A relay is a *second* WireLLM instance
 running on a cloud the human owns, holding a **second set of the same provider accounts**
 (a second NVIDIA key, a second Gemini key, …). Local WireLLM then registers `wire-cloud-*`
 providers that point at the relay's `/v1`, so every free rung gets a twin with its **own**
@@ -152,9 +160,11 @@ Tell the human plainly: **"We can set this up in a few minutes — the Helm char
 
 Use this as the target when building a fresh install (it mirrors a proven, running setup):
 
-- **Ladders** — free-first; each local rung followed by its cloud-relay twin; paid last:
-  `coder` (~13 rungs), `planner` (~11), `code-reviewer` (~10), `orchestrator` (~9),
-  plus `openviking` (~8: background/summarizer — free models first, working horses as fallback)
+- **Ladders** — free-first and **consolidated**: one `main` ladder for all agents, sorted
+  **largest-context-first** (~35 rungs proven live: NVIDIA NIM pool → relay twins →
+  UnoRouter/Requesty nemotron twins → GLM 5.3 free → Gemini cushion → lightning pool →
+  LongCat → Kilo free pool → 256K class → Groq 131K dead last), plus
+  `openviking` (~8 rungs: background/summarizer — free models first, workhorses as fallback)
   and `embed` (primary + a **dimension-matched** free fallback only).
 - **Routing policy** (tuned for free-tier bursts — all live, no restart):
   `stream_header_timeout_secs 22`, `nonstream_header_timeout_secs 300`,
@@ -169,7 +179,8 @@ Use this as the target when building a fresh install (it mirrors a proven, runni
 ## Guardrails
 
 - **Never** put a key in chat, a commit, a log, or a provider `api_key_template` — always the Vault (`vault_secret`).
-- **Prefer free**; paid is last resort and only with the human's explicit key.
+- **Prefer free; nothing paid in any ladder.** Paid providers are registered but **benched** (`enabled: false`) — manual benches persist across reloads/restarts.
+- **Key-less providers are allowed** (e.g. Kilo's free pool): omit all key arguments and no Authorization header is sent — never fabricate a key to satisfy a schema.
 - **One model per provider** (isolates circuit breakers).
 - **Never delete** a provider, ladder, secret, or key without showing the human an item-by-item table and getting explicit approval.
 - **Don't confirm a provider works** until `wirellm_test_provider` / `wirellm_test_virtual_model` returns 200.

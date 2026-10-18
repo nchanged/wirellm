@@ -37,7 +37,7 @@ Free tiers are real — they're just fragmented, rate-limited, and flaky. WireLL
 
 - **predictively paces** each provider's RPM / burst window so you stop tripping `429`s,
 - **cascades instantly** to the next free rung when one is cooling down,
-- and lets you build **ladders per role** (`coder`, `planner`, `orchestrator`, `code-reviewer`, `embed`, `openviking`, …).
+- and lets you build **fallback ladders** — one consolidated `main` ladder for all agents (sorted largest-context-first), plus `embed` (dimension-matched) and background ladders like `openviking`.
 
 The result: your agents burn through an enormous pool of **$0 tokens every month**, with the good providers reserved for when they're actually needed.
 
@@ -116,9 +116,12 @@ WireLLM is operated by agents, over MCP. The *only* manual step is getting a few
 | OpenRouter | https://openrouter.ai/keys | `OPENROUTER_API_KEY` |
 | Groq | https://console.groq.com/keys | `GROQ_API_KEY` |
 | Google Gemini | https://aistudio.google.com/apikey | `GEMINI_API_KEY` |
-| Cerebras | https://cloud.cerebras.ai | `CEREBRAS_API_KEY` |
-| SambaNova | https://cloud.sambanova.ai | `SAMBANOVA_API_KEY` |
+| Requesty | https://requesty.ai | `REQUESTY_AI` |
 | UnoRouter | https://unorouter.com | `UNOROUTER` |
+| Kilo AI Gateway | **no key needed** — key-less free pool (200 req/hr/IP) | — |
+
+> ⚠️ **Cerebras** no longer has a clean free tier (the daily token tier was replaced by a one-time $5 credit requiring a payment method) — skip it unless you pay.
+> SambaNova still has a permanent free tier but its ToS forbids proxying to third parties.
 
 **2 · Drop them in the Vault** — Dashboard → **Vault** tab, or `wirellm_set_secret`. That's the *only* place keys live; nothing else needs them.
 
@@ -131,11 +134,10 @@ Read AGENTS.md (the WireLLM agent guide), then onboard this install:
 - Tell me which free keys I'm still missing, then stop and wait — I'll add them to the Vault.
 - Once the keys are in, do everything else yourself over MCP: discover real model IDs,
   register each as a single-model provider with honest rpm/min_interval pacing, build
-  free-first role ladders (coder, planner, orchestrator, code-reviewer), probe each with
-  wirellm_test_virtual_model, and report what served them.
+  one free-first `main` ladder sorted largest-context-first (Kilo's pool needs no key at
+  all), probe every rung with wirellm_test_provider, and report what served them.
 
-Then route your own requests to http://127.0.0.1:8765/v1 using
-wirellm/coder, wirellm/planner, or wirellm/orchestrator.
+Then route your own requests to http://127.0.0.1:8765/v1 using wirellm/main.
 ```
 
 The full agent playbook — tool-by-tool workflow, the recommended free-key list, guardrails, and the cloud-relay setup lives in [`AGENTS.md`](AGENTS.md).
@@ -160,10 +162,7 @@ Point a second WireLLM at a cloud you own and it serves a **second set of provid
       "name": "WireLLM Proxy (Local)",
       "options": { "baseURL": "http://127.0.0.1:8765/v1", "apiKey": "sk-wirellm-local" },
       "models": {
-        "orchestrator":  { "id": "orchestrator",  "name": "WireLLM: Orchestrator",  "reasoning": true, "tool_call": true },
-        "coder":         { "id": "coder",         "name": "WireLLM: Coder",         "reasoning": true, "tool_call": true },
-        "planner":       { "id": "planner",       "name": "WireLLM: Planner",       "reasoning": true, "tool_call": true },
-        "code-reviewer": { "id": "code-reviewer", "name": "WireLLM: Code Reviewer", "reasoning": true, "tool_call": true }
+        "main": { "id": "main", "name": "WireLLM: Main ladder", "reasoning": true, "tool_call": true }
       }
     }
   }
