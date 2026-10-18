@@ -31,7 +31,8 @@ NOTE: If WireLLM is running remotely in the cloud and API token access is enable
 | **Google Gemini Studio** | `https://generativelanguage.googleapis.com/v1beta/openai/` | yes (`GEMINI_API_KEY`) | `gemini-2.5-flash` (1M ctx) | 15 RPM / 1,500 RPD | Code: **9.2 / 10**<br>Reason: **9.3 / 10**<br>Speed: **9.5 / 10** | Great mid-ladder cushion for 1M-context requests. |
 | **GroqCloud** | `https://api.groq.com/openai/v1` | yes (`GROQ_API_KEY`) | `openai/gpt-oss-120b` (131K)<br>`openai/gpt-oss-20b`<br>`qwen/qwen3.8-27b` | 30 RPM / 1,000 RPD (chat models) | Code: **9.1 / 10**<br>Reason: **8.9 / 10**<br>Speed: **10 / 10** (500+ tps) | Smallest context (131K) — put LAST in ladders. |
 | **OpenRouter (Free)** | `https://openrouter.ai/api/v1` | yes (`OPENROUTER_API_KEY`) | ~17 `:free` models: `cohere/north-mini-code:free` (256K), `thinkingmachines/inkling:free` (1M), `nvidia/*:free` family, `qwen/qwen3.8-27b:free`, `dots-3-note-preview:free`, `openrouter/free` auto-router | 20 RPM / 50 RPD per model (1,000 RPD after one-time $10 credit top-up) | Code: **8.5 / 10**<br>Reason: **8.4 / 10**<br>Speed: **7.8 / 10** | `:free` suffix only; free-pool substitution may serve a sibling model. |
-| **UnoRouter (Free)** | `https://api.unorouter.com/v1` | yes (`UNOROUTER`) | ~130 `:free` models: `glm-5.3-flash:free` (1M), `glm-5.3:free` (1M), `nemotron-3-ultra-550b-a55b:free` (1M), `nemotron-3-super-120b-a12b:free`, `deepseek-v4-pro:free` (1M), `minimax-m3:free` (1M), `qwen3.8-27b:free`, `jina-embeddings-v4:free` (2048-dim embeddings) | ~1 RPM per model/user; 429 + Retry-After (45s if Discord server tag worn) | Code: **9.0 / 10**<br>Reason: **8.8 / 10**<br>Speed: **6 / 10** | Deep free catalog; free-pool substitution observed. Embed fallback must be dimension-matched (2048). |
+| **UnoRouter (Free)** | `https://api.unorouter.com/v1` | yes (`UNOROUTER`) | ~130 `:free` models: `nemotron-3-ultra-550b-a55b:free` (1M), `nemotron-3-super-120b-a12b:free`, `glm-5.3:free` (1M, reasoning), `glm-5.3-flash:free` (1M), `deepseek-v4-flash:free` (1M), `minimax-m2.7:free` (~205K), `qwen3.8-27b:free`, `jina-embeddings-v4:free` (2048-dim embeddings) | ~1 RPM per model/user; 429 + Retry-After (45s if Discord server tag worn) | Code: **9.0 / 10**<br>Reason: **8.8 / 10**<br>Speed: **6 / 10** | Deep free catalog; free-pool substitution observed; `503 get_channel_failed` is transient — retries later succeed. |
+| **Requesty (Free)** | `https://router.requesty.ai/v1` | yes (`REQUESTY_AI`) | 13 free models: `nvidia/nemotron-3-ultra-550b-a55b` (1M), `nvidia/nemotron-3-super-120b-a12b` (1M), `nvidia/nemotron-3.5-lightning-30b-a3b` (1M), `google/gemma-4-31b-it` (262K), `mistral/leanstral-1-5` (262K), `novita/ling-3.1-flash` (262K) | **200 requests/day TOTAL shared across all free models** (account-level, not per model) | Code: **9.6 / 10**<br>Reason: **9.4 / 10**<br>Speed: **9.0 / 10** | Excellent 1M-ctx nemotron trio — effectively a third relay (their account + infra). Shared daily budget ⇒ register with conservative pacing (rpm 5) and place mid-ladder as bonus depth, never as primary capacity. |
 | **Kilo AI Gateway (Free pool)** | `https://api.kilo.ai/api/gateway/v1` | **NO KEY NEEDED** | 14 `:free` models: `nvidia/nemotron-3-ultra-550b-a55b:free` (1M), `nvidia/nemotron-3.5-lightning:free` (1M), `thinkingmachines/inkling-small:free` (1M), `nvidia/nemotron-3-super-120b-a12b:free`, `cohere/north-mini-code:free`, `poolside/laguna-s-2.1:free`, `dots-studio/dots-3-note-preview:free`, `kilo-auto/free` router | 200 requests/hour per IP; invalid bearer tokens 401 — send no header (key-less registration) | Code: **9.0 / 10**<br>Reason: **8.8 / 10**<br>Speed: **7 / 10** | Catalog can lag reality (stale rows 404; unlisted models may answer). Custom header `Authorization: "Bearer "` (empty) also works. |
 
 ### 2b. Additional free sources (researched 2026-10-18, not yet registered)
@@ -105,16 +106,18 @@ Routing policy (tuned for free-tier bursts, all live, no restart): `stream_heade
 
 One primary ladder + support groups. Sort rungs **largest context first** so big requests never bounce on small-context rungs; smallest context (e.g. Groq 131K) goes dead last.
 
-### Ladder: `main` (primary for all agents; 25 rungs proven live)
+### Ladder: `main` (primary for all agents; 35 rungs proven live)
 1. **NVIDIA pool**: `nvidia-nemotron-ultra` → `wire-cloud-ultra` (relay twin) → `nvidia-nemotron-super` → `wire-cloud-super`
 2. **UnoRouter nemotron twins** (extra account quota for the same models): `unorouter-nemotron-ultra-free` → `unorouter-nemotron-super-free`
-3. **Gemini cushion**: `gemini-flash` (1M ctx, fast)
-4. **Lightning pool**: `nvidia-nemotron-lightning` → `wire-cloud-lightning`
-5. **LongCat**: `opencode-go-longcat` (1M ctx, free-labeled on OpenCode Go)
-6. **Kilo free pool (1M)**: `kilo-nemotron-ultra-free` → `wire-cloud-kilo-ultra` → `kilo-nemotron-lightning-free` → `wire-cloud-kilo-lightning` → `kilo-inkling-small-free`
-7. **512K**: `kilo-dots-free`
-8. **256K class**: `kilo-nemotron-super-free` → `wire-cloud-kilo-super` → `unorouter-qwen-27b-free` → `kilo-laguna-s-free` → `kilo-cohere-code-free` → `wire-cloud-kilo-cohere` → `openrouter-cohere-code` → `kilo-auto/free`
-9. **Smallest last**: `groq-gpt-oss-120b` (131K)
+3. **Requesty nemotron twins** (third relay: their account + infra): `requesty-nemotron-ultra` → `requesty-nemotron-super`
+4. **GLM 5.3 free (1M, reasoning)**: `unorouter-glm-53-free` → `unorouter-glm-53-flash-free`
+5. **Gemini cushion**: `gemini-flash` (1M ctx, fast)
+6. **Lightning pool + DeepSeek free**: `nvidia-nemotron-lightning` → `wire-cloud-lightning` → `requesty-nemotron-lightning` → `unorouter-deepseek-v4-flash-free` (1M)
+7. **LongCat**: `opencode-go-longcat` (1M ctx, free-labeled on OpenCode Go)
+8. **Kilo free pool (1M)**: `kilo-nemotron-ultra-free` → `wire-cloud-kilo-ultra` → `kilo-nemotron-lightning-free` → `wire-cloud-kilo-lightning` → `kilo-inkling-small-free`
+9. **512K**: `kilo-dots-free`
+10. **256K class**: `kilo-nemotron-super-free` → `wire-cloud-kilo-super` → `unorouter-qwen-27b-free` → `requesty-gemma-4-31b` → `requesty-leanstral-1-5` → `requesty-ling-3.1-flash` → `unorouter-minimax-m27-free` → `kilo-laguna-s-free` → `kilo-cohere-code-free` → `wire-cloud-kilo-cohere` → `openrouter-cohere-code` → `kilo-auto/free`
+11. **Smallest last**: `groq-gpt-oss-120b` (131K)
 
 ### Ladder: `embed` (OpenViking embeddings; NEVER mix dimensions)
 1. `nvidia-embed` → `nvidia/nemotron-3-embed-1b` (2048 dims)
@@ -123,13 +126,15 @@ One primary ladder + support groups. Sort rungs **largest context first** so big
 ### Ladder: `openviking` (OpenViking summarizer/background; free first, workhorses as fallback)
 `openrouter-free-auto` → uno nemotron rungs → `nvidia-nemotron-lightning` → `opencode-go-longcat`/`opencode-go-step` → `gemini-flash`
 
-### Relay pattern (≈2× free quota — set this up, it's minutes of work)
+### Relay pattern (optional — only if you need more than the base setup provides)
 
-Run a second WireLLM on your own cloud (Helm chart in `deploy/helm/wirellm`), holding a **second set of the same provider accounts**. Locally register `wire-cloud-*` providers pointing at `https://<relay-host>/v1` with the relay's gateway API key, slotting each relay twin immediately after its local twin.
+A relay is a **nice-to-have, not a requirement** — the single-instance setup above already carries multiple concurrent agent projects. Only consider it if you routinely exhaust the free pools or want cross-machine failover.
 
-**NVIDIA with two keys from two different accounts is the highest-value boost**: each NVIDIA account gets its own 40 RPM / 10,000 RPD free tier, so a second account on the relay instantly doubles the pool for the exact models the ladder grinds on (`nemotron-3-ultra`, `nemotron-3-super`, `nemotron-3.5-lightning` — all 1M context). Same works for Gemini and Groq keys.
+If you do: run a second WireLLM on your own cloud (Helm chart in `deploy/helm/wirellm`) holding a **second set of the same provider accounts**, then locally register `wire-cloud-*` providers pointing at `https://<relay-host>/v1` with the relay's gateway API key, slotting each relay twin immediately after its local twin.
 
-Kilo needs no key at all — the relay's different IP alone doubles the 200 req/hr free pool.
+- **Two NVIDIA keys from two different accounts** is the highest-value variant: each account gets its own 40 RPM / 10,000 RPD free tier, doubling the pool for the 1M-context nemotron rungs. Same works for Gemini and Groq keys.
+- Kilo needs no key at all — the relay's different IP alone doubles the 200 req/hr free pool.
+- (This is the configuration the reference instance runs; it is optional.)
 
 Setup order:
 1. Cloud auth prerequisite (Google OAuth client for the relay, callback URL registered).
@@ -137,8 +142,6 @@ Setup order:
 3. On the relay, register the same providers with the second key set (vault secrets live per-instance), then `wirellm_create_api_key` for the local instance to authenticate with.
 4. Human adds that relay key to the **local Vault** (e.g. `WIRE_RELAY_KEY`).
 5. Locally, add the `wire-cloud-*` providers (`base_url = https://<relay-host>/v1`, `vault_secret = WIRE_RELAY_KEY`) and mirror the `main` ladder with twins interleaved after each local rung.
-
-Proven live result: ~640 effective RPM / 82 concurrent slots across two instances — enough for multiple concurrent agent projects.
 
 ---
 
