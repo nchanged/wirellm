@@ -468,7 +468,10 @@ impl DbManager {
             } else {
                 match self.resolve_secret_template(&api_key_template) {
                     Ok(k) if !k.trim().is_empty() => (k, enabled),
-                    Ok(_) => (String::new(), false),
+                    // Key-less provider (e.g. Kilo free pool): an empty resolved
+                    // template is legal — no Authorization header is sent. Only an
+                    // unresolvable template (Err) still disables the provider.
+                    Ok(_) => (String::new(), enabled),
                     Err(e) => {
                         tracing::warn!("Provider '{}' has unresolvable api_key ({}). Disabling provider until configured.", name, e);
                         (String::new(), false)
