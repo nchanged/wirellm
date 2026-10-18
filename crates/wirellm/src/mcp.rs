@@ -1091,7 +1091,7 @@ async fn handle_tool_call(
                             .db
                             .set_provider_enabled(prov_name, true)
                             .map_err(|e| format!("Failed to persist enable: {}", e))?;
-                        reloadable.reloader.reload();
+                        let _ = reloadable.reloader.reload();
                         Ok(format!("Provider '{}' brought online (manual + auto-disable cleared)", prov_name))
                     } else {
                         p.manual_disabled
@@ -1103,7 +1103,7 @@ async fn handle_tool_call(
                             .db
                             .set_provider_enabled(prov_name, false)
                             .map_err(|e| format!("Failed to persist disable: {}", e))?;
-                        reloadable.reloader.reload();
+                        let _ = reloadable.reloader.reload();
                         Ok(format!("Provider '{}' taken offline (manual disable, persisted)", prov_name))
                     }
                 },
