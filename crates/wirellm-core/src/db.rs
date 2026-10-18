@@ -919,6 +919,24 @@ impl DbManager {
         Ok(())
     }
 
+    /// Persists a provider's enabled flag. Unlike the in-memory manual_disabled
+    /// marker (state.rs), this survives reloader.reload() and daemon restarts —
+    /// a manual bench that only lives in memory is silently cleared every time
+    /// any ladder/provider change or restart rebuilds state from the DB.
+    pub fn set_provider_enabled(&self, name: &str, enabled: bool) -> Result<()> {
+        let conn = self.connect()?;
+        let n = conn
+            .execute(
+                "UPDATE providers SET enabled = ?1, updated_at = CURRENT_TIMESTAMP WHERE name = ?2",
+                params![if enabled { 1 } else { 0 }, name],
+            )
+            .map_err(|e| OxllmError::Internal(format!("Failed to set provider enabled: {}", e)))?;
+        if n == 0 {
+            return Err(OxllmError::ConfigLoad(format!("Provider '{}' not found", name)));
+        }
+        Ok(())
+    }
+
     /// Upserts a virtual model and replaces its target candidates.
     pub fn upsert_virtual_model(
         &self,

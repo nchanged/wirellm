@@ -1086,11 +1086,25 @@ async fn handle_tool_call(
                         p.severed_strikes
                             .store(0, std::sync::atomic::Ordering::Release);
                         *p.rate_limited_until.write().await = None;
+                        // Persist so the flag survives reloads and restarts.
+                        reloadable
+                            .db
+                            .set_provider_enabled(prov_name, true)
+                            .map_err(|e| format!("Failed to persist enable: {}", e))?;
+                        reloadable.reloader.reload();
                         Ok(format!("Provider '{}' brought online (manual + auto-disable cleared)", prov_name))
                     } else {
                         p.manual_disabled
                             .store(true, std::sync::atomic::Ordering::Release);
-                        Ok(format!("Provider '{}' taken offline (manual disable)", prov_name))
+                        // Persist to the DB so the bench survives reloader.reload()
+                        // and daemon restarts (the in-memory marker alone is wiped
+                        // by every state rebuild — it silently re-enabled providers).
+                        reloadable
+                            .db
+                            .set_provider_enabled(prov_name, false)
+                            .map_err(|e| format!("Failed to persist disable: {}", e))?;
+                        reloadable.reloader.reload();
+                        Ok(format!("Provider '{}' taken offline (manual disable, persisted)", prov_name))
                     }
                 },
                 None => Err(format!(
