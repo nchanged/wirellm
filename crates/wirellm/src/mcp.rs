@@ -113,7 +113,7 @@ async fn process_jsonrpc(
                     },
                     {
                         "name": "wirellm_add_provider",
-                        "description": "Add or update an LLM provider in WireLLM. Connect an API key via 'vault_secret' (e.g. 'NVIDIA_API_KEY'), 'api_key_template' (e.g. '${NVIDIA_API_KEY}'), or pass 'raw_api_key' to automatically encrypt and store it in the central Vault. Changes take effect immediately.",
+                        "description": "Add or update an LLM provider in WireLLM. Connect an API key via 'vault_secret' (e.g. 'NVIDIA_API_KEY'), 'api_key_template' (e.g. '${NVIDIA_API_KEY}'), or pass 'raw_api_key' to automatically encrypt and store it in the central Vault. Key-less providers (auth-free gateways such as Kilo's free pool) are allowed: omit all three key arguments and no Authorization header is sent. Changes take effect immediately.",
                         "inputSchema": {
                             "type": "object",
                             "required": ["name", "base_url", "models"],
@@ -645,7 +645,10 @@ async fn handle_tool_call(
                 (_, _, Some(_)) => {
                     format!("${{{}_API_KEY}}", prov_name.to_uppercase().replace('-', "_"))
                 },
-                _ => return Err("Missing 'api_key_template', 'vault_secret', or 'raw_api_key'".to_string()),
+                // Key-less provider (e.g. Kilo AI free pool): no auth material at all.
+                // An empty template resolves to an empty api_key, and the request
+                // paths skip the Authorization header entirely for empty keys.
+                _ => String::new(),
             };
 
             let mut provider_headers: HashMap<String, String> = args
@@ -930,7 +933,13 @@ async fn handle_tool_call(
 
             let start = std::time::Instant::now();
             let mut req = client.post(&chat_url).json(&body);
-            if !p_cfg.api_key.is_empty() {
+            // Mirror attach_request_headers: a custom Authorization header replaces the
+            // standard Bearer, never stacks on it (duplicate headers -> upstream 400).
+            let has_custom_auth = p_cfg
+                .headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("authorization"));
+            if !has_custom_auth && !p_cfg.api_key.is_empty() {
                 req = req.header("Authorization", format!("Bearer {}", p_cfg.api_key));
             }
             for (k, v) in &p_cfg.headers {

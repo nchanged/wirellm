@@ -489,7 +489,13 @@ pub async fn test_provider(
     let models_url = format!("{}/models", provider.base_url.trim_end_matches('/'));
 
     let mut req = client.get(&models_url);
-    if !p_cfg.api_key.is_empty() {
+    // Mirror attach_request_headers: a custom Authorization header replaces the
+    // standard Bearer, never stacks on it (duplicate headers -> upstream 400).
+    let has_custom_auth = p_cfg
+        .headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("authorization"));
+    if !has_custom_auth && !p_cfg.api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", p_cfg.api_key));
     }
     for (k, v) in &p_cfg.headers {
@@ -521,7 +527,7 @@ pub async fn test_provider(
                 });
                 let start2 = Instant::now();
                 let mut req2 = client.post(&chat_url).json(&body);
-                if !p_cfg.api_key.is_empty() {
+                if !has_custom_auth && !p_cfg.api_key.is_empty() {
                     req2 = req2.header("Authorization", format!("Bearer {}", p_cfg.api_key));
                 }
                 for (k, v) in &p_cfg.headers {
