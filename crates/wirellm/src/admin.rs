@@ -942,7 +942,10 @@ pub async fn list_vault_secrets(
         .map_err(|e| internal_error(e.to_string()))
 }
 
-/// POST /api/vault/secrets - Adds or updates an encrypted secret in the central Vault
+/// POST /api/vault/secrets - Adds or updates an encrypted secret in the central Vault.
+/// An empty `value` on an existing secret performs a description-only edit — the stored
+/// encrypted key is left untouched (plaintext never leaves the vault, so it cannot be
+/// re-displayed or echoed back).
 pub async fn create_vault_secret(
     State(reloadable): State<ReloadableState>,
     Json(input): Json<VaultSecretInput>,
@@ -955,16 +958,43 @@ pub async fn create_vault_secret(
             })),
         ));
     }
-    if input.value.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Secret value cannot be empty"
-            })),
-        ));
-    }
 
     let clean_name = input.name.trim().to_uppercase().replace('-', "_");
+
+    // Description-only edit: empty value is only allowed when the secret already exists.
+    if input.value.trim().is_empty() {
+        let exists = reloadable
+            .db
+            .get_vault_secret_record(&clean_name)
+            .map_err(|e| internal_error(e.to_string()))?
+            .is_some();
+        if !exists {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Secret value cannot be empty for a new secret"
+                })),
+            ));
+        }
+        let updated = reloadable
+            .db
+            .update_vault_secret_description(&clean_name, input.description.as_deref().unwrap_or(""))
+            .map_err(|e| internal_error(e.to_string()))?;
+        if !updated {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("Secret '{}' not found in central Vault", clean_name)
+                })),
+            ));
+        }
+        return Ok(Json(serde_json::json!({
+            "success": true,
+            "message": format!("Description of '{}' updated; encrypted key left untouched", clean_name),
+            "name": clean_name
+        })));
+    }
+
     reloadable
         .db
         .upsert_vault_secret(&clean_name, &input.value, input.description.as_deref().unwrap_or(""))

@@ -2454,3 +2454,82 @@ use crate::server::*;
         let after_del = rs.db.list_vault_secrets().unwrap();
         assert_eq!(after_del.len(), 0);
     }
+
+    #[tokio::test]
+    async fn test_vault_secret_edit_via_upsert_and_description_only() {
+        let (_ws, wr) = tokio::sync::watch::channel(Arc::new(AppState {
+            providers: vec![],
+            virtual_models: std::collections::HashMap::new(),
+            http_client: reqwest::Client::builder().build().unwrap(),
+            upstream_timeout_secs: 5,
+            auth: Default::default(),
+        }));
+        let (ttx, _trx) = tokio::sync::mpsc::channel(1024);
+        let reloader = Reloader::test_new(_ws);
+        let rs = ReloadableState::test_new(wr, TelemetryClient::new(ttx), reloader);
+        let app = build_full_test_router(rs.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::new();
+
+        // 1. Create the secret.
+        let res = client
+            .post(format!("http://{}/api/vault/secrets", addr))
+            .json(&serde_json::json!({
+                "name": "EDIT_TEST_KEY",
+                "value": "sk-edit-test-original-value",
+                "description": "original description"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+
+        // 2. Edit by upserting the same name with a new value (full edit).
+        let res = client
+            .post(format!("http://{}/api/vault/secrets", addr))
+            .json(&serde_json::json!({
+                "name": "EDIT_TEST_KEY",
+                "value": "sk-edit-test-rotated-value",
+                "description": "rotated key"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let record = rs.db.get_vault_secret_record("EDIT_TEST_KEY").unwrap().unwrap();
+        assert_eq!(record.description, "rotated key");
+        // The resolved key must now be the rotated one.
+        let resolved = rs.db.resolve_secret_template("${EDIT_TEST_KEY}").unwrap();
+        assert_eq!(resolved, "sk-edit-test-rotated-value");
+
+        // 3. Description-only edit: empty value keeps the stored encrypted key.
+        let res = client
+            .post(format!("http://{}/api/vault/secrets", addr))
+            .json(&serde_json::json!({
+                "name": "EDIT_TEST_KEY",
+                "value": "",
+                "description": "description-only edit"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let record = rs.db.get_vault_secret_record("EDIT_TEST_KEY").unwrap().unwrap();
+        assert_eq!(record.description, "description-only edit");
+        let resolved = rs.db.resolve_secret_template("${EDIT_TEST_KEY}").unwrap();
+        assert_eq!(resolved, "sk-edit-test-rotated-value");
+
+        // 4. Empty value for a NEW secret is still rejected.
+        let res = client
+            .post(format!("http://{}/api/vault/secrets", addr))
+            .json(&serde_json::json!({
+                "name": "BRAND_NEW_KEY",
+                "value": ""
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400);
+    }

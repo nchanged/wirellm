@@ -1207,6 +1207,23 @@ impl DbManager {
         Ok(())
     }
 
+    /// Updates only the description of an existing vault secret (encrypted value untouched).
+    /// Returns Ok(false) when the secret does not exist.
+    pub fn update_vault_secret_description(&self, name: &str, description: &str) -> Result<bool> {
+        let clean_name = name.trim().to_uppercase().replace('-', "_");
+        if clean_name.is_empty() {
+            return Err(OxllmError::Internal("Vault secret name cannot be empty".to_string()));
+        }
+        let conn = self.connect()?;
+        let changed = conn
+            .execute(
+                "UPDATE vault_secrets SET description = ?2, updated_at = CURRENT_TIMESTAMP WHERE name = ?1",
+                params![clean_name, description.trim()],
+            )
+            .map_err(|e| OxllmError::Internal(format!("Failed to update vault secret description: {}", e)))?;
+        Ok(changed > 0)
+    }
+
     /// Deletes a secret from the central Vault.
     pub fn delete_vault_secret(&self, name: &str) -> Result<()> {
         let clean_name = name.trim().to_uppercase().replace('-', "_");

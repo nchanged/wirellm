@@ -163,7 +163,8 @@ export interface VaultSecretRecord {
 
 export interface VaultSecretInput {
   name: string;
-  value: string;
+  /** Empty/omitted on an existing secret = description-only edit (key stays untouched). */
+  value?: string;
   description?: string;
 }
 

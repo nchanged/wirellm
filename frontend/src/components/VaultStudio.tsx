@@ -13,6 +13,7 @@ import {
   EyeOff,
   ShieldCheck,
   ExternalLink,
+  Pencil,
 } from 'lucide-react';
 import { ApiStatusResponse, VaultSecretRecord, DiscoverModelsResponse } from '../types';
 import {
@@ -106,8 +107,10 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
   const [search, setSearch] = useState<string>('');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  // Add Secret Modal State
+  // Add/Edit Secret Modal State
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
+  // When set, the modal edits this existing secret instead of creating a new one.
+  const [editingSecret, setEditingSecret] = useState<VaultSecretRecord | null>(null);
   const [secretName, setSecretName] = useState<string>('');
   const [secretValue, setSecretValue] = useState<string>('');
   const [secretDescription, setSecretDescription] = useState<string>('');
@@ -146,6 +149,7 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
   };
 
   const handleOpenAddModal = (preset?: VaultPreset) => {
+    setEditingSecret(null);
     if (preset) {
       setSecretName(preset.secretName);
       setSecretDescription(preset.description);
@@ -159,12 +163,25 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
     setIsAddModalOpen(true);
   };
 
+  const handleOpenEditModal = (secret: VaultSecretRecord) => {
+    // Plaintext is never returned by the API (AES-256-GCM at rest), so the value
+    // always starts empty — leaving it empty performs a description-only edit.
+    setEditingSecret(secret);
+    setSecretName(secret.name);
+    setSecretDescription(secret.description || '');
+    setSecretValue('');
+    setShowSecretValue(false);
+    setSaveError(null);
+    setIsAddModalOpen(true);
+  };
+
   const handleSaveSecret = async () => {
+    const isEdit = !!editingSecret;
     if (!secretName.trim()) {
       setSaveError('Please enter a secret identifier (e.g. NVIDIA_API_KEY)');
       return;
     }
-    if (!secretValue.trim()) {
+    if (!isEdit && !secretValue.trim()) {
       setSaveError('Please enter the secret value');
       return;
     }
@@ -178,6 +195,7 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
         description: secretDescription.trim(),
       });
       setIsAddModalOpen(false);
+      setEditingSecret(null);
       await loadSecrets();
       onRefresh();
     } catch (err: any) {
@@ -464,6 +482,17 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
                         <Button
                           variant="secondary"
                           size="sm"
+                          onClick={() => handleOpenEditModal(secret)}
+                          title={`Edit '${secret.name}' (replace key or description)`}
+                          className="h-6 px-2 text-[10px] font-mono text-slate-300 hover:text-[var(--primary)]"
+                        >
+                          <Pencil className="w-2.5 h-2.5 mr-1 text-[var(--primary)]" />
+                          Edit
+                        </Button>
+
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           onClick={() => handleOpenDiscovery(secret)}
                           title="Query live models upstream using this secret"
                           className="h-6 px-2 text-[10px] font-mono text-slate-300 hover:text-[var(--primary)]"
@@ -489,16 +518,25 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
         </div>
       )}
 
-      {/* Add Secret Modal */}
+      {/* Add / Edit Secret Modal */}
       <Modal
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        title="Add Secret to Central Vault"
+        onClose={() => {
+          setIsAddModalOpen(false);
+          setEditingSecret(null);
+        }}
+        title={editingSecret ? `Edit Secret '${editingSecret.name}'` : 'Add Secret to Central Vault'}
       >
         <div className="space-y-4 font-mono text-xs">
-          <div className="p-2.5 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-slate-300 text-[11px] font-sans">
-            Encrypted with AES-256-GCM. Plaintext is never returned in API or UI responses.
-          </div>
+          {editingSecret ? (
+            <div className="p-2.5 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-slate-300 text-[11px] font-sans">
+              Encrypted with AES-256-GCM — the stored key can never be displayed. Enter a new key to replace it, or leave the key field empty to update the description only.
+            </div>
+          ) : (
+            <div className="p-2.5 rounded-lg bg-[var(--primary-bg-badge)] border border-[var(--primary-border)] text-slate-300 text-[11px] font-sans">
+              Encrypted with AES-256-GCM. Plaintext is never returned in API or UI responses.
+            </div>
+          )}
 
           <div className="space-y-1">
             <label className="text-slate-300 font-bold block text-xs">
@@ -508,23 +546,26 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
               value={secretName}
               onChange={(e) => setSecretName(e.target.value.toUpperCase().replace(/\s+/g, '_'))}
               placeholder="e.g. NVIDIA_API_KEY"
-              className="font-mono text-xs h-8"
+              disabled={!!editingSecret}
+              className={cn('font-mono text-xs h-8', editingSecret && 'opacity-60 cursor-not-allowed')}
             />
             <span className="text-[10px] text-slate-500">
               Template: <code className="text-[var(--primary)]">${`{${secretName || 'NAME'}}`}</code>
+              {editingSecret && ' (name is locked while editing)'}
             </span>
           </div>
 
           <div className="space-y-1">
             <label className="text-slate-300 font-bold block text-xs">
-              API Key / Token <span className="text-rose-400">*</span>
+              API Key / Token {!editingSecret && <span className="text-rose-400">*</span>}
+              {editingSecret && <span className="text-[10px] text-slate-400 font-normal"> (empty = keep current key)</span>}
             </label>
             <div className="relative">
               <Input
                 type={showSecretValue ? 'text' : 'password'}
                 value={secretValue}
                 onChange={(e) => setSecretValue(e.target.value)}
-                placeholder="nvapi-... or gsk_... or sk-..."
+                placeholder={editingSecret ? 'nvapi-... (leave empty to keep current)' : 'nvapi-... or gsk_... or sk-...'}
                 className="font-mono text-xs h-8 pr-9"
               />
               <button
@@ -559,7 +600,10 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => setIsAddModalOpen(false)}
+              onClick={() => {
+                setIsAddModalOpen(false);
+                setEditingSecret(null);
+              }}
               disabled={isSaving}
               className="h-8 text-xs font-mono"
             >
@@ -572,7 +616,7 @@ export const VaultStudio: React.FC<VaultStudioProps> = ({
               disabled={isSaving}
               className="h-8 text-xs font-mono font-bold"
             >
-              {isSaving ? 'Saving...' : 'Save Secret'}
+              {isSaving ? 'Saving...' : editingSecret ? 'Update Secret' : 'Save Secret'}
             </Button>
           </div>
         </div>

@@ -236,7 +236,9 @@ export const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-[var(--bg-app)] text-slate-100 flex flex-col font-sans transition-colors duration-300">
       {/* Top Cybernetic Two-Tier Command Header */}
-      <header className="border-b border-white/[0.08] bg-[var(--bg-header)] backdrop-blur-md transition-colors">
+      {/* relative z-[100]: backdrop-blur creates a stacking context, which would otherwise
+          trap the ThemeSelector dropdown behind later-painted dashboard panels. */}
+      <header className="relative z-[100] border-b border-white/[0.08] bg-[var(--bg-header)] backdrop-blur-md transition-colors">
         {/* Tier 1: Brand & System Status Hub */}
         <div className="max-w-7xl mx-auto h-13 px-4 sm:px-6 flex items-center justify-between gap-4 py-2">
           
